@@ -1,0 +1,17 @@
+{
+  "name": "obd-telemetry-server",
+  "version": "1.0.0",
+  "description": "Fastify ingestion server for OBD2 Telemetry data",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "fastify": "^4.21.0",
+    "@fastify/cors": "^8.3.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

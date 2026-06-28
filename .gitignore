@@ -1,0 +1,34 @@
+# Android
+.gradle/
+local.properties
+.idea/
+*.apk
+app/build/
+build/
+capture.png
+
+# Node / JS
+node_modules/
+.next/
+dist/
+out/
+.env
+.env.local
+.env.production
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# Server storage
+Server/data/
+*.db
+*.json
+!package.json
+!tsconfig.json
+!manifest.json
+!project.json
+
+# Misc
+.DS_Store
+Thumbs.db
