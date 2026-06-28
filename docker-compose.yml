@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  server:
+    build: ./Server
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - server-data:/app/data
+    restart: always
+
+  dashboard:
+    build: ./Dashboard
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - server
+    restart: always
+
+volumes:
+  server-data:
