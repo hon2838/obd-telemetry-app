@@ -99,8 +99,15 @@ class MainActivity : AppCompatActivity() {
         tvThrottlePos = findViewById(R.id.tvThrottlePos)
         tvVoltage = findViewById(R.id.tvVoltage)
         etApiUrl = findViewById(R.id.etApiUrl)
+        val cbAutoStart = findViewById<android.widget.CheckBox>(R.id.cbAutoStart)
 
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
+        
+        cbAutoStart.isChecked = prefs.getBoolean("AUTO_START_BOOT", true)
+        cbAutoStart.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean("AUTO_START_BOOT", isChecked).apply()
+        }
+
         val savedUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch")
         etApiUrl.setText(savedUrl)
         etApiUrl.addTextChangedListener(object : android.text.TextWatcher {
@@ -180,7 +187,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopOBDService() {
         val intent = Intent(this, OBDGatewayService::class.java)
         stopService(intent)
-        statusText.text = "Service Stopped"
+        updateStatusUi("Service Stopped")
     }
 
     private fun checkAndRequestPermissions(): Boolean {

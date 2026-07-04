@@ -5,7 +5,7 @@ local.properties
 *.apk
 app/build/
 build/
-capture.png
+*.png
 
 # Node / JS
 node_modules/

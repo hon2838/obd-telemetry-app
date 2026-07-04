@@ -42,6 +42,9 @@ class TelemetrySyncWorker(
                     put("fuelLevel", record.fuelLevel ?: JSONObject.NULL)
                     put("ambientTemp", record.ambientTemp ?: JSONObject.NULL)
                     put("voltage", record.voltage?.toDouble() ?: JSONObject.NULL)
+                    put("accelTime", record.accelTime ?: JSONObject.NULL)
+                    put("alertCoolant", record.alertCoolant ?: JSONObject.NULL)
+                    put("alertVoltage", record.alertVoltage ?: JSONObject.NULL)
                 }
                 jsonArray.put(jsonObj)
             }

@@ -9,6 +9,8 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
@@ -113,6 +115,17 @@ class AmbientAirTempCommand : ObdCommand() {
     }
 }
 
+class ResetTroubleCodesCommand : ObdCommand() {
+    override val tag = "RESET_DTC"
+    override val name = "Reset Trouble Codes"
+    override val mode = "04"
+    override val pid = ""
+    override val defaultUnit = ""
+    override val handler = { response: ObdRawResponse ->
+        response.value
+    }
+}
+
 class OBDGatewayService : Service(), LocationListener {
 
     private val serviceJob = Job()
@@ -155,177 +168,352 @@ class OBDGatewayService : Service(), LocationListener {
         return START_STICKY
     }
 
+    private fun isNetworkAvailable(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private fun startTelemetrySync() {
         serviceScope.launch {
             val db = AppDatabase.getDatabase(applicationContext)
             val dao = db.telemetryDao()
             while (isActive) {
                 try {
-                    val unsyncedRecords = dao.getUnsyncedRecords()
-                    if (unsyncedRecords.isNotEmpty()) {
-                        val jsonArray = JSONArray()
-                        unsyncedRecords.forEach { record ->
-                            val jsonObj = JSONObject().apply {
-                                put("timestamp", record.timestamp)
-                                put("rpm", record.rpm ?: JSONObject.NULL)
-                                put("speed", record.speed ?: JSONObject.NULL)
-                                put("coolantTemp", record.coolantTemp ?: JSONObject.NULL)
-                                put("latitude", record.latitude)
-                                put("longitude", record.longitude)
-                                put("altitude", record.altitude)
-                                put("gpsSpeed", record.gpsSpeed.toDouble())
-                                put("engineLoad", record.engineLoad ?: JSONObject.NULL)
-                                put("throttlePos", record.throttlePos ?: JSONObject.NULL)
-                                put("fuelLevel", record.fuelLevel ?: JSONObject.NULL)
-                                put("ambientTemp", record.ambientTemp ?: JSONObject.NULL)
-                                put("voltage", record.voltage?.toDouble() ?: JSONObject.NULL)
+                    // Only attempt sync if network is available
+                    if (isNetworkAvailable()) {
+                        val unsyncedRecords = dao.getUnsyncedRecords()
+                        if (unsyncedRecords.isNotEmpty()) {
+                            val jsonArray = JSONArray()
+                            unsyncedRecords.forEach { record ->
+                                val jsonObj = JSONObject().apply {
+                                    put("timestamp", record.timestamp)
+                                    put("rpm", record.rpm ?: JSONObject.NULL)
+                                    put("speed", record.speed ?: JSONObject.NULL)
+                                    put("coolantTemp", record.coolantTemp ?: JSONObject.NULL)
+                                    put("latitude", record.latitude)
+                                    put("longitude", record.longitude)
+                                    put("altitude", record.altitude)
+                                    put("gpsSpeed", record.gpsSpeed.toDouble())
+                                    put("engineLoad", record.engineLoad ?: JSONObject.NULL)
+                                    put("throttlePos", record.throttlePos ?: JSONObject.NULL)
+                                    put("fuelLevel", record.fuelLevel ?: JSONObject.NULL)
+                                    put("ambientTemp", record.ambientTemp ?: JSONObject.NULL)
+                                    put("voltage", record.voltage?.toDouble() ?: JSONObject.NULL)
+                                    put("accelTime", record.accelTime ?: JSONObject.NULL)
+                                    put("alertCoolant", record.alertCoolant ?: JSONObject.NULL)
+                                    put("alertVoltage", record.alertVoltage ?: JSONObject.NULL)
+                                }
+                                jsonArray.put(jsonObj)
                             }
-                            jsonArray.put(jsonObj)
-                        }
 
-                        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-                        val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
-                        val url = URL(apiUrl)
-                        var connection: HttpURLConnection? = null
-                        val success = try {
-                            connection = url.openConnection() as HttpURLConnection
-                            connection.requestMethod = "POST"
-                            connection.setRequestProperty("Content-Type", "application/json")
-                            connection.setRequestProperty("X-API-Key", API_KEY)
-                            connection.doOutput = true
-                            connection.connectTimeout = 5000
-                            
-                            val writer = OutputStreamWriter(connection.outputStream)
-                            writer.write(jsonArray.toString())
-                            writer.flush()
-                            writer.close()
-                            
-                            connection.responseCode in 200..299
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            false
-                        } finally {
-                            connection?.disconnect()
-                        }
+                            val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
+                            val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+                            val url = URL(apiUrl)
+                            var connection: HttpURLConnection? = null
+                            var responseBody = ""
+                            val success = try {
+                                connection = url.openConnection() as HttpURLConnection
+                                connection.requestMethod = "POST"
+                                connection.setRequestProperty("Content-Type", "application/json")
+                                connection.setRequestProperty("X-API-Key", API_KEY)
+                                connection.doOutput = true
+                                connection.connectTimeout = 5000
 
-                        if (success) {
-                            unsyncedRecords.forEach { it.synced = true }
-                            dao.updateRecords(unsyncedRecords)
-                            dao.deleteSyncedRecords()
+                                val writer = OutputStreamWriter(connection.outputStream)
+                                writer.write(jsonArray.toString())
+                                writer.flush()
+                                writer.close()
+
+                                val code = connection.responseCode
+                                if (code in 200..299) {
+                                    responseBody = connection.inputStream.bufferedReader().use { it.readText() }
+                                    true
+                                } else {
+                                    false
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                false
+                            } finally {
+                                connection?.disconnect()
+                            }
+
+                            if (success) {
+                                unsyncedRecords.forEach { it.synced = true }
+                                dao.updateRecords(unsyncedRecords)
+                                dao.deleteSyncedRecords()
+
+                                if (responseBody.isNotEmpty()) {
+                                    try {
+                                        val responseJson = JSONObject(responseBody)
+                                        if (responseJson.has("commands")) {
+                                            val commandsArray = responseJson.getJSONArray("commands")
+                                            for (i in 0 until commandsArray.length()) {
+                                                val cmd = commandsArray.getString(i)
+                                                handleIncomingCommand(cmd)
+                                            }
+                                        }
+                                    } catch (jsonEx: Exception) {
+                                        jsonEx.printStackTrace()
+                                    }
+                                }
+                            }
                         }
                     }
+                    // else: no network — data stays in local SQLite, will upload next cycle
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
-                delay(3000)
+                delay(60_000) // Sync every 60 seconds
             }
         }
     }
 
-    private fun startObdPolling() {
+    private fun handleIncomingCommand(cmd: String) {
         serviceScope.launch {
+            if (obdConnection == null) return@launch
             try {
-                try {
-                    connectBluetooth()
-                    // Initialize OBD
-                    val initZ = object : ObdCommand() { override val tag = "AT Z"; override val name = "Reset"; override val mode = "AT Z"; override val pid = "AT Z" }
-                    val initSP0 = object : ObdCommand() { override val tag = "AT SP 0"; override val name = "Select Protocol Auto"; override val mode = "AT SP 0"; override val pid = "AT SP 0" }
-                    obdConnection?.run(initZ)
-                    delay(500)
-                    obdConnection?.run(initSP0)
-                    delay(500)
-                    updateNotification("OBD Polling Active")
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    updateNotification("OBD: GPS Only (BT Fail)")
-                }
-
-                val db = AppDatabase.getDatabase(applicationContext)
-                val dao = db.telemetryDao()
-
-                while (isActive) {
-                    try {
-                        var rpm: Int? = null
-                        var speed: Int? = null
-                        var coolantTemp: Int? = null
-                        var engineLoad: Int? = null
-                        var throttlePos: Int? = null
-                        var fuelLevel: Int? = null
-                        var ambientTemp: Int? = null
-                        var voltage: Float? = null
-
-                        if (obdConnection != null) {
-                            try {
-                                val rpmResp = obdConnection?.run(RPMCommand())
-                                delay(100)
-                                val speedResp = obdConnection?.run(SpeedCommand())
-                                delay(100)
-                                val coolantTempResp = obdConnection?.run(EngineCoolantTemperatureCommand())
-                                delay(100)
-                                val loadResp = obdConnection?.run(LoadCommand())
-                                delay(100)
-                                val throttleResp = obdConnection?.run(ThrottlePositionCommand())
-                                delay(100)
-                                val fuelLevelResp = obdConnection?.run(FuelLevelCommand())
-                                delay(100)
-                                val ambientTempResp = obdConnection?.run(AmbientAirTempCommand())
-                                delay(100)
-                                val voltageResp = obdConnection?.run(ModuleVoltageCommand())
-                                delay(100)
-
-                                rpm = rpmResp?.value?.toIntOrNull()
-                                speed = speedResp?.value?.toIntOrNull()
-                                coolantTemp = coolantTempResp?.value?.toIntOrNull()
-                                engineLoad = loadResp?.value?.toIntOrNull()
-                                throttlePos = throttleResp?.value?.toIntOrNull()
-                                fuelLevel = fuelLevelResp?.value?.toIntOrNull()
-                                ambientTemp = ambientTempResp?.value?.toIntOrNull()
-                                voltage = voltageResp?.value?.toFloatOrNull()
-                            } catch (obdEx: Exception) {
-                                obdEx.printStackTrace()
-                            }
-                        }
-
-                        val telemetry = TelemetryEntity(
-                            timestamp = System.currentTimeMillis(),
-                            rpm = rpm,
-                            speed = speed,
-                            coolantTemp = coolantTemp,
-                            latitude = latitude,
-                            longitude = longitude,
-                            altitude = altitude,
-                            gpsSpeed = gpsSpeed * 3.6f,
-                            engineLoad = engineLoad,
-                            throttlePos = throttlePos,
-                            fuelLevel = fuelLevel,
-                            ambientTemp = ambientTemp,
-                            voltage = voltage
-                        )
-                        
-                        dao.insert(telemetry)
-
-                        val updateIntent = Intent("com.example.obdapp.TELEMETRY_UPDATE").apply {
-                            putExtra("lat", telemetry.latitude)
-                            putExtra("lon", telemetry.longitude)
-                            putExtra("alt", telemetry.altitude)
-                            putExtra("speed", telemetry.gpsSpeed)
-                            putExtra("rpm", telemetry.rpm ?: -1)
-                            putExtra("coolant", telemetry.coolantTemp ?: -1)
-                            putExtra("throttle", telemetry.throttlePos ?: -1)
-                            putExtra("volt", telemetry.voltage ?: -1.0f)
-                            putExtra("obd_status", if (obdConnection != null) "Connected" else "N/A")
-                        }
-                        sendBroadcast(updateIntent)
-                        
-                        delay(3000)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        delay(3000)
-                    }
+                if (cmd == "read_dtc") {
+                    val dtcResp = obdConnection?.run(com.github.eltonvs.obd.command.control.TroubleCodesCommand())
+                    val dtcRaw = dtcResp?.formattedValue ?: ""
+                    uploadDtcResult(dtcRaw)
+                } else if (cmd == "clear_dtc") {
+                    obdConnection?.run(ResetTroubleCodesCommand())
+                    uploadDtcClearStatus(true)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                updateNotification("OBD Service Stopped")
+                if (cmd == "read_dtc") uploadDtcResult("Error: ${e.message}")
+                else if (cmd == "clear_dtc") uploadDtcClearStatus(false)
+            }
+        }
+    }
+
+    private fun uploadDtcResult(dtcRaw: String) {
+        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
+        val serverUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+        val dtcUrl = serverUrl.replace("/batch", "/dtc")
+        serviceScope.launch {
+            try {
+                val url = URL(dtcUrl)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("X-API-Key", API_KEY)
+                conn.doOutput = true
+                
+                val payload = JSONObject().apply {
+                    put("dtc", dtcRaw)
+                    put("timestamp", System.currentTimeMillis())
+                }
+                
+                val writer = OutputStreamWriter(conn.outputStream)
+                writer.write(payload.toString())
+                writer.flush()
+                writer.close()
+                conn.responseCode
+                conn.disconnect()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun uploadDtcClearStatus(success: Boolean) {
+        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
+        val serverUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+        val dtcUrl = serverUrl.replace("/batch", "/dtc/clear")
+        serviceScope.launch {
+            try {
+                val url = URL(dtcUrl)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("X-API-Key", API_KEY)
+                conn.doOutput = true
+                
+                val payload = JSONObject().apply {
+                    put("success", success)
+                    put("timestamp", System.currentTimeMillis())
+                }
+                
+                val writer = OutputStreamWriter(conn.outputStream)
+                writer.write(payload.toString())
+                writer.flush()
+                writer.close()
+                conn.responseCode
+                conn.disconnect()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun triggerLocalAlertNotification(title: String, content: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val alertNotification = NotificationCompat.Builder(this, "OBD_CHANNEL")
+            .setContentTitle(title)
+            .setContentText(content)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        manager.notify(System.currentTimeMillis().toInt(), alertNotification)
+    }
+
+    private fun startObdPolling() {
+        serviceScope.launch {
+            val db = AppDatabase.getDatabase(applicationContext)
+            val dao = db.telemetryDao()
+
+            var reconnectDelay = 5000L
+            val maxReconnectDelay = 60000L
+
+            // Variables for 0-100 km/h acceleration tracking
+            var accelStartTime: Long? = null
+            var isTrackingAccel = false
+
+            while (isActive) {
+                try {
+                    if (obdConnection == null) {
+                        updateNotification("Connecting Bluetooth...")
+                        try {
+                            connectBluetooth()
+                            // Initialize OBD
+                            val initZ = object : ObdCommand() { override val tag = "AT Z"; override val name = "Reset"; override val mode = "AT Z"; override val pid = "AT Z" }
+                            val initSP0 = object : ObdCommand() { override val tag = "AT SP 0"; override val name = "Select Protocol Auto"; override val mode = "AT SP 0"; override val pid = "AT SP 0" }
+                            obdConnection?.run(initZ)
+                            delay(500)
+                            obdConnection?.run(initSP0)
+                            delay(500)
+                            updateNotification("OBD Polling Active")
+                            reconnectDelay = 5000L // reset reconnect delay
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            updateNotification("OBD: GPS Only (BT Fail)")
+                            obdConnection = null
+                            bluetoothSocket?.close()
+                            bluetoothSocket = null
+                            delay(reconnectDelay)
+                            reconnectDelay = (reconnectDelay * 2).coerceAtMost(maxReconnectDelay)
+                        }
+                    }
+
+                    var rpm: Int? = null
+                    var speed: Int? = null
+                    var coolantTemp: Int? = null
+                    var engineLoad: Int? = null
+                    var throttlePos: Int? = null
+                    var fuelLevel: Int? = null
+                    var ambientTemp: Int? = null
+                    var voltage: Float? = null
+
+                    if (obdConnection != null) {
+                        try {
+                            val rpmResp = obdConnection?.run(RPMCommand())
+                            delay(100)
+                            val speedResp = obdConnection?.run(SpeedCommand())
+                            delay(100)
+                            val coolantTempResp = obdConnection?.run(EngineCoolantTemperatureCommand())
+                            delay(100)
+                            val loadResp = obdConnection?.run(LoadCommand())
+                            delay(100)
+                            val throttleResp = obdConnection?.run(ThrottlePositionCommand())
+                            delay(100)
+                            val fuelLevelResp = obdConnection?.run(FuelLevelCommand())
+                            delay(100)
+                            val ambientTempResp = obdConnection?.run(AmbientAirTempCommand())
+                            delay(100)
+                            val voltageResp = obdConnection?.run(ModuleVoltageCommand())
+                            delay(100)
+
+                            rpm = rpmResp?.value?.toIntOrNull()
+                            speed = speedResp?.value?.toIntOrNull()
+                            coolantTemp = coolantTempResp?.value?.toIntOrNull()
+                            engineLoad = loadResp?.value?.toIntOrNull()
+                            throttlePos = throttleResp?.value?.toIntOrNull()
+                            fuelLevel = fuelLevelResp?.value?.toIntOrNull()
+                            ambientTemp = ambientTempResp?.value?.toIntOrNull()
+                            voltage = voltageResp?.value?.toFloatOrNull()
+                        } catch (obdEx: Exception) {
+                            obdEx.printStackTrace()
+                            // Connection failed mid-polling. Reset so it reconnects next loop.
+                            obdConnection = null
+                            bluetoothSocket?.close()
+                            bluetoothSocket = null
+                            updateNotification("OBD: Connection Lost")
+                        }
+                    }
+
+                    // 0-100 km/h acceleration calculations
+                    val currentSpeed = speed ?: 0
+                    var completedAccelTime: Double? = null
+
+                    if (currentSpeed == 0) {
+                        accelStartTime = null
+                        isTrackingAccel = false
+                    } else if (currentSpeed > 0 && !isTrackingAccel && accelStartTime == null) {
+                        accelStartTime = System.currentTimeMillis()
+                        isTrackingAccel = true
+                    }
+
+                    if (isTrackingAccel && currentSpeed >= 100 && accelStartTime != null) {
+                        completedAccelTime = (System.currentTimeMillis() - accelStartTime) / 1000.0
+                        isTrackingAccel = false
+                    }
+
+                    // Temperature and Voltage Alerts
+                    val isCoolantAlert = coolantTemp != null && coolantTemp > 105
+                    val isVoltageAlert = voltage != null && voltage < 11.8f
+
+                    if (isCoolantAlert) {
+                        triggerLocalAlertNotification("Coolant Temperature Danger", "Engine Coolant is at $coolantTemp°C!")
+                    }
+                    if (isVoltageAlert) {
+                        triggerLocalAlertNotification("Battery Voltage Warning", "System voltage is low: $voltage V")
+                    }
+
+                    val telemetry = TelemetryEntity(
+                        timestamp = System.currentTimeMillis(),
+                        rpm = rpm,
+                        speed = speed,
+                        coolantTemp = coolantTemp,
+                        latitude = latitude,
+                        longitude = longitude,
+                        altitude = altitude,
+                        gpsSpeed = gpsSpeed * 3.6f,
+                        engineLoad = engineLoad,
+                        throttlePos = throttlePos,
+                        fuelLevel = fuelLevel,
+                        ambientTemp = ambientTemp,
+                        voltage = voltage,
+                        accelTime = completedAccelTime,
+                        alertCoolant = isCoolantAlert,
+                        alertVoltage = isVoltageAlert
+                    )
+                    
+                    dao.insert(telemetry)
+
+                    val updateIntent = Intent("com.example.obdapp.TELEMETRY_UPDATE").apply {
+                        putExtra("lat", telemetry.latitude)
+                        putExtra("lon", telemetry.longitude)
+                        putExtra("alt", telemetry.altitude)
+                        putExtra("speed", telemetry.gpsSpeed)
+                        putExtra("rpm", telemetry.rpm ?: -1)
+                        putExtra("coolant", telemetry.coolantTemp ?: -1)
+                        putExtra("throttle", telemetry.throttlePos ?: -1)
+                        putExtra("volt", telemetry.voltage ?: -1.0f)
+                        putExtra("obd_status", if (obdConnection != null) "Connected" else "N/A")
+                        putExtra("accel_time", telemetry.accelTime ?: -1.0)
+                    }
+                    sendBroadcast(updateIntent)
+                    
+                    delay(3000)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    delay(3000)
+                }
             }
         }
     }
