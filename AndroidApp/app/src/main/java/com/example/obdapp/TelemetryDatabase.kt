@@ -23,6 +23,9 @@ data class TelemetryEntity(
     val fuelLevel: Int?,
     val ambientTemp: Int?,
     val voltage: Float?,
+    val accelTime: Double? = null,
+    val alertCoolant: Boolean? = null,
+    val alertVoltage: Boolean? = null,
     var synced: Boolean = false
 )
 

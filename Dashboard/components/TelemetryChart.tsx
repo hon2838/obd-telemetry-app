@@ -20,6 +20,9 @@ interface TelemetryData {
   fuelLevel: number;
   ambientTemp: number;
   voltage: number;
+  accelTime: number | null;
+  alertCoolant: boolean;
+  alertVoltage: boolean;
   timeLabel?: string;
 }
 
@@ -168,6 +171,54 @@ export default function TelemetryDashboard() {
   const [drives, setDrives] = useState<DriveSession[]>([]);
   const [selectedDriveId, setSelectedDriveId] = useState<number | 'custom' | null>(null);
 
+  const [diagnostics, setDiagnostics] = useState<{
+    latestDtc: { code: string; timestamp: number | null };
+    latestClearStatus: { success: boolean | null; timestamp: number | null };
+  }>({
+    latestDtc: { code: "", timestamp: null },
+    latestClearStatus: { success: null, timestamp: null }
+  });
+  const [commandLoading, setCommandLoading] = useState<string | null>(null);
+
+  // Poll diagnostics status
+  useEffect(() => {
+    const fetchDiag = async () => {
+      try {
+        const response = await fetch('http://localhost:3000/api/telemetry/dtc');
+        if (response.ok) {
+          const resJson = await response.json();
+          setDiagnostics(resJson);
+        }
+      } catch (err) {
+        console.error("Error fetching diagnostics:", err);
+      }
+    };
+    fetchDiag();
+    const diagInterval = setInterval(fetchDiag, 3000);
+    return () => clearInterval(diagInterval);
+  }, []);
+
+  const sendCommand = async (command: 'read_dtc' | 'clear_dtc') => {
+    setCommandLoading(command);
+    try {
+      const response = await fetch('http://localhost:3000/api/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command })
+      });
+      if (response.ok) {
+        alert(`Command '${command === 'read_dtc' ? 'Read DTC' : 'Clear DTC'}' has been queued. The vehicle's Head Unit will execute it on the next sync (within 3 seconds).`);
+      } else {
+        alert("Failed to queue command");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error sending command");
+    } finally {
+      setCommandLoading(null);
+    }
+  };
+
   // Poll for Live data
   useEffect(() => {
     if (mode !== 'live') return;
@@ -264,7 +315,8 @@ export default function TelemetryDashboard() {
 
   const latest = data[data.length - 1] || {
     rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
-    gpsSpeed: 0, engineLoad: null, throttlePos: null, fuelLevel: null, ambientTemp: null, voltage: null
+    gpsSpeed: 0, engineLoad: null, throttlePos: null, fuelLevel: null, ambientTemp: null, voltage: null,
+    accelTime: null, alertCoolant: false, alertVoltage: false
   };
 
   const formatVal = (val: any, decimals?: number) => {
@@ -316,6 +368,48 @@ export default function TelemetryDashboard() {
 
   const renderTelemetryWorkspace = () => (
     <>
+      {/* WARNING BANNERS */}
+      {(latest.alertCoolant || latest.alertVoltage) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', width: '100%' }}>
+          {latest.alertCoolant && (
+            <div style={{
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgb(239, 68, 68)',
+              color: '#f87171',
+              padding: '16px 20px',
+              borderRadius: '12px',
+              fontWeight: 600,
+              fontSize: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              boxShadow: '0 0 20px rgba(239, 68, 68, 0.2)'
+            }}>
+              <AlertCircle size={20} />
+              <span>ENGINE TEMPERATURE OVERHEATING DANGER: Coolant at {latest.coolantTemp}°C! Pull over immediately!</span>
+            </div>
+          )}
+          {latest.alertVoltage && (
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.15)',
+              border: '1px solid rgb(245, 158, 11)',
+              color: '#fbbf24',
+              padding: '16px 20px',
+              borderRadius: '12px',
+              fontWeight: 600,
+              fontSize: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              boxShadow: '0 0 20px rgba(245, 158, 11, 0.2)'
+            }}>
+              <Battery size={20} />
+              <span>BATTERY VOLTAGE CRITICAL: Battery is low ({latest.voltage?.toFixed(2)}V). Alternator charging failure or weak battery.</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* MASSIVE MAP (Largest part of the UI) */}
       <div className="glass-panel-static" style={styles.massiveMapCard}>
         <div style={styles.cardHeader}>
@@ -411,6 +505,15 @@ export default function TelemetryDashboard() {
           valueColor={getVoltageColor(latest.voltage)}
           subtext={latest.voltage !== null ? (latest.voltage > 13 ? "Alternator Charging" : "Discharging") : "N/A"}
         />
+        <MetricCard
+          title="0-100 km/h Accel"
+          value={latest.accelTime !== null ? `${latest.accelTime.toFixed(2)}` : 'N/A'}
+          unit={latest.accelTime !== null ? 's' : ''}
+          icon={<Flame size={20} color="var(--accent-amber)" />}
+          progress={latest.accelTime !== null ? Math.min(100, (12.0 / latest.accelTime) * 100) : 0}
+          progressColor="var(--accent-amber)"
+          subtext={latest.accelTime !== null ? "Sprint Completed!" : "Awaiting acceleration..."}
+        />
       </div>
 
       {/* CHART AREA */}
@@ -490,6 +593,84 @@ export default function TelemetryDashboard() {
               )}
             </ResponsiveContainer>
           )}
+        </div>
+      </div>
+
+      {/* DIAGNOSTICS & SYSTEM CONTROLS CARD */}
+      <div className="glass-panel-static" style={{ padding: '24px', marginTop: '32px', border: '1px solid var(--border)', borderRadius: '16px' }}>
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
+          <ActivitySquare size={20} color="var(--accent-cyan)" /> Vehicle Diagnostics (OBD-II Command Queue)
+        </h3>
+
+        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          
+          <div style={{ flex: 1, minWidth: '280px' }}>
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>LATEST DTC READ:</div>
+              <div style={{ fontSize: '18px', fontWeight: 700, color: diagnostics.latestDtc.code.includes("P") ? 'var(--accent-red)' : '#fff', marginTop: '4px' }}>
+                {diagnostics.latestDtc.code || "No DTC data requested yet"}
+              </div>
+              {diagnostics.latestDtc.timestamp && (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Updated: {new Date(diagnostics.latestDtc.timestamp).toLocaleString()}
+                </div>
+              )}
+            </div>
+            
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>LATEST CLEAR STATUS:</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: diagnostics.latestClearStatus.success === true ? 'var(--accent-green)' : diagnostics.latestClearStatus.success === false ? 'var(--accent-red)' : '#fff', marginTop: '4px' }}>
+                {diagnostics.latestClearStatus.success === true ? "Successfully Cleared" : diagnostics.latestClearStatus.success === false ? "Failed to Clear" : "No clear executed"}
+              </div>
+              {diagnostics.latestClearStatus.timestamp && (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Updated: {new Date(diagnostics.latestClearStatus.timestamp).toLocaleString()}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px', width: '260px', flexDirection: 'column' }}>
+            <button
+              onClick={() => sendCommand('read_dtc')}
+              disabled={commandLoading !== null}
+              style={{
+                width: '100%',
+                background: 'rgba(59, 130, 246, 0.15)',
+                border: '1px solid var(--accent-blue)',
+                color: 'var(--accent-blue)',
+                padding: '12px 18px',
+                borderRadius: '12px',
+                fontWeight: 600,
+                fontSize: '13px',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                opacity: commandLoading !== null ? 0.6 : 1
+              }}
+            >
+              {commandLoading === 'read_dtc' ? "Queuing Command..." : "Queue Read DTC (Mode 03)"}
+            </button>
+            <button
+              onClick={() => sendCommand('clear_dtc')}
+              disabled={commandLoading !== null}
+              style={{
+                width: '100%',
+                background: 'rgba(239, 68, 68, 0.15)',
+                border: '1px solid var(--accent-red)',
+                color: 'var(--accent-red)',
+                padding: '12px 18px',
+                borderRadius: '12px',
+                fontWeight: 600,
+                fontSize: '13px',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                opacity: commandLoading !== null ? 0.6 : 1
+              }}
+            >
+              {commandLoading === 'clear_dtc' ? "Queuing Command..." : "Queue Clear DTC (Mode 04)"}
+            </button>
+          </div>
+
         </div>
       </div>
     </>
@@ -657,6 +838,46 @@ export default function TelemetryDashboard() {
                       <div style={styles.headerSummaryCol}>
                         <span style={styles.summaryLabel}>Estimated Fuel</span>
                         <span style={styles.summaryVal}>{currentDrive.summary.fuelUsedPercent}%</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginLeft: 'auto' }}>
+                        <a
+                          href={`http://localhost:3000/api/drives/${currentDrive.id}/export/csv`}
+                          download
+                          style={{
+                            background: 'rgba(59, 130, 246, 0.15)',
+                            border: '1px solid var(--accent-blue)',
+                            color: 'var(--accent-blue)',
+                            padding: '8px 14px',
+                            borderRadius: '10px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            textDecoration: 'none',
+                            transition: 'opacity 0.2s',
+                          }}
+                          onMouseOver={(e) => (e.currentTarget.style.opacity = '0.8')}
+                          onMouseOut={(e) => (e.currentTarget.style.opacity = '1')}
+                        >
+                          Export CSV
+                        </a>
+                        <a
+                          href={`http://localhost:3000/api/drives/${currentDrive.id}/export/gpx`}
+                          download
+                          style={{
+                            background: 'rgba(16, 185, 129, 0.15)',
+                            border: '1px solid var(--accent-green)',
+                            color: 'var(--accent-green)',
+                            padding: '8px 14px',
+                            borderRadius: '10px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            textDecoration: 'none',
+                            transition: 'opacity 0.2s',
+                          }}
+                          onMouseOver={(e) => (e.currentTarget.style.opacity = '0.8')}
+                          onMouseOut={(e) => (e.currentTarget.style.opacity = '1')}
+                        >
+                          Export GPX
+                        </a>
                       </div>
                     </div>
                   );
