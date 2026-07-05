@@ -206,7 +206,7 @@ export default function FuelTracker() {
               <TrendingUp size={20} color="var(--accent-green)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{stats.averageKmPerLitre || 'N/A'}</span>
+              <span style={styles.cardValue}>{stats.averageKmPerLitre !== null && stats.averageKmPerLitre !== undefined ? stats.averageKmPerLitre : 'N/A'}</span>
               {stats.averageKmPerLitre > 0 && <span style={styles.cardUnit}>km/L</span>}
             </div>
             <div style={styles.cardSubtext}>
@@ -222,7 +222,7 @@ export default function FuelTracker() {
               <Fuel size={20} color="var(--accent-blue)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{stats.totalLitres || '0.0'}</span>
+              <span style={styles.cardValue}>{stats.totalLitres !== null && stats.totalLitres !== undefined ? stats.totalLitres : '0.0'}</span>
               <span style={styles.cardUnit}>L</span>
             </div>
             <div style={styles.cardSubtext}>
@@ -236,7 +236,7 @@ export default function FuelTracker() {
               <Gauge size={20} color="var(--accent-cyan)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{stats.totalDistance || '0.0'}</span>
+              <span style={styles.cardValue}>{stats.totalDistance !== null && stats.totalDistance !== undefined ? stats.totalDistance : '0.0'}</span>
               <span style={styles.cardUnit}>km</span>
             </div>
             <div style={styles.cardSubtext}>
@@ -375,7 +375,7 @@ export default function FuelTracker() {
                             <span style={{
                               textTransform: 'uppercase',
                               fontSize: '10px',
-                              padding: '2dp 6dp',
+                              padding: '2px 6px',
                               borderRadius: '4px',
                               backgroundColor: log.source === 'app' ? 'rgba(52, 199, 89, 0.15)' : 'rgba(0, 122, 255, 0.15)',
                               color: log.source === 'app' ? '#34C759' : '#007AFF'

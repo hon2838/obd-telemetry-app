@@ -280,7 +280,14 @@ class OBDGatewayService : Service(), LocationListener {
 
                             val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
                             val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
-                            val fuelApiUrl = apiUrl.replace("/api/telemetry/batch", "/api/fuel-logs")
+                            
+                            val baseApiUrl = if (apiUrl.contains("/api/")) {
+                                apiUrl.substringBeforeLast("/api/") + "/api"
+                            } else {
+                                "http://127.0.0.1:3000/api"
+                            }
+                            val fuelApiUrl = "$baseApiUrl/fuel-logs"
+                            
                             val url = URL(fuelApiUrl)
                             var connection: HttpURLConnection? = null
                             val success = try {
@@ -290,6 +297,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 connection.setRequestProperty("X-API-Key", API_KEY)
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
+                                connection.readTimeout = 5000
 
                                 val writer = OutputStreamWriter(connection.outputStream)
                                 writer.write(fuelArray.toString())
