@@ -364,6 +364,8 @@ fastify.get('/api/telemetry/history', async (request, reply) => {
 fastify.post('/api/fuel-logs', async (request, reply) => {
   try {
     const apiKey = request.headers['x-api-key'];
+    // Dashboard doesn't send API key currently, so we allow requests without it.
+    // However, if one IS provided, it must be correct.
     if (apiKey && apiKey !== 'SUPER_SECURE_OBD_APP_KEY_2026') {
       return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
     }
@@ -374,8 +376,9 @@ fastify.post('/api/fuel-logs', async (request, reply) => {
     }
 
     const logsToAdd = Array.isArray(payload) ? payload : [payload];
+    let addedCount = 0;
 
-    logsToAdd.forEach(item => {
+    logsToAdd.forEach((item, index) => {
       const litres = parseFloat(item.litres);
       const odometer = parseFloat(item.odometer);
       if (isNaN(litres) || isNaN(odometer)) {
@@ -383,18 +386,21 @@ fastify.post('/api/fuel-logs', async (request, reply) => {
       }
 
       fuelLogsStore.push({
-        id: item.id || Date.now() + Math.floor(Math.random() * 1000),
+        // Always generate a unique server ID since Android app is write-only for logs
+        // and its local auto-increment IDs will reset if app data is cleared
+        id: `${Date.now()}-${index}-${Math.floor(Math.random() * 10000)}`,
         timestamp: parseInt(item.timestamp) || Date.now(),
         litres,
         odometer,
         source: item.source || (apiKey ? 'app' : 'web')
       });
+      addedCount++;
     });
 
     fuelLogsStore.sort((a, b) => b.timestamp - a.timestamp);
     saveFuelLogs();
 
-    return reply.status(201).send({ success: true, message: `Added ${logsToAdd.length} fuel logs.` });
+    return reply.status(201).send({ success: true, message: `Added ${addedCount} fuel logs.` });
   } catch (err) {
     request.log.error(err);
     return reply.status(500).send({ error: 'Internal Server Error' });

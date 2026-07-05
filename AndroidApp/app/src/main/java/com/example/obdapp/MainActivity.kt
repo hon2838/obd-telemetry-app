@@ -41,7 +41,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvThrottlePos: TextView
     private lateinit var tvVoltage: TextView
 
-    private val mainScope = CoroutineScope(Dispatchers.Main)
+    private val mainJob = kotlinx.coroutines.Job()
+    private val mainScope = CoroutineScope(Dispatchers.Main + mainJob)
     private val PERMISSION_REQUEST_CODE = 101
 
     private val telemetryReceiver = object : android.content.BroadcastReceiver() {
@@ -302,6 +303,11 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mainJob.cancel()
     }
 
     private fun isServiceRunning(serviceClass: Class<*>): Boolean {
