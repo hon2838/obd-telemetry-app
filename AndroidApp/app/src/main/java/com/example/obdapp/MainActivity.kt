@@ -14,9 +14,15 @@ import android.widget.Button
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.EditText
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
 
 class MainActivity : AppCompatActivity() {
 
@@ -35,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvThrottlePos: TextView
     private lateinit var tvVoltage: TextView
 
+    private val mainScope = CoroutineScope(Dispatchers.Main)
     private val PERMISSION_REQUEST_CODE = 101
 
     private val telemetryReceiver = object : android.content.BroadcastReceiver() {
@@ -131,6 +138,48 @@ class MainActivity : AppCompatActivity() {
 
         btnStop.setOnClickListener {
             stopOBDService()
+        }
+
+        val etFuelLitres = findViewById<EditText>(R.id.etFuelLitres)
+        val etFuelOdometer = findViewById<EditText>(R.id.etFuelOdometer)
+        val btnLogFuel = findViewById<Button>(R.id.btnLogFuel)
+
+        btnLogFuel.setOnClickListener {
+            val litresText = etFuelLitres.text.toString().trim()
+            val odoText = etFuelOdometer.text.toString().trim()
+
+            if (litresText.isEmpty() || odoText.isEmpty()) {
+                Toast.makeText(this, "Please enter litres and odometer distance.", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            try {
+                val litres = litresText.toDouble()
+                val odometer = odoText.toDouble()
+
+                if (litres <= 0 || odometer <= 0) {
+                    Toast.makeText(this, "Please enter valid positive numbers.", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+
+                val fuelLog = FuelLogEntity(
+                    timestamp = System.currentTimeMillis(),
+                    litres = litres,
+                    odometer = odometer
+                )
+
+                val db = AppDatabase.getDatabase(applicationContext)
+                mainScope.launch(Dispatchers.IO) {
+                    db.fuelLogDao().insert(fuelLog)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "Refuel logged successfully!", Toast.LENGTH_SHORT).show()
+                        etFuelLitres.text.clear()
+                        etFuelOdometer.text.clear()
+                    }
+                }
+            } catch (e: java.lang.NumberFormatException) {
+                Toast.makeText(this, "Please enter valid numbers.", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 

@@ -6,6 +6,7 @@ const path = require('path')
 const DB_DIR = path.join(__dirname, 'data')
 const DB_PATH = path.join(DB_DIR, 'telemetry.json')
 const DIAG_PATH = path.join(DB_DIR, 'diagnostics.json')
+const FUEL_PATH = path.join(DB_DIR, 'fuel_logs.json')
 
 // Ensure data directory exists
 if (!fs.existsSync(DB_DIR)) {
@@ -35,6 +36,16 @@ if (fs.existsSync(DIAG_PATH)) {
   }
 }
 
+// Load fuel logs or start fresh
+let fuelLogsStore = []
+if (fs.existsSync(FUEL_PATH)) {
+  try {
+    fuelLogsStore = JSON.parse(fs.readFileSync(FUEL_PATH, 'utf8'))
+  } catch (err) {
+    fastify.log.error('Error reading fuel logs file, starting with empty store:', err)
+  }
+}
+
 let pendingCommands = [];
 
 // Helper to save telemetry data to disk
@@ -52,6 +63,15 @@ const saveDiagnostics = () => {
     fs.writeFileSync(DIAG_PATH, JSON.stringify(diagnosticsStore, null, 2))
   } catch (err) {
     fastify.log.error('Failed to write diagnostics to disk:', err)
+  }
+}
+
+// Helper to save fuel logs to disk
+const saveFuelLogs = () => {
+  try {
+    fs.writeFileSync(FUEL_PATH, JSON.stringify(fuelLogsStore, null, 2))
+  } catch (err) {
+    fastify.log.error('Failed to write fuel logs to disk:', err)
   }
 }
 
@@ -339,6 +359,126 @@ fastify.get('/api/telemetry/history', async (request, reply) => {
   const history = telemetryDataStore.slice(-1000);
   return reply.send(history);
 })
+
+// POST /api/fuel-logs - Add one or more fuel log entries
+fastify.post('/api/fuel-logs', async (request, reply) => {
+  try {
+    const apiKey = request.headers['x-api-key'];
+    if (apiKey && apiKey !== 'SUPER_SECURE_OBD_APP_KEY_2026') {
+      return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+    }
+
+    const payload = request.body;
+    if (!payload) {
+      return reply.status(400).send({ error: 'Missing request body' });
+    }
+
+    const logsToAdd = Array.isArray(payload) ? payload : [payload];
+
+    logsToAdd.forEach(item => {
+      const litres = parseFloat(item.litres);
+      const odometer = parseFloat(item.odometer);
+      if (isNaN(litres) || isNaN(odometer)) {
+        return;
+      }
+
+      fuelLogsStore.push({
+        id: item.id || Date.now() + Math.floor(Math.random() * 1000),
+        timestamp: parseInt(item.timestamp) || Date.now(),
+        litres,
+        odometer,
+        source: item.source || (apiKey ? 'app' : 'web')
+      });
+    });
+
+    fuelLogsStore.sort((a, b) => b.timestamp - a.timestamp);
+    saveFuelLogs();
+
+    return reply.status(201).send({ success: true, message: `Added ${logsToAdd.length} fuel logs.` });
+  } catch (err) {
+    request.log.error(err);
+    return reply.status(500).send({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/fuel-logs - Fetch all fuel log entries
+fastify.get('/api/fuel-logs', async (request, reply) => {
+  const sortedLogs = [...fuelLogsStore].sort((a, b) => b.odometer - a.odometer);
+  return reply.send(sortedLogs);
+});
+
+// DELETE /api/fuel-logs/:id - Delete a fuel log entry
+fastify.delete('/api/fuel-logs/:id', async (request, reply) => {
+  try {
+    const { id } = request.params;
+    const idNum = parseInt(id);
+    const initialLength = fuelLogsStore.length;
+    
+    fuelLogsStore = fuelLogsStore.filter(log => log.id !== id && log.id !== idNum);
+
+    if (fuelLogsStore.length === initialLength) {
+      return reply.status(404).send({ error: 'Fuel log not found' });
+    }
+
+    saveFuelLogs();
+    return reply.send({ success: true, message: 'Fuel log deleted successfully' });
+  } catch (err) {
+    request.log.error(err);
+    return reply.status(500).send({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/fuel-stats - Get calculated fuel stats (average km/L, total litres, total distance)
+fastify.get('/api/fuel-stats', async (request, reply) => {
+  if (fuelLogsStore.length < 2) {
+    return reply.send({
+      averageKmPerLitre: 0,
+      bestKmPerLitre: 0,
+      worstKmPerLitre: 0,
+      totalLitres: fuelLogsStore.reduce((acc, log) => acc + log.litres, 0),
+      totalDistance: 0,
+      logCount: fuelLogsStore.length
+    });
+  }
+
+  const sorted = [...fuelLogsStore].sort((a, b) => a.odometer - b.odometer);
+  
+  let totalLitresIntervals = 0;
+  let totalDistanceIntervals = 0;
+  const economies = [];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    const distance = curr.odometer - prev.odometer;
+    const litres = curr.litres;
+
+    if (distance > 0 && litres > 0) {
+      const kmPerL = distance / litres;
+      economies.push(kmPerL);
+      totalDistanceIntervals += distance;
+      totalLitresIntervals += litres;
+    }
+  }
+
+  const minOdo = sorted[0].odometer;
+  const maxOdo = sorted[sorted.length - 1].odometer;
+  const totalDistance = maxOdo - minOdo;
+  const totalLitres = fuelLogsStore.reduce((acc, log) => acc + log.litres, 0);
+
+  const averageKmPerLitre = totalLitresIntervals > 0 ? (totalDistanceIntervals / totalLitresIntervals) : 0;
+  const bestKmPerLitre = economies.length > 0 ? Math.max(...economies) : 0;
+  const worstKmPerLitre = economies.length > 0 ? Math.min(...economies) : 0;
+
+  return reply.send({
+    averageKmPerLitre: parseFloat(averageKmPerLitre.toFixed(2)),
+    bestKmPerLitre: parseFloat(bestKmPerLitre.toFixed(2)),
+    worstKmPerLitre: parseFloat(worstKmPerLitre.toFixed(2)),
+    totalLitres: parseFloat(totalLitres.toFixed(1)),
+    totalDistance: parseFloat(totalDistance.toFixed(1)),
+    logCount: fuelLogsStore.length
+  });
+});
 
 // Run the server!
 const start = async () => {

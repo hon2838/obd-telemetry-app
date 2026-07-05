@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area
 } from 'recharts';
 import {
-  Activity, Map, Thermometer, Battery, Flame, Navigation, Clock, ActivitySquare, AlertCircle, Power
+  Activity, Map, Thermometer, Battery, Flame, Navigation, Clock, ActivitySquare, AlertCircle, Power, Fuel
 } from 'lucide-react';
 
 interface TelemetryData {
@@ -711,6 +711,14 @@ export default function TelemetryDashboard() {
               style={{ ...styles.toggleBtn, ...(mode === 'history' ? styles.toggleBtnActive : {}) }}
             >
               <Clock size={16} /> Drive History
+            </button>
+            <button
+              onClick={() => {
+                window.location.href = '/fuel';
+              }}
+              style={styles.toggleBtn}
+            >
+              <Fuel size={16} /> Fuel Economy
             </button>
           </div>
 
