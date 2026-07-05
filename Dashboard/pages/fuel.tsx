@@ -42,7 +42,7 @@ export default function FuelTracker() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  const API_HOST = 'http://127.0.0.1:3000'; // reverse proxy port forwarded to PC
+  const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://127.0.0.1:3000');
 
   const fetchData = async () => {
     try {
