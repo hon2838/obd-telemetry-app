@@ -160,6 +160,7 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
     </div>
   );
 };
+const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://localhost:3000');
 
 export default function TelemetryDashboard() {
   const [data, setData] = useState<TelemetryData[]>([]);
@@ -184,7 +185,7 @@ export default function TelemetryDashboard() {
   useEffect(() => {
     const fetchDiag = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/telemetry/dtc');
+        const response = await fetch(`${API_HOST}/api/telemetry/dtc`);
         if (response.ok) {
           const resJson = await response.json();
           setDiagnostics(resJson);
@@ -201,7 +202,7 @@ export default function TelemetryDashboard() {
   const sendCommand = async (command: 'read_dtc' | 'clear_dtc') => {
     setCommandLoading(command);
     try {
-      const response = await fetch('http://localhost:3000/api/commands', {
+      const response = await fetch(`${API_HOST}/api/commands`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command })
@@ -225,7 +226,7 @@ export default function TelemetryDashboard() {
 
     const fetchData = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/telemetry/history');
+        const response = await fetch(`${API_HOST}/api/telemetry/history`);
         if (response.ok) {
           const result = await response.json();
           const formattedData = result.map((item: TelemetryData) => ({
@@ -250,7 +251,7 @@ export default function TelemetryDashboard() {
 
     const fetchDrives = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/drives');
+        const response = await fetch(`${API_HOST}/api/drives`);
         if (response.ok) {
           const drivesList = await response.json();
           setDrives(drivesList);
@@ -265,7 +266,7 @@ export default function TelemetryDashboard() {
 
   const fetchHistoryByTimestamps = async (startTs: number, endTs: number) => {
     try {
-      const response = await fetch(`http://localhost:3000/api/telemetry/history?start=${startTs}&end=${endTs}`);
+      const response = await fetch(`${API_HOST}/api/telemetry/history?start=${startTs}&end=${endTs}`);
       if (response.ok) {
         const result = await response.json();
         const formattedData = result.map((item: TelemetryData) => ({
@@ -849,7 +850,7 @@ export default function TelemetryDashboard() {
                       </div>
                       <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginLeft: 'auto' }}>
                         <a
-                          href={`http://localhost:3000/api/drives/${currentDrive.id}/export/csv`}
+                          href={`${API_HOST}/api/drives/${currentDrive.id}/export/csv`}
                           download
                           style={{
                             background: 'rgba(59, 130, 246, 0.15)',
@@ -868,7 +869,7 @@ export default function TelemetryDashboard() {
                           Export CSV
                         </a>
                         <a
-                          href={`http://localhost:3000/api/drives/${currentDrive.id}/export/gpx`}
+                          href={`${API_HOST}/api/drives/${currentDrive.id}/export/gpx`}
                           download
                           style={{
                             background: 'rgba(16, 185, 129, 0.15)',
