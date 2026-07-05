@@ -261,6 +261,56 @@ class OBDGatewayService : Service(), LocationListener {
                                 }
                             }
                         }
+
+                        // Sync Fuel Logs
+                        val fuelDao = db.fuelLogDao()
+                        val unsyncedLogs = fuelDao.getUnsyncedLogs()
+                        if (unsyncedLogs.isNotEmpty()) {
+                            val fuelArray = JSONArray()
+                            unsyncedLogs.forEach { log ->
+                                val jsonObj = JSONObject().apply {
+                                    put("id", log.id)
+                                    put("timestamp", log.timestamp)
+                                    put("litres", log.litres)
+                                    put("odometer", log.odometer)
+                                    put("source", "app")
+                                }
+                                fuelArray.put(jsonObj)
+                            }
+
+                            val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
+                            val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+                            val fuelApiUrl = apiUrl.replace("/api/telemetry/batch", "/api/fuel-logs")
+                            val url = URL(fuelApiUrl)
+                            var connection: HttpURLConnection? = null
+                            val success = try {
+                                connection = url.openConnection() as HttpURLConnection
+                                connection.requestMethod = "POST"
+                                connection.setRequestProperty("Content-Type", "application/json")
+                                connection.setRequestProperty("X-API-Key", API_KEY)
+                                connection.doOutput = true
+                                connection.connectTimeout = 5000
+
+                                val writer = OutputStreamWriter(connection.outputStream)
+                                writer.write(fuelArray.toString())
+                                writer.flush()
+                                writer.close()
+
+                                val code = connection.responseCode
+                                code in 200..299
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                false
+                            } finally {
+                                connection?.disconnect()
+                            }
+
+                            if (success) {
+                                unsyncedLogs.forEach { it.synced = true }
+                                fuelDao.updateLogs(unsyncedLogs)
+                                fuelDao.deleteSyncedLogs()
+                            }
+                        }
                     }
                     // else: no network — data stays in local SQLite, will upload next cycle
                 } catch (e: Exception) {
