@@ -27,6 +27,8 @@ import com.github.eltonvs.obd.command.engine.SpeedCommand
 import com.github.eltonvs.obd.command.temperature.EngineCoolantTemperatureCommand
 import com.github.eltonvs.obd.connection.ObdDeviceConnection
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.InputStream
@@ -132,6 +134,7 @@ class OBDGatewayService : Service(), LocationListener {
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var bluetoothSocket: BluetoothSocket? = null
     private var obdConnection: ObdDeviceConnection? = null
+    private val obdMutex = Mutex()
 
     // Location fields
     private var locationManager: LocationManager? = null
@@ -179,7 +182,12 @@ class OBDGatewayService : Service(), LocationListener {
         serviceScope.launch {
             val db = AppDatabase.getDatabase(applicationContext)
             val dao = db.telemetryDao()
+            var syncDelay = 60_000L
+            val maxSyncDelay = 3600_000L
+
             while (isActive) {
+                var hadFailures = false
+                var hadSuccess = false
                 try {
                     // Only attempt sync if network is available
                     if (isNetworkAvailable()) {
@@ -241,6 +249,7 @@ class OBDGatewayService : Service(), LocationListener {
                             }
 
                             if (success) {
+                                hadSuccess = true
                                 unsyncedRecords.forEach { it.synced = true }
                                 dao.updateRecords(unsyncedRecords)
                                 dao.deleteSyncedRecords()
@@ -259,6 +268,8 @@ class OBDGatewayService : Service(), LocationListener {
                                         jsonEx.printStackTrace()
                                     }
                                 }
+                            } else {
+                                hadFailures = true
                             }
                         }
 
@@ -314,17 +325,90 @@ class OBDGatewayService : Service(), LocationListener {
                             }
 
                             if (success) {
+                                hadSuccess = true
                                 unsyncedLogs.forEach { it.synced = true }
                                 fuelDao.updateLogs(unsyncedLogs)
                                 fuelDao.deleteSyncedLogs()
+                            } else {
+                                hadFailures = true
+                            }
+                        }
+
+                        // Sync Maintenance Items
+                        val maintDao = db.maintenanceDao()
+                        val unsyncedMaint = maintDao.getUnsyncedItems()
+                        if (unsyncedMaint.isNotEmpty()) {
+                            val maintArray = JSONArray()
+                            unsyncedMaint.forEach { item ->
+                                val jsonObj = JSONObject().apply {
+                                    put("id", item.serverId)
+                                    put("name", item.name)
+                                    put("intervalKm", item.intervalKm ?: JSONObject.NULL)
+                                    put("intervalDays", item.intervalDays ?: JSONObject.NULL)
+                                    put("lastServiceOdo", item.lastServiceOdo ?: JSONObject.NULL)
+                                    put("lastServiceDate", item.lastServiceDate ?: JSONObject.NULL)
+                                    put("notes", item.notes)
+                                }
+                                maintArray.put(jsonObj)
+                            }
+
+                            val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
+                            val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+                            
+                            val baseApiUrl = if (apiUrl.contains("/api/")) {
+                                apiUrl.substringBeforeLast("/api/") + "/api"
+                            } else {
+                                "http://127.0.0.1:3000/api"
+                            }
+                            val maintApiUrl = "$baseApiUrl/maintenance"
+                            
+                            val url = URL(maintApiUrl)
+                            var connection: HttpURLConnection? = null
+                            val success = try {
+                                connection = url.openConnection() as HttpURLConnection
+                                connection.requestMethod = "POST"
+                                connection.setRequestProperty("Content-Type", "application/json")
+                                connection.setRequestProperty("X-API-Key", API_KEY)
+                                connection.doOutput = true
+                                connection.connectTimeout = 5000
+                                connection.readTimeout = 5000
+
+                                val writer = OutputStreamWriter(connection.outputStream)
+                                writer.write(maintArray.toString())
+                                writer.flush()
+                                writer.close()
+
+                                val code = connection.responseCode
+                                code in 200..299
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                false
+                            } finally {
+                                connection?.disconnect()
+                            }
+
+                            if (success) {
+                                hadSuccess = true
+                                unsyncedMaint.forEach { it.synced = true }
+                                maintDao.updateItems(unsyncedMaint)
+                                maintDao.deleteSyncedItems()
+                            } else {
+                                hadFailures = true
                             }
                         }
                     }
                     // else: no network — data stays in local SQLite, will upload next cycle
                 } catch (e: Exception) {
                     e.printStackTrace()
+                    hadFailures = true
                 }
-                delay(60_000) // Sync every 60 seconds
+
+                if (hadFailures && !hadSuccess) {
+                    syncDelay = (syncDelay * 2).coerceAtMost(maxSyncDelay)
+                } else if (hadSuccess) {
+                    syncDelay = 60_000L
+                }
+                delay(syncDelay)
             }
         }
     }
@@ -334,11 +418,16 @@ class OBDGatewayService : Service(), LocationListener {
             if (obdConnection == null) return@launch
             try {
                 if (cmd == "read_dtc") {
-                    val dtcResp = obdConnection?.run(com.github.eltonvs.obd.command.control.TroubleCodesCommand())
-                    val dtcRaw = dtcResp?.formattedValue ?: ""
+                    var dtcRaw = ""
+                    obdMutex.withLock {
+                        val dtcResp = obdConnection?.run(com.github.eltonvs.obd.command.control.TroubleCodesCommand())
+                        dtcRaw = dtcResp?.formattedValue ?: ""
+                    }
                     uploadDtcResult(dtcRaw)
                 } else if (cmd == "clear_dtc") {
-                    obdConnection?.run(ResetTroubleCodesCommand())
+                    obdMutex.withLock {
+                        obdConnection?.run(ResetTroubleCodesCommand())
+                    }
                     uploadDtcClearStatus(true)
                 }
             } catch (e: Exception) {
@@ -439,12 +528,14 @@ class OBDGatewayService : Service(), LocationListener {
                         try {
                             connectBluetooth()
                             // Initialize OBD
-                            val initZ = object : ObdCommand() { override val tag = "AT Z"; override val name = "Reset"; override val mode = "AT Z"; override val pid = "AT Z" }
-                            val initSP0 = object : ObdCommand() { override val tag = "AT SP 0"; override val name = "Select Protocol Auto"; override val mode = "AT SP 0"; override val pid = "AT SP 0" }
-                            obdConnection?.run(initZ)
-                            delay(500)
-                            obdConnection?.run(initSP0)
-                            delay(500)
+                            obdMutex.withLock {
+                                val initZ = object : ObdCommand() { override val tag = "AT Z"; override val name = "Reset"; override val mode = "AT Z"; override val pid = "AT Z" }
+                                val initSP0 = object : ObdCommand() { override val tag = "AT SP 0"; override val name = "Select Protocol Auto"; override val mode = "AT SP 0"; override val pid = "AT SP 0" }
+                                obdConnection?.run(initZ)
+                                delay(500)
+                                obdConnection?.run(initSP0)
+                                delay(500)
+                            }
                             updateNotification("OBD Polling Active")
                             reconnectDelay = 5000L // reset reconnect delay
                         } catch (e: Exception) {
@@ -469,31 +560,33 @@ class OBDGatewayService : Service(), LocationListener {
 
                     if (obdConnection != null) {
                         try {
-                            val rpmResp = obdConnection?.run(RPMCommand())
-                            delay(100)
-                            val speedResp = obdConnection?.run(SpeedCommand())
-                            delay(100)
-                            val coolantTempResp = obdConnection?.run(EngineCoolantTemperatureCommand())
-                            delay(100)
-                            val loadResp = obdConnection?.run(LoadCommand())
-                            delay(100)
-                            val throttleResp = obdConnection?.run(ThrottlePositionCommand())
-                            delay(100)
-                            val fuelLevelResp = obdConnection?.run(FuelLevelCommand())
-                            delay(100)
-                            val ambientTempResp = obdConnection?.run(AmbientAirTempCommand())
-                            delay(100)
-                            val voltageResp = obdConnection?.run(ModuleVoltageCommand())
-                            delay(100)
+                            obdMutex.withLock {
+                                val rpmResp = obdConnection?.run(RPMCommand())
+                                delay(100)
+                                val speedResp = obdConnection?.run(SpeedCommand())
+                                delay(100)
+                                val coolantTempResp = obdConnection?.run(EngineCoolantTemperatureCommand())
+                                delay(100)
+                                val loadResp = obdConnection?.run(LoadCommand())
+                                delay(100)
+                                val throttleResp = obdConnection?.run(ThrottlePositionCommand())
+                                delay(100)
+                                val fuelLevelResp = obdConnection?.run(FuelLevelCommand())
+                                delay(100)
+                                val ambientTempResp = obdConnection?.run(AmbientAirTempCommand())
+                                delay(100)
+                                val voltageResp = obdConnection?.run(ModuleVoltageCommand())
+                                delay(100)
 
-                            rpm = rpmResp?.value?.toIntOrNull()
-                            speed = speedResp?.value?.toIntOrNull()
-                            coolantTemp = coolantTempResp?.value?.toIntOrNull()
-                            engineLoad = loadResp?.value?.toIntOrNull()
-                            throttlePos = throttleResp?.value?.toIntOrNull()
-                            fuelLevel = fuelLevelResp?.value?.toIntOrNull()
-                            ambientTemp = ambientTempResp?.value?.toIntOrNull()
-                            voltage = voltageResp?.value?.toFloatOrNull()
+                                rpm = rpmResp?.value?.toIntOrNull()
+                                speed = speedResp?.value?.toIntOrNull()
+                                coolantTemp = coolantTempResp?.value?.toIntOrNull()
+                                engineLoad = loadResp?.value?.toIntOrNull()
+                                throttlePos = throttleResp?.value?.toIntOrNull()
+                                fuelLevel = fuelLevelResp?.value?.toIntOrNull()
+                                ambientTemp = ambientTempResp?.value?.toIntOrNull()
+                                voltage = voltageResp?.value?.toFloatOrNull()
+                            }
                         } catch (obdEx: Exception) {
                             obdEx.printStackTrace()
                             // Connection failed mid-polling. Reset so it reconnects next loop.
@@ -522,14 +615,16 @@ class OBDGatewayService : Service(), LocationListener {
                     }
 
                     // Temperature and Voltage Alerts
-                    val isCoolantAlert = coolantTemp != null && coolantTemp > 105
-                    val isVoltageAlert = voltage != null && voltage < 11.8f
+                    val currentCoolant = coolantTemp
+                    val currentVoltage = voltage
+                    val isCoolantAlert = currentCoolant != null && currentCoolant > 105
+                    val isVoltageAlert = currentVoltage != null && currentVoltage < 11.8f
 
                     if (isCoolantAlert) {
-                        triggerLocalAlertNotification("Coolant Temperature Danger", "Engine Coolant is at $coolantTemp°C!")
+                        triggerLocalAlertNotification("Coolant Temperature Danger", "Engine Coolant is at $currentCoolant°C!")
                     }
                     if (isVoltageAlert) {
-                        triggerLocalAlertNotification("Battery Voltage Warning", "System voltage is low: $voltage V")
+                        triggerLocalAlertNotification("Battery Voltage Warning", "System voltage is low: $currentVoltage V")
                     }
 
                     val telemetry = TelemetryEntity(
@@ -554,6 +649,7 @@ class OBDGatewayService : Service(), LocationListener {
                     dao.insert(telemetry)
 
                     val updateIntent = Intent("com.example.obdapp.TELEMETRY_UPDATE").apply {
+                        setPackage(packageName)
                         putExtra("lat", telemetry.latitude)
                         putExtra("lon", telemetry.longitude)
                         putExtra("alt", telemetry.altitude)
@@ -622,6 +718,7 @@ class OBDGatewayService : Service(), LocationListener {
         notificationManager.notify(1, buildNotification(text))
         
         val statusIntent = Intent("com.example.obdapp.STATUS_UPDATE").apply {
+            setPackage(packageName)
             putExtra("status", text)
         }
         sendBroadcast(statusIntent)

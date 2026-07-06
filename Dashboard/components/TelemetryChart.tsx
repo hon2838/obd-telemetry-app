@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area
 } from 'recharts';
 import {
-  Activity, Map, Thermometer, Battery, Flame, Navigation, Clock, ActivitySquare, AlertCircle, Power, Fuel
+  Activity, Map, Thermometer, Battery, Flame, Navigation, Clock, ActivitySquare, AlertCircle, Power, Fuel, Wrench
 } from 'lucide-react';
 
 interface TelemetryData {
@@ -720,6 +720,38 @@ export default function TelemetryDashboard() {
               style={styles.toggleBtn}
             >
               <Fuel size={16} /> Fuel Economy
+            </button>
+            <button
+              onClick={() => {
+                window.location.href = '/trips';
+              }}
+              style={styles.toggleBtn}
+            >
+              <Navigation size={16} /> Trips
+            </button>
+            <button
+              onClick={() => {
+                window.location.href = '/performance';
+              }}
+              style={styles.toggleBtn}
+            >
+              <Activity size={16} /> Performance
+            </button>
+            <button
+              onClick={() => {
+                window.location.href = '/diagnostics';
+              }}
+              style={styles.toggleBtn}
+            >
+              <AlertCircle size={16} /> Diagnostics
+            </button>
+            <button
+              onClick={() => {
+                window.location.href = '/maintenance';
+              }}
+              style={styles.toggleBtn}
+            >
+              <Wrench size={16} /> Maintenance
             </button>
           </div>
 
