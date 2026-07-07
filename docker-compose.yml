@@ -12,9 +12,12 @@ services:
     restart: always
 
   dashboard:
-    build: ./Dashboard
+    build:
+      context: ./Dashboard
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
     ports:
-      - "3001:3001"
+      - "3003:3001"
     environment:
       - NODE_ENV=production
     depends_on:
