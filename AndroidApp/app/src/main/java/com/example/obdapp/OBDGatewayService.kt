@@ -217,7 +217,7 @@ class OBDGatewayService : Service(), LocationListener {
                             }
 
                             val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-                            val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+                            val apiUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
                             val url = URL(apiUrl)
                             var connection: HttpURLConnection? = null
                             var responseBody = ""
@@ -290,7 +290,7 @@ class OBDGatewayService : Service(), LocationListener {
                             }
 
                             val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-                            val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+                            val apiUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
                             
                             val baseApiUrl = if (apiUrl.contains("/api/")) {
                                 apiUrl.substringBeforeLast("/api/") + "/api"
@@ -353,7 +353,7 @@ class OBDGatewayService : Service(), LocationListener {
                             }
 
                             val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-                            val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+                            val apiUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
                             
                             val baseApiUrl = if (apiUrl.contains("/api/")) {
                                 apiUrl.substringBeforeLast("/api/") + "/api"
@@ -440,7 +440,7 @@ class OBDGatewayService : Service(), LocationListener {
 
     private fun uploadDtcResult(dtcRaw: String) {
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val serverUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+        val serverUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
         val dtcUrl = serverUrl.replace("/batch", "/dtc")
         serviceScope.launch {
             try {
@@ -470,7 +470,7 @@ class OBDGatewayService : Service(), LocationListener {
 
     private fun uploadDtcClearStatus(success: Boolean) {
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val serverUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+        val serverUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
         val dtcUrl = serverUrl.replace("/batch", "/dtc/clear")
         serviceScope.launch {
             try {

@@ -107,45 +107,7 @@
                 android:paddingRight="12dp" />
         </LinearLayout>
 
-        <!-- API Server Config Card -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/card_bg"
-            android:padding="16dp"
-            android:layout_marginBottom="16dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="API SERVER CONFIG"
-                android:textColor="#8E8E93"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="12dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Custom Endpoint URL:"
-                android:textColor="#AEAEB2"
-                android:textSize="13sp"
-                android:layout_marginBottom="6dp" />
-
-            <EditText
-                android:id="@+id/etApiUrl"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:background="@drawable/spinner_bg"
-                android:paddingLeft="12dp"
-                android:paddingRight="12dp"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp"
-                android:inputType="textUri"
-                android:hint="http://127.0.0.1:3000/api/telemetry/batch"
-                android:textColorHint="#4E4E52" />
-        </LinearLayout>
 
         <!-- General Settings Card -->
         <LinearLayout
