@@ -40,6 +40,11 @@ interface DriveSession {
   };
 }
 
+const emptyDiagnostics = {
+  latestDtc: { code: "", timestamp: null },
+  latestClearStatus: { success: null, timestamp: null }
+};
+
 interface MapProps {
   latitude: number;
   longitude: number;
@@ -160,7 +165,18 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
     </div>
   );
 };
-const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://localhost:3000');
+const getApiHost = () => {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window === 'undefined') return 'http://localhost:3000';
+
+  if (window.location.hostname === 'obd.hon2838.name.my') {
+    return `${window.location.protocol}//obd-api.hon2838.name.my`;
+  }
+
+  return `${window.location.protocol}//${window.location.hostname}:3000`;
+};
+
+const API_HOST = getApiHost();
 
 export default function TelemetryDashboard() {
   const [data, setData] = useState<TelemetryData[]>([]);
@@ -175,10 +191,7 @@ export default function TelemetryDashboard() {
   const [diagnostics, setDiagnostics] = useState<{
     latestDtc: { code: string; timestamp: number | null };
     latestClearStatus: { success: boolean | null; timestamp: number | null };
-  }>({
-    latestDtc: { code: "", timestamp: null },
-    latestClearStatus: { success: null, timestamp: null }
-  });
+  }>(emptyDiagnostics);
   const [commandLoading, setCommandLoading] = useState<string | null>(null);
 
   // Poll diagnostics status
@@ -188,7 +201,10 @@ export default function TelemetryDashboard() {
         const response = await fetch(`${API_HOST}/api/telemetry/dtc`);
         if (response.ok) {
           const resJson = await response.json();
-          setDiagnostics(resJson);
+          setDiagnostics({
+            ...emptyDiagnostics,
+            ...(resJson.latest || resJson)
+          });
         }
       } catch (err) {
         console.error("Error fetching diagnostics:", err);
