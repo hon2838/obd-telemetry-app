@@ -157,6 +157,47 @@ class MainActivity : AppCompatActivity() {
                 val db = AppDatabase.getDatabase(applicationContext)
                 mainScope.launch(Dispatchers.IO) {
                     db.fuelLogDao().insert(fuelLog)
+                    
+                    // Attempt immediate sync
+                    try {
+                        val unsyncedLogs = db.fuelLogDao().getUnsyncedLogs()
+                        if (unsyncedLogs.isNotEmpty()) {
+                            val fuelArray = org.json.JSONArray()
+                            unsyncedLogs.forEach { log ->
+                                val jsonObj = org.json.JSONObject().apply {
+                                    put("id", log.id)
+                                    put("timestamp", log.timestamp)
+                                    put("litres", log.litres)
+                                    put("odometer", log.odometer)
+                                    put("source", "app")
+                                }
+                                fuelArray.put(jsonObj)
+                            }
+                            
+                            val apiUrl = "https://obd-api.hon2838.name.my/api/fuel-logs"
+                            val url = java.net.URL(apiUrl)
+                            val connection = url.openConnection() as java.net.HttpURLConnection
+                            connection.requestMethod = "POST"
+                            connection.setRequestProperty("Content-Type", "application/json")
+                            connection.setRequestProperty("X-API-Key", "SUPER_SECURE_OBD_APP_KEY_2026")
+                            connection.doOutput = true
+                            connection.connectTimeout = 5000
+                            
+                            val writer = java.io.OutputStreamWriter(connection.outputStream)
+                            writer.write(fuelArray.toString())
+                            writer.flush()
+                            writer.close()
+                            
+                            if (connection.responseCode in 200..299) {
+                                unsyncedLogs.forEach { it.synced = true }
+                                db.fuelLogDao().updateLogs(unsyncedLogs)
+                                db.fuelLogDao().deleteSyncedLogs()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
                     withContext(Dispatchers.Main) {
                         Toast.makeText(this@MainActivity, "Refuel logged successfully!", Toast.LENGTH_SHORT).show()
                         etFuelLitres.text.clear()

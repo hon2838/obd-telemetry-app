@@ -216,7 +216,6 @@ class OBDGatewayService : Service(), LocationListener {
                                 jsonArray.put(jsonObj)
                             }
 
-                            val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
                             val apiUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
                             val url = URL(apiUrl)
                             var connection: HttpURLConnection? = null
@@ -273,7 +272,7 @@ class OBDGatewayService : Service(), LocationListener {
                             }
                         }
 
-                        // Sync Fuel Logs
+                        // Sync Fuel Logs (always runs, independent of OBD connection)
                         val fuelDao = db.fuelLogDao()
                         val unsyncedLogs = fuelDao.getUnsyncedLogs()
                         if (unsyncedLogs.isNotEmpty()) {
@@ -289,16 +288,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 fuelArray.put(jsonObj)
                             }
 
-                            val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-                            val apiUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
-                            
-                            val baseApiUrl = if (apiUrl.contains("/api/")) {
-                                apiUrl.substringBeforeLast("/api/") + "/api"
-                            } else {
-                                "http://127.0.0.1:3000/api"
-                            }
-                            val fuelApiUrl = "$baseApiUrl/fuel-logs"
-                            
+                            val fuelApiUrl = "https://obd-api.hon2838.name.my/api/fuel-logs"
                             val url = URL(fuelApiUrl)
                             var connection: HttpURLConnection? = null
                             val success = try {
@@ -334,7 +324,7 @@ class OBDGatewayService : Service(), LocationListener {
                             }
                         }
 
-                        // Sync Maintenance Items
+                        // Sync Maintenance Items (always runs, independent of OBD connection)
                         val maintDao = db.maintenanceDao()
                         val unsyncedMaint = maintDao.getUnsyncedItems()
                         if (unsyncedMaint.isNotEmpty()) {
@@ -352,16 +342,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 maintArray.put(jsonObj)
                             }
 
-                            val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-                            val apiUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
-                            
-                            val baseApiUrl = if (apiUrl.contains("/api/")) {
-                                apiUrl.substringBeforeLast("/api/") + "/api"
-                            } else {
-                                "http://127.0.0.1:3000/api"
-                            }
-                            val maintApiUrl = "$baseApiUrl/maintenance"
-                            
+                            val maintApiUrl = "https://obd-api.hon2838.name.my/api/maintenance"
                             val url = URL(maintApiUrl)
                             var connection: HttpURLConnection? = null
                             val success = try {
@@ -510,45 +491,52 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     private fun startObdPolling() {
+        // Bluetooth reconnection runs on its own coroutine with backoff
+        // so it never blocks the GPS telemetry recording loop below
+        serviceScope.launch {
+            var reconnectDelay = 5000L
+            val maxReconnectDelay = 60000L
+            while (isActive) {
+                if (obdConnection == null) {
+                    updateNotification("OBD: GPS Only (Connecting BT...)")
+                    try {
+                        connectBluetooth()
+                        obdMutex.withLock {
+                            val initZ = object : ObdCommand() { override val tag = "AT Z"; override val name = "Reset"; override val mode = "AT Z"; override val pid = "AT Z" }
+                            val initSP0 = object : ObdCommand() { override val tag = "AT SP 0"; override val name = "Select Protocol Auto"; override val mode = "AT SP 0"; override val pid = "AT SP 0" }
+                            obdConnection?.run(initZ)
+                            delay(500)
+                            obdConnection?.run(initSP0)
+                            delay(500)
+                        }
+                        updateNotification("OBD Connected")
+                        reconnectDelay = 5000L
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        updateNotification("OBD: GPS Only Mode")
+                        obdConnection = null
+                        bluetoothSocket?.close()
+                        bluetoothSocket = null
+                        delay(reconnectDelay)
+                        reconnectDelay = (reconnectDelay * 2).coerceAtMost(maxReconnectDelay)
+                    }
+                } else {
+                    // Already connected — check again in 10s
+                    delay(10000)
+                }
+            }
+        }
+
+        // Telemetry recording loop — always runs every 3s regardless of OBD state
         serviceScope.launch {
             val db = AppDatabase.getDatabase(applicationContext)
             val dao = db.telemetryDao()
 
-            var reconnectDelay = 5000L
-            val maxReconnectDelay = 60000L
-
-            // Variables for 0-100 km/h acceleration tracking
             var accelStartTime: Long? = null
             var isTrackingAccel = false
 
             while (isActive) {
                 try {
-                    if (obdConnection == null) {
-                        updateNotification("Connecting Bluetooth...")
-                        try {
-                            connectBluetooth()
-                            // Initialize OBD
-                            obdMutex.withLock {
-                                val initZ = object : ObdCommand() { override val tag = "AT Z"; override val name = "Reset"; override val mode = "AT Z"; override val pid = "AT Z" }
-                                val initSP0 = object : ObdCommand() { override val tag = "AT SP 0"; override val name = "Select Protocol Auto"; override val mode = "AT SP 0"; override val pid = "AT SP 0" }
-                                obdConnection?.run(initZ)
-                                delay(500)
-                                obdConnection?.run(initSP0)
-                                delay(500)
-                            }
-                            updateNotification("OBD Polling Active")
-                            reconnectDelay = 5000L // reset reconnect delay
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            updateNotification("OBD: GPS Only (BT Fail)")
-                            obdConnection = null
-                            bluetoothSocket?.close()
-                            bluetoothSocket = null
-                            delay(reconnectDelay)
-                            reconnectDelay = (reconnectDelay * 2).coerceAtMost(maxReconnectDelay)
-                        }
-                    }
-
                     var rpm: Int? = null
                     var speed: Int? = null
                     var coolantTemp: Int? = null
@@ -589,11 +577,10 @@ class OBDGatewayService : Service(), LocationListener {
                             }
                         } catch (obdEx: Exception) {
                             obdEx.printStackTrace()
-                            // Connection failed mid-polling. Reset so it reconnects next loop.
                             obdConnection = null
                             bluetoothSocket?.close()
                             bluetoothSocket = null
-                            updateNotification("OBD: Connection Lost")
+                            updateNotification("OBD: Connection Lost — GPS Only")
                         }
                     }
 
@@ -614,7 +601,6 @@ class OBDGatewayService : Service(), LocationListener {
                         isTrackingAccel = false
                     }
 
-                    // Temperature and Voltage Alerts
                     val currentCoolant = coolantTemp
                     val currentVoltage = voltage
                     val isCoolantAlert = currentCoolant != null && currentCoolant > 105
@@ -645,7 +631,7 @@ class OBDGatewayService : Service(), LocationListener {
                         alertCoolant = isCoolantAlert,
                         alertVoltage = isVoltageAlert
                     )
-                    
+
                     dao.insert(telemetry)
 
                     val updateIntent = Intent("com.example.obdapp.TELEMETRY_UPDATE").apply {
@@ -658,11 +644,11 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("coolant", telemetry.coolantTemp ?: -1)
                         putExtra("throttle", telemetry.throttlePos ?: -1)
                         putExtra("volt", telemetry.voltage ?: -1.0f)
-                        putExtra("obd_status", if (obdConnection != null) "Connected" else "N/A")
+                        putExtra("obd_status", if (obdConnection != null) "Connected" else "GPS Only")
                         putExtra("accel_time", telemetry.accelTime ?: -1.0)
                     }
                     sendBroadcast(updateIntent)
-                    
+
                     delay(3000)
                 } catch (e: Exception) {
                     e.printStackTrace()

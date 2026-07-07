@@ -32,6 +32,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "obd_telemetry_database"
                 )
+                .fallbackToDestructiveMigration()
                 .addMigrations(MIGRATION_4_5)
                 .build()
                 INSTANCE = instance
