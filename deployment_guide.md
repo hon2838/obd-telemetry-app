@@ -93,62 +93,43 @@ obd-telemetry-app-server     obd-telemetry-app-server     "docker-entrypoint.sâ€
 
 ---
 
-## 4. Reverse Proxy & SSL Setup (Recommended for Production)
+## 4. Cloudflare Tunnel Setup (Recommended for Production)
 
-To serve the dashboard securely over HTTPS (`443`) and standard HTTP (`80`), configure **Nginx** as a reverse proxy in front of your containers.
+To securely expose the dashboard and API without port-forwarding, configure a **Cloudflare Tunnel (`cloudflared`)** with two separate subdomains.
 
-### 1. Install Certbot & Nginx
-On your server (e.g., Ubuntu/Debian):
-```bash
-sudo apt update
-sudo apt install nginx certbot python3-certbot-nginx -y
-```
-
-### 2. Configure Nginx Server Block
-Create a config file `/etc/nginx/sites-available/obd.conf`:
-
-```nginx
-server {
-    listen 80;
-    server_name obd.yourdomain.com;
-
-    # Dashboard Frontend
-    location / {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    # API Backend Redirect
-    location /api {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
-Enable the configuration and reload Nginx:
-```bash
-sudo ln -s /etc/nginx/sites-available/obd.conf /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-### 3. Generate Free SSL Certificate
-Use Let's Encrypt to secure traffic:
-```bash
-sudo certbot --nginx -d obd.yourdomain.com
-```
-Follow the prompts to enforce redirection to HTTPS. If you configure Nginx this way, modify your `.env` to route through port 443:
+### 1. Configure DNS and .env
+Decide on your subdomains (e.g. `obd.yourdomain.com` for Dashboard, and `obd-api.yourdomain.com` for API).
+Before building your Docker containers, set the API URL in your `.env` file:
 ```env
-NEXT_PUBLIC_API_URL=https://obd.yourdomain.com
+NEXT_PUBLIC_API_URL=https://obd-api.yourdomain.com
+```
+
+### 2. Configure Cloudflared Ingress
+If using a local `config.yml` (e.g., `/etc/cloudflared/config.yml`), set up your ingress rules to point the two subdomains to the respective ports:
+
+```yaml
+tunnel: <YOUR-TUNNEL-UUID>
+credentials-file: /root/.cloudflared/<YOUR-TUNNEL-UUID>.json
+
+ingress:
+  - hostname: obd-api.yourdomain.com
+    service: http://localhost:3000
+  - hostname: obd.yourdomain.com
+    service: http://localhost:3001
+  - service: http_status:404
+```
+*Note: If your dashboard is bound to port 3003 instead due to port conflicts, change `localhost:3001` to `localhost:3003` above.*
+
+Restart your cloudflared service:
+```bash
+sudo systemctl restart cloudflared
+```
+
+### 3. Route DNS
+Route both subdomains to your tunnel:
+```bash
+cloudflared tunnel route dns <YOUR-TUNNEL-UUID> obd.yourdomain.com
+cloudflared tunnel route dns <YOUR-TUNNEL-UUID> obd-api.yourdomain.com
 ```
 
 ---
