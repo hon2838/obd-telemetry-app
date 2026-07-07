@@ -651,6 +651,44 @@ function segmentDrives() {
   }
 
   return drives.map(drive => {
+    let score = 100;
+    let harshAccelCount = 0;
+    let harshBrakeCount = 0;
+    let highRpmCount = 0;
+    
+    if (drive.points.length > 1) {
+      for (let i = 1; i < drive.points.length; i++) {
+        const p1 = drive.points[i - 1];
+        const p2 = drive.points[i];
+        
+        // Calculate time diff in seconds
+        const dt = (p2.timestamp - p1.timestamp) / 1000;
+        if (dt > 0 && dt < 10) { // Only compare points reasonably close
+          // Calculate speed diff in km/h
+          const dv = (p2.speed || 0) - (p1.speed || 0);
+          const accel = dv / dt; // km/h per second
+          
+          if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
+            harshAccelCount++;
+            score -= 1;
+          } else if (accel < -12) { // Harsh braking (< -12 km/h per second)
+            harshBrakeCount++;
+            score -= 1.5; // Penalize braking slightly more
+          }
+        }
+        
+        if ((p2.rpm || 0) > 4000) {
+          highRpmCount++;
+        }
+      }
+      // Penalize for excessive high RPM duration
+      if (highRpmCount > 10) {
+        score -= (highRpmCount * 0.1);
+      }
+    }
+    
+    const finalScore = Math.max(0, Math.min(100, Math.round(score)));
+
     const durationMin = Math.round((drive.endTime - drive.startTime) / 60000);
     const startStr = new Date(drive.startTime).toLocaleString('en-US', {
       month: 'short',
@@ -703,7 +741,9 @@ function segmentDrives() {
         avgSpeed: parseFloat(avgSpeed.toFixed(1)),
         startLocation,
         endLocation,
-        fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null
+        fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+        driverScore: finalScore,
+        harshEvents: { accel: harshAccelCount, brake: harshBrakeCount }
       }
     };
   });

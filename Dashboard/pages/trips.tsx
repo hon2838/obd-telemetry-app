@@ -23,6 +23,8 @@ interface DriveSession {
     startLocation: { lat: number; lon: number } | null;
     endLocation: { lat: number; lon: number } | null;
     fuelEfficiencyKmL: number | null;
+    driverScore?: number;
+    harshEvents?: { accel: number; brake: number };
   };
 }
 
@@ -291,6 +293,7 @@ export default function TripsDashboard() {
                   <th style={styles.th}>Max Speed</th>
                   <th style={styles.th}>Fuel Used</th>
                   <th style={styles.th}>Fuel Economy</th>
+                  <th style={styles.th}>Safety Score</th>
                 </tr>
               </thead>
               <tbody>
@@ -314,6 +317,19 @@ export default function TripsDashboard() {
                         {drive.summary.fuelEfficiencyKmL ? (
                           <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>
                             {drive.summary.fuelEfficiencyKmL.toFixed(2)} km/L
+                          </span>
+                        ) : 'N/A'}
+                      </td>
+                      <td style={styles.td}>
+                        {drive.summary.driverScore !== undefined ? (
+                          <span style={{ 
+                            color: drive.summary.driverScore >= 90 ? 'var(--accent-green)' : (drive.summary.driverScore >= 70 ? 'var(--accent-amber)' : '#ef4444'),
+                            fontWeight: 700 
+                          }}>
+                            {drive.summary.driverScore}/100
+                            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                              ({drive.summary.harshEvents?.brake || 0} brake, {drive.summary.harshEvents?.accel || 0} accel)
+                            </div>
                           </span>
                         ) : 'N/A'}
                       </td>
