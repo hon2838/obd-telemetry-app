@@ -105,12 +105,62 @@ const saveMaintenance = () => {
     .catch(err => fastify.log.error('Failed to write maintenance to disk:', err));
 }
 
-fastify.register(cors, {
-  origin: true
+const helmet = require('@fastify/helmet')
+const rateLimit = require('@fastify/rate-limit')
+
+// 1. Helmet headers
+fastify.register(helmet)
+
+// 2. Global Rate Limiter
+fastify.register(rateLimit, {
+  max: 200, // global limit: 200 reqs per 15 min
+  timeWindow: '15 minutes'
 })
 
+// 3. Strict CORS
+fastify.register(cors, {
+  origin: ['https://obd.hon2838.name.my', 'http://localhost:3001', 'http://localhost:3003']
+})
+
+// Schema for telemetry items
+const telemetryRecordSchema = {
+  type: 'object',
+  required: ['timestamp'],
+  properties: {
+    timestamp: { type: 'number' },
+    rpm: { type: ['number', 'null'] },
+    speed: { type: ['number', 'null'] },
+    coolantTemp: { type: ['number', 'null'] },
+    latitude: { type: 'number' },
+    longitude: { type: 'number' },
+    altitude: { type: 'number' },
+    gpsSpeed: { type: 'number' },
+    engineLoad: { type: ['number', 'null'] },
+    throttlePos: { type: ['number', 'null'] },
+    fuelLevel: { type: ['number', 'null'] },
+    ambientTemp: { type: ['number', 'null'] },
+    voltage: { type: ['number', 'null'] },
+    accelTime: { type: ['number', 'null'] },
+    alertCoolant: { type: 'boolean' },
+    alertVoltage: { type: 'boolean' }
+  }
+}
+
 // Batch POST endpoint to ingest JSON arrays and return commands
-fastify.post('/api/telemetry/batch', async (request, reply) => {
+fastify.post('/api/telemetry/batch', {
+  config: {
+    rateLimit: {
+      max: 2000, // higher limit for high-frequency polling
+      timeWindow: '15 minutes'
+    }
+  },
+  schema: {
+    body: {
+      type: 'array',
+      items: telemetryRecordSchema
+    }
+  }
+}, async (request, reply) => {
   try {
     const apiKey = request.headers['x-api-key'];
     if (apiKey !== 'SUPER_SECURE_OBD_APP_KEY_2026') {
@@ -118,10 +168,7 @@ fastify.post('/api/telemetry/batch', async (request, reply) => {
     }
 
     const payload = request.body;
-    
-    if (!Array.isArray(payload)) {
-      return reply.status(400).send({ error: 'Payload must be an array of telemetry objects' });
-    }
+
 
     payload.forEach(record => {
       telemetryDataStore.push({
@@ -1150,4 +1197,9 @@ const start = async () => {
     process.exit(1)
   }
 }
-start()
+
+if (require.main === module) {
+  start()
+}
+
+module.exports = { fastify, segmentDrives, getHaversineDistance, telemetryDataStore }
