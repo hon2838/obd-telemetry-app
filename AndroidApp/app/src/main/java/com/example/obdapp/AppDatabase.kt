@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class], version = 5, exportSchema = false)
+@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class], version = 6, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun telemetryDao(): TelemetryDao
     abstract fun fuelLogDao(): FuelLogDao

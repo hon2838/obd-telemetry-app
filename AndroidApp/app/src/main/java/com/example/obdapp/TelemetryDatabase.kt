@@ -26,6 +26,11 @@ data class TelemetryEntity(
     val accelTime: Double? = null,
     val alertCoolant: Boolean? = null,
     val alertVoltage: Boolean? = null,
+    val accOn: Boolean? = null,
+    val headlightOn: Boolean? = null,
+    val volume: Int? = null,
+    val wifiSsid: String? = null,
+    val btConnected: Boolean? = null,
     var synced: Boolean = false
 )
 

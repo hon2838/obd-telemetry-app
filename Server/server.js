@@ -142,7 +142,12 @@ const telemetryRecordSchema = {
     voltage: { type: ['number', 'null'] },
     accelTime: { type: ['number', 'null'] },
     alertCoolant: { type: 'boolean' },
-    alertVoltage: { type: 'boolean' }
+    alertVoltage: { type: 'boolean' },
+    accOn: { type: ['boolean', 'null'] },
+    headlightOn: { type: ['boolean', 'null'] },
+    volume: { type: ['number', 'null'] },
+    wifiSsid: { type: ['string', 'null'] },
+    btConnected: { type: ['boolean', 'null'] }
   }
 }
 
@@ -188,6 +193,11 @@ fastify.post('/api/telemetry/batch', {
         accelTime: record.accelTime,
         alertCoolant: record.alertCoolant,
         alertVoltage: record.alertVoltage,
+        accOn: record.accOn,
+        headlightOn: record.headlightOn,
+        volume: record.volume,
+        wifiSsid: record.wifiSsid,
+        btConnected: record.btConnected,
         receivedAt: Date.now()
       });
     });
