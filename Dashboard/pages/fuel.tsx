@@ -187,15 +187,7 @@ export default function FuelTracker() {
             </div>
           </div>
 
-          <div>
-            <button
-              onClick={() => { window.location.href = '/'; }}
-              style={styles.backBtn}
-              className="glass-panel"
-            >
-              <ArrowLeft size={16} /> Back to Telemetry
-            </button>
-          </div>
+
         </div>
 
         {/* STATS CARDS ROW */}
