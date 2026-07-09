@@ -147,6 +147,12 @@ class OBDGatewayService : Service(), LocationListener {
     private val sppUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     private var deviceMacAddress: String? = null
 
+    private fun getSelectedObdMac(): String? {
+        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
+        val mac = prefs.getString("MAC_ADDRESS", "")?.trim()
+        return if (mac.isNullOrEmpty()) null else mac
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -212,6 +218,11 @@ class OBDGatewayService : Service(), LocationListener {
                                     put("accelTime", record.accelTime ?: JSONObject.NULL)
                                     put("alertCoolant", record.alertCoolant ?: JSONObject.NULL)
                                     put("alertVoltage", record.alertVoltage ?: JSONObject.NULL)
+                                    put("accOn", record.accOn ?: JSONObject.NULL)
+                                    put("headlightOn", record.headlightOn ?: JSONObject.NULL)
+                                    put("volume", record.volume ?: JSONObject.NULL)
+                                    put("wifiSsid", record.wifiSsid ?: JSONObject.NULL)
+                                    put("btConnected", record.btConnected ?: JSONObject.NULL)
                                 }
                                 jsonArray.put(jsonObj)
                             }
@@ -497,7 +508,25 @@ class OBDGatewayService : Service(), LocationListener {
             var reconnectDelay = 5000L
             val maxReconnectDelay = 60000L
             while (isActive) {
+                if (!isAccOn()) {
+                    if (obdConnection != null) {
+                        obdConnection = null
+                        bluetoothSocket?.close()
+                        bluetoothSocket = null
+                    }
+                    updateNotification("OBD: Suspended (Car Off)")
+                    delay(5000)
+                    continue
+                }
                 if (obdConnection == null) {
+                    val selectedMac = getSelectedObdMac()
+                    if (selectedMac == null) {
+                        updateNotification("OBD: GPS Only (Select OBD adapter in app)")
+                        delay(30000)
+                        reconnectDelay = 5000L
+                        continue
+                    }
+
                     updateNotification("OBD: GPS Only (Connecting BT...)")
                     try {
                         connectBluetooth()
@@ -537,6 +566,10 @@ class OBDGatewayService : Service(), LocationListener {
 
             while (isActive) {
                 try {
+                    if (!isAccOn()) {
+                        delay(5000)
+                        continue
+                    }
                     var rpm: Int? = null
                     var speed: Int? = null
                     var coolantTemp: Int? = null
@@ -584,6 +617,10 @@ class OBDGatewayService : Service(), LocationListener {
                         }
                     }
 
+                    if (voltage == null) {
+                        voltage = readSystemPropVoltage()
+                    }
+
                     // 0-100 km/h acceleration calculations
                     val currentSpeed = speed ?: 0
                     var completedAccelTime: Double? = null
@@ -613,6 +650,12 @@ class OBDGatewayService : Service(), LocationListener {
                         triggerLocalAlertNotification("Battery Voltage Warning", "System voltage is low: $currentVoltage V")
                     }
 
+                    val accOn = isAccOn()
+                    val headlightOn = isHeadlightOn()
+                    val volume = getSystemVolume()
+                    val wifiSsid = getWifiSsid()
+                    val btConnected = isBtConnected()
+
                     val telemetry = TelemetryEntity(
                         timestamp = System.currentTimeMillis(),
                         rpm = rpm,
@@ -629,7 +672,12 @@ class OBDGatewayService : Service(), LocationListener {
                         voltage = voltage,
                         accelTime = completedAccelTime,
                         alertCoolant = isCoolantAlert,
-                        alertVoltage = isVoltageAlert
+                        alertVoltage = isVoltageAlert,
+                        accOn = accOn,
+                        headlightOn = headlightOn,
+                        volume = volume,
+                        wifiSsid = wifiSsid,
+                        btConnected = btConnected
                     )
 
                     dao.insert(telemetry)
@@ -646,6 +694,11 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("volt", telemetry.voltage ?: -1.0f)
                         putExtra("obd_status", if (obdConnection != null) "Connected" else "GPS Only")
                         putExtra("accel_time", telemetry.accelTime ?: -1.0)
+                        putExtra("accOn", telemetry.accOn ?: false)
+                        putExtra("headlightOn", telemetry.headlightOn ?: false)
+                        putExtra("volume", telemetry.volume ?: -1)
+                        putExtra("wifiSsid", telemetry.wifiSsid ?: "")
+                        putExtra("btConnected", telemetry.btConnected ?: false)
                     }
                     sendBroadcast(updateIntent)
 
@@ -659,8 +712,7 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     private fun connectBluetooth() {
-        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val mac = prefs.getString("MAC_ADDRESS", "")
+        val mac = getSelectedObdMac()
         if (mac.isNullOrEmpty()) {
             throw Exception("No Bluetooth Device Selected")
         }
@@ -725,6 +777,72 @@ class OBDGatewayService : Service(), LocationListener {
             locationManager?.removeUpdates(this)
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+    }
+
+    private fun isAccOn(): Boolean {
+        return try {
+            val systemPropertiesClass = Class.forName("android.os.SystemProperties")
+            val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
+            val value = getMethod.invoke(null, "sys.qf.is.acc.on") as String
+            value.equals("true", ignoreCase = true)
+        } catch (e: Exception) {
+            true // Fallback to true if we can't read the property
+        }
+    }
+
+    private fun readSystemPropVoltage(): Float? {
+        return try {
+            val systemPropertiesClass = Class.forName("android.os.SystemProperties")
+            val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
+            val rawValue = getMethod.invoke(null, "sys.qf.update_battery_power") as String
+            rawValue.toFloatOrNull()?.div(10f)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun isHeadlightOn(): Boolean? {
+        return try {
+            val systemPropertiesClass = Class.forName("android.os.SystemProperties")
+            val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
+            val value = getMethod.invoke(null, "sys.qf.vehicle.headlight_state") as String
+            value.equals("true", ignoreCase = true)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun getSystemVolume(): Int? {
+        return try {
+            val systemPropertiesClass = Class.forName("android.os.SystemProperties")
+            val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
+            val value = getMethod.invoke(null, "persist.sys.main_volume") as String
+            value.toIntOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun getWifiSsid(): String? {
+        return try {
+            val systemPropertiesClass = Class.forName("android.os.SystemProperties")
+            val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
+            val value = getMethod.invoke(null, "persist.sys.last.wifi.ssid") as String
+            if (value.isEmpty()) null else value
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun isBtConnected(): Boolean? {
+        return try {
+            val systemPropertiesClass = Class.forName("android.os.SystemProperties")
+            val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
+            val value = getMethod.invoke(null, "sys.qf.bt.is.connect") as String
+            value.equals("true", ignoreCase = true)
+        } catch (e: Exception) {
+            null
         }
     }
 

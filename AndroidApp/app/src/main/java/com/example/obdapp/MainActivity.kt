@@ -39,10 +39,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvCoolantTemp: TextView
     private lateinit var tvThrottlePos: TextView
     private lateinit var tvVoltage: TextView
+    private lateinit var tvAccState: TextView
+    private lateinit var tvHeadlightState: TextView
+    private lateinit var tvVolume: TextView
+    private lateinit var tvWifiSsid: TextView
+    private lateinit var tvBtConnected: TextView
 
     private val mainJob = kotlinx.coroutines.Job()
     private val mainScope = CoroutineScope(Dispatchers.Main + mainJob)
     private val PERMISSION_REQUEST_CODE = 101
+    private var suppressInitialSpinnerCallback = false
 
     private val telemetryReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -57,6 +63,11 @@ class MainActivity : AppCompatActivity() {
                     val coolant = it.getIntExtra("coolant", -1)
                     val throttle = it.getIntExtra("throttle", -1)
                     val volt = it.getFloatExtra("volt", -1.0f)
+                    val accOn = it.getBooleanExtra("accOn", false)
+                    val headlightOn = it.getBooleanExtra("headlightOn", false)
+                    val volume = it.getIntExtra("volume", -1)
+                    val wifiSsid = it.getStringExtra("wifiSsid") ?: ""
+                    val btConnected = it.getBooleanExtra("btConnected", false)
 
                     tvGpsPosition.text = String.format("%.6f, %.6f", lat, lon)
                     tvGpsSpeed.text = String.format("%.1f km/h", speed)
@@ -67,6 +78,12 @@ class MainActivity : AppCompatActivity() {
                     tvCoolantTemp.text = if (coolant != -1) "$coolant °C" else "N/A"
                     tvThrottlePos.text = if (throttle != -1) "$throttle %" else "N/A"
                     tvVoltage.text = if (volt >= 0.0f) String.format("%.1f V", volt) else "N/A"
+                    
+                    tvAccState.text = if (accOn) "ON" else "OFF"
+                    tvHeadlightState.text = if (headlightOn) "ON" else "OFF"
+                    tvVolume.text = if (volume != -1) volume.toString() else "N/A"
+                    tvWifiSsid.text = if (wifiSsid.isNotEmpty()) wifiSsid else "N/A"
+                    tvBtConnected.text = if (btConnected) "Connected" else "Disconnected"
                 } else if (it.action == "com.example.obdapp.STATUS_UPDATE") {
                     val status = it.getStringExtra("status") ?: "Service Stopped"
                     updateStatusUi(status)
@@ -105,6 +122,11 @@ class MainActivity : AppCompatActivity() {
         tvCoolantTemp = findViewById(R.id.tvCoolantTemp)
         tvThrottlePos = findViewById(R.id.tvThrottlePos)
         tvVoltage = findViewById(R.id.tvVoltage)
+        tvAccState = findViewById(R.id.tvAccState)
+        tvHeadlightState = findViewById(R.id.tvHeadlightState)
+        tvVolume = findViewById(R.id.tvVolume)
+        tvWifiSsid = findViewById(R.id.tvWifiSsid)
+        tvBtConnected = findViewById(R.id.tvBtConnected)
         val cbAutoStart = findViewById<android.widget.CheckBox>(R.id.cbAutoStart)
 
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
@@ -115,6 +137,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         setupBluetoothSpinner()
+
+        val autoStart = prefs.getBoolean("AUTO_START_BOOT", true)
+        if (autoStart && !isServiceRunning(OBDGatewayService::class.java)) {
+            if (checkAndRequestPermissions()) {
+                startOBDService()
+            }
+        }
 
         btnStart.setOnClickListener {
             if (checkAndRequestPermissions()) {
@@ -216,6 +245,10 @@ class MainActivity : AppCompatActivity() {
         val deviceList = mutableListOf<String>()
         val macList = mutableListOf<String>()
 
+        // Keep index 0 as explicit "no selection" to avoid auto-selecting a device.
+        deviceList.add("Select OBD Adapter")
+        macList.add("")
+
         if (!pairedDevices.isNullOrEmpty()) {
             for (device in pairedDevices) {
                 deviceList.add("${device.name} (${device.address})")
@@ -235,15 +268,26 @@ class MainActivity : AppCompatActivity() {
         if (!savedMac.isNullOrEmpty()) {
             val index = macList.indexOf(savedMac)
             if (index >= 0) {
+                suppressInitialSpinnerCallback = true
                 spinner.setSelection(index)
             }
+        } else {
+            prefs.edit().remove("MAC_ADDRESS").apply()
+            spinner.setSelection(0)
         }
 
         spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                if (suppressInitialSpinnerCallback) {
+                    suppressInitialSpinnerCallback = false
+                    return
+                }
+
                 val mac = macList[position]
                 if (mac.isNotEmpty()) {
                     prefs.edit().putString("MAC_ADDRESS", mac).apply()
+                } else {
+                    prefs.edit().remove("MAC_ADDRESS").apply()
                 }
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
