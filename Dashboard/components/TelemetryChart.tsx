@@ -729,46 +729,7 @@ export default function TelemetryDashboard() {
             >
               <Clock size={16} /> Drive History
             </button>
-            <button
-              onClick={() => {
-                window.location.href = '/fuel';
-              }}
-              style={styles.toggleBtn}
-            >
-              <Fuel size={16} /> Fuel Economy
-            </button>
-            <button
-              onClick={() => {
-                window.location.href = '/trips';
-              }}
-              style={styles.toggleBtn}
-            >
-              <Navigation size={16} /> Trips
-            </button>
-            <button
-              onClick={() => {
-                window.location.href = '/performance';
-              }}
-              style={styles.toggleBtn}
-            >
-              <Activity size={16} /> Performance
-            </button>
-            <button
-              onClick={() => {
-                window.location.href = '/diagnostics';
-              }}
-              style={styles.toggleBtn}
-            >
-              <AlertCircle size={16} /> Diagnostics
-            </button>
-            <button
-              onClick={() => {
-                window.location.href = '/maintenance';
-              }}
-              style={styles.toggleBtn}
-            >
-              <Wrench size={16} /> Maintenance
-            </button>
+
           </div>
 
           {mode === 'live' && (

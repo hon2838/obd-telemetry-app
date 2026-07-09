@@ -75,9 +75,6 @@ export default function PerformanceDashboard() {
       {/* Header */}
       <div style={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <button onClick={() => window.location.href = '/'} style={styles.backBtn}>
-            <ArrowLeft size={18} />
-          </button>
           <div>
             <h1 style={styles.title}>Performance Center</h1>
             <p style={styles.subtitle}>Track acceleration runs and personal records</p>

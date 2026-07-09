@@ -1,0 +1,42 @@
+import React from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/router';
+import { Activity, Clock, Fuel, Navigation as NavIcon, AlertCircle, Wrench } from 'lucide-react';
+
+export default function Navigation() {
+  const router = useRouter();
+
+  const navItems = [
+    { name: 'Live Telemetry', href: '/', icon: Activity },
+    { name: 'Trips', href: '/trips', icon: NavIcon },
+    { name: 'Fuel Economy', href: '/fuel', icon: Fuel },
+    { name: 'Performance', href: '/performance', icon: Clock },
+    { name: 'Diagnostics', href: '/diagnostics', icon: AlertCircle },
+    { name: 'Maintenance', href: '/maintenance', icon: Wrench },
+  ];
+
+  return (
+    <nav className="glass-panel-static app-sidebar" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div style={{ marginBottom: '1rem', padding: '0 0.5rem' }}>
+        <h2 style={{ fontSize: '1.25rem', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '0.05em' }}>
+          Axia OS
+        </h2>
+        <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Telemetry System</p>
+      </div>
+
+      <div className="nav-items-container">
+        {navItems.map((item) => {
+          const isActive = router.pathname === item.href;
+          const Icon = item.icon;
+          
+          return (
+            <Link key={item.name} href={item.href} className={`nav-item ${isActive ? 'active' : ''}`}>
+              <Icon size={18} />
+              <span>{item.name}</span>
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
