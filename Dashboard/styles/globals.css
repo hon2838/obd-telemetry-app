@@ -1,17 +1,19 @@
 :root {
-  --bg-gradient-start: #060608;
-  --bg-gradient-end: #121216;
-  --surface: rgba(24, 24, 28, 0.65);
-  --surface-hover: rgba(32, 32, 38, 0.8);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-glow: rgba(59, 130, 246, 0.3);
+  --bg-gradient-start: #0f0d0b;
+  --bg-gradient-end: #1a1512;
+  --surface: rgba(26, 21, 18, 0.75);
+  --surface-hover: rgba(35, 29, 24, 0.85);
+  --border: rgba(212, 184, 149, 0.15);
+  --border-glow: rgba(212, 184, 149, 0.35);
   
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  --text-primary: #fdfbf7;
+  --text-secondary: #b8a99a;
+  --text-muted: #786a5c;
   
-  --accent-blue: #3b82f6;
-  --accent-cyan: #06b6d4;
+  --accent-khaki: #D4B895;
+  --accent-peach: #E6C2A5;
+  --accent-blue: #D4B895;
+  --accent-cyan: #E6C2A5;
   --accent-green: #10b981;
   --accent-amber: #f59e0b;
   --accent-red: #ef4444;
@@ -28,7 +30,7 @@ body {
   background: radial-gradient(circle at top, var(--bg-gradient-end), var(--bg-gradient-start));
   color: var(--text-primary);
   min-height: 100vh;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: 'Outfit', var(--font-outfit), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overflow-x: hidden;
 }
 
