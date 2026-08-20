@@ -479,14 +479,15 @@ fastify.get('/api/performance/records', async (request, reply) => {
 
   // 2. Top speed ever
   let topSpeed = null;
+  const getS = r => (r.speed !== null && r.speed !== undefined) ? r.speed : (r.gpsSpeed || 0);
   const speedRecords = telemetryDataStore
-    .filter(r => r.speed !== null && r.speed !== undefined)
-    .sort((a, b) => b.speed - a.speed);
-  if (speedRecords.length > 0 && speedRecords[0].speed > 0) {
+    .filter(r => getS(r) > 0)
+    .sort((a, b) => getS(b) - getS(a));
+  if (speedRecords.length > 0) {
     const r = speedRecords[0];
     const drive = findDrive(r.timestamp);
     topSpeed = {
-      speed: r.speed,
+      speed: getS(r),
       timestamp: r.timestamp,
       driveId: drive ? drive.id : null
     };
@@ -662,7 +663,7 @@ function segmentDrives() {
   for (const record of sorted) {
     const recordFuel = (record.fuelLevel !== null && record.fuelLevel !== undefined) ? record.fuelLevel : null;
     const recordRpm = record.rpm || 0;
-    const recordSpeed = record.speed || 0;
+    const recordSpeed = (record.speed !== null && record.speed !== undefined) ? record.speed : (record.gpsSpeed || 0);
 
     if (!currentDrive) {
       currentDrive = {
@@ -722,7 +723,7 @@ function segmentDrives() {
         const dt = (p2.timestamp - p1.timestamp) / 1000;
         if (dt > 0 && dt < 10) { // Only compare points reasonably close
           // Calculate speed diff in km/h
-          const dv = (p2.speed || 0) - (p1.speed || 0);
+          const dv = ((p2.speed !== null && p2.speed !== undefined) ? p2.speed : (p2.gpsSpeed || 0)) - ((p1.speed !== null && p1.speed !== undefined) ? p1.speed : (p1.gpsSpeed || 0));
           const accel = dv / dt; // km/h per second
           
           if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
@@ -767,7 +768,7 @@ function segmentDrives() {
     }
 
     // 2. Average Speed
-    const speeds = drive.points.map(p => p.speed).filter(s => s !== null && s !== undefined);
+    const speeds = drive.points.map(p => (p.speed !== null && p.speed !== undefined) ? p.speed : p.gpsSpeed).filter(s => s !== null && s !== undefined);
     const avgSpeed = speeds.length > 0 ? (speeds.reduce((a, b) => a + b, 0) / speeds.length) : 0;
 
     // 3. Start/End locations
