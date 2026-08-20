@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
 import {
   Activity, Map, Thermometer, Battery, Flame, Navigation, Clock, ActivitySquare, AlertCircle, Power, Fuel, Wrench
@@ -182,7 +182,7 @@ export default function TelemetryDashboard() {
   const [data, setData] = useState<TelemetryData[]>([]);
   const [activeTab, setActiveTab] = useState<'engine' | 'temperatures' | 'fuel_load'>('engine');
   
-  const [mode, setMode] = useState<'live' | 'history'>('history');
+  const [mode, setMode] = useState<'live' | 'history'>('live');
   const [startTime, setStartTime] = useState<string>('');
   const [endTime, setEndTime] = useState<string>('');
   const [drives, setDrives] = useState<DriveSession[]>([]);
@@ -572,6 +572,7 @@ export default function TelemetryDashboard() {
                   <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
                   <Tooltip content={<CustomTooltip />} />
                   <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                  <Brush dataKey="timeLabel" height={30} stroke="var(--accent-purple)" fill="rgba(0,0,0,0.2)" />
                   <Line yAxisId="left" type="monotone" dataKey="rpm" stroke="var(--accent-purple)" strokeWidth={3} name="RPM" dot={false} activeDot={{ r: 6, fill: 'var(--accent-purple)', stroke: '#fff', strokeWidth: 2 }} />
                   <Line yAxisId="right" type="monotone" dataKey="speed" stroke="var(--accent-cyan)" strokeWidth={3} name="OBD Speed" dot={false} />
                   <Line yAxisId="right" type="monotone" dataKey="gpsSpeed" stroke="var(--accent-blue)" strokeWidth={2} strokeDasharray="5 5" name="GPS Speed" dot={false} />
@@ -583,6 +584,7 @@ export default function TelemetryDashboard() {
                   <YAxis stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
                   <Tooltip content={<CustomTooltip />} />
                   <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                  <Brush dataKey="timeLabel" height={30} stroke="var(--accent-red)" fill="rgba(0,0,0,0.2)" />
                   <Line type="monotone" dataKey="coolantTemp" stroke="var(--accent-red)" strokeWidth={3} name="Coolant" dot={false} />
                   <Line type="monotone" dataKey="ambientTemp" stroke="var(--accent-green)" strokeWidth={3} name="Ambient" dot={false} />
                 </LineChart>
@@ -603,6 +605,7 @@ export default function TelemetryDashboard() {
                   <YAxis domain={[0, 100]} stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
                   <Tooltip content={<CustomTooltip />} />
                   <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                  <Brush dataKey="timeLabel" height={30} stroke="var(--accent-amber)" fill="rgba(0,0,0,0.2)" />
                   <Area type="monotone" dataKey="engineLoad" stroke="var(--accent-amber)" strokeWidth={2} fillOpacity={1} fill="url(#colorLoad)" name="Engine Load (%)" dot={false} />
                   <Area type="monotone" dataKey="throttlePos" stroke="var(--accent-red)" strokeWidth={2} fillOpacity={1} fill="url(#colorThrottle)" name="Throttle (%)" dot={false} />
                   <Line type="monotone" dataKey="fuelLevel" stroke="var(--accent-green)" strokeWidth={3} name="Fuel Level (%)" dot={false} />
@@ -708,214 +711,16 @@ export default function TelemetryDashboard() {
         </div>
 
         <div style={styles.headerControls}>
-          <div className="glass-panel-static" style={styles.toggleGroup}>
-            <button
-              onClick={() => {
-                setMode('live');
-                setSelectedDriveId(null);
-                setData([]);
-              }}
-              style={{ ...styles.toggleBtn, ...(mode === 'live' ? styles.toggleBtnActive : {}) }}
-            >
-              <Activity size={16} /> Live Stream
-            </button>
-            <button
-              onClick={() => {
-                setMode('history');
-                setSelectedDriveId(null);
-                setData([]);
-              }}
-              style={{ ...styles.toggleBtn, ...(mode === 'history' ? styles.toggleBtnActive : {}) }}
-            >
-              <Clock size={16} /> Drive History
-            </button>
-
+          <div className="glass-panel-static" style={styles.liveIndicatorWrapper}>
+            <span className="live-indicator"></span>
+            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--accent-green)', letterSpacing: '0.05em' }}>CONNECTED</span>
           </div>
-
-          {mode === 'live' && (
-            <div className="glass-panel-static" style={styles.liveIndicatorWrapper}>
-              <span className="live-indicator"></span>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--accent-green)', letterSpacing: '0.05em' }}>CONNECTED</span>
-            </div>
-          )}
         </div>
       </div>
 
-      {mode === 'live' ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-          {renderTelemetryWorkspace()}
-        </div>
-      ) : (
-        <div style={styles.twoColumnWorkspace}>
-          
-          {/* SIDEBAR: Drives History Selection */}
-          <div style={styles.sidebar}>
-            <div style={{ marginBottom: '16px' }}>
-              <h2 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Select Drive Session
-              </h2>
-              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                {drives.length} drives detected
-              </span>
-            </div>
-
-            <div style={styles.drivesScrollList}>
-              {drives.map(drive => {
-                const isSelected = selectedDriveId === drive.id;
-                return (
-                  <div
-                    key={drive.id}
-                    onClick={() => handleDriveChange(drive.id.toString())}
-                    className="glass-panel"
-                    style={{
-                      ...styles.driveListItem,
-                      ...(isSelected ? styles.driveListItemActive : {})
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, fontSize: '14px', color: isSelected ? '#fff' : 'var(--text-primary)' }}>Drive #{drive.id}</div>
-                    <div style={{ fontSize: '12px', color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)', marginTop: '4px' }}>
-                      {new Date(drive.startTime).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                    <div style={{ ...styles.miniStatsRow, color: isSelected ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>
-                      <span>{drive.summary.durationMin} min</span>
-                      <span>•</span>
-                      <span>{drive.summary.maxSpeed} km/h</span>
-                      <span>•</span>
-                      <span>{drive.summary.fuelUsedPercent}% fuel</span>
-                    </div>
-                  </div>
-                );
-              })}
-              {drives.length === 0 && (
-                <div style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '24px 0' }}>
-                  No drive sessions logged yet.
-                </div>
-              )}
-            </div>
-
-            {/* Fine-grained Controls */}
-            <div className="glass-panel-static" style={styles.sidebarFooter}>
-              <span style={{ ...styles.label, fontSize: '11px', color: 'var(--text-primary)' }}>Fine-Grained Adjustments</span>
-              <div style={styles.sidebarInputGroup}>
-                <label style={styles.sidebarLabel}>Start Time</label>
-                <input
-                  type="datetime-local"
-                  value={startTime}
-                  onChange={(e) => {
-                    setStartTime(e.target.value);
-                    setSelectedDriveId('custom');
-                  }}
-                  style={styles.sidebarInput}
-                />
-              </div>
-              <div style={styles.sidebarInputGroup}>
-                <label style={styles.sidebarLabel}>End Time</label>
-                <input
-                  type="datetime-local"
-                  value={endTime}
-                  onChange={(e) => {
-                    setEndTime(e.target.value);
-                    setSelectedDriveId('custom');
-                  }}
-                  style={styles.sidebarInput}
-                />
-              </div>
-              <button onClick={fetchHistory} style={styles.sidebarApplyBtn}>
-                Apply Custom Range
-              </button>
-            </div>
-          </div>
-
-          {/* MAIN PANELS: Rendered only after selecting a drive */}
-          <div style={styles.mainWorkspace}>
-            {selectedDriveId !== null ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-                
-                {/* Header Info Banner */}
-                {selectedDriveId !== 'custom' && (() => {
-                  const currentDrive = drives.find(d => d.id === selectedDriveId);
-                  if (!currentDrive) return null;
-                  return (
-                    <div className="glass-panel-static" style={styles.driveHeaderSummary}>
-                      <div style={styles.headerSummaryCol}>
-                        <span style={styles.summaryLabel}>Selected Session</span>
-                        <span style={{ ...styles.summaryVal, fontSize: '18px', color: 'var(--accent-blue)' }}>Drive #{currentDrive.id}</span>
-                      </div>
-                      <div style={styles.headerSummaryCol}>
-                        <span style={styles.summaryLabel}>Duration</span>
-                        <span style={styles.summaryVal}>{currentDrive.summary.durationMin} mins</span>
-                      </div>
-                      <div style={styles.headerSummaryCol}>
-                        <span style={styles.summaryLabel}>Max RPM</span>
-                        <span style={styles.summaryVal}>{currentDrive.summary.maxRpm} RPM</span>
-                      </div>
-                      <div style={styles.headerSummaryCol}>
-                        <span style={styles.summaryLabel}>Max Velocity</span>
-                        <span style={styles.summaryVal}>{currentDrive.summary.maxSpeed} km/h</span>
-                      </div>
-                      <div style={styles.headerSummaryCol}>
-                        <span style={styles.summaryLabel}>Estimated Fuel</span>
-                        <span style={styles.summaryVal}>{currentDrive.summary.fuelUsedPercent}%</span>
-                      </div>
-                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginLeft: 'auto' }}>
-                        <a
-                          href={`${API_HOST}/api/drives/${currentDrive.id}/export/csv`}
-                          download
-                          style={{
-                            background: 'rgba(59, 130, 246, 0.15)',
-                            border: '1px solid var(--accent-blue)',
-                            color: 'var(--accent-blue)',
-                            padding: '8px 14px',
-                            borderRadius: '10px',
-                            fontSize: '12px',
-                            fontWeight: 600,
-                            textDecoration: 'none',
-                            transition: 'opacity 0.2s',
-                          }}
-                          onMouseOver={(e) => (e.currentTarget.style.opacity = '0.8')}
-                          onMouseOut={(e) => (e.currentTarget.style.opacity = '1')}
-                        >
-                          Export CSV
-                        </a>
-                        <a
-                          href={`${API_HOST}/api/drives/${currentDrive.id}/export/gpx`}
-                          download
-                          style={{
-                            background: 'rgba(16, 185, 129, 0.15)',
-                            border: '1px solid var(--accent-green)',
-                            color: 'var(--accent-green)',
-                            padding: '8px 14px',
-                            borderRadius: '10px',
-                            fontSize: '12px',
-                            fontWeight: 600,
-                            textDecoration: 'none',
-                            transition: 'opacity 0.2s',
-                          }}
-                          onMouseOver={(e) => (e.currentTarget.style.opacity = '0.8')}
-                          onMouseOut={(e) => (e.currentTarget.style.opacity = '1')}
-                        >
-                          Export GPX
-                        </a>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {renderTelemetryWorkspace()}
-              </div>
-            ) : (
-              <div className="glass-panel-static" style={styles.emptyWorkspaceState}>
-                <Power size={64} color="var(--text-muted)" style={{ marginBottom: '20px', opacity: 0.5 }} />
-                <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px' }}>Select a Session</h3>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '14px', maxWidth: '360px', textAlign: 'center' }}>
-                  Select a drive session from the list on the left to analyze its metrics, GPS tracking maps, and telemetry charts.
-                </p>
-              </div>
-            )}
-          </div>
-
-        </div>
-      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
+        {renderTelemetryWorkspace()}
+      </div>
     </div>
   );
 }

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import {
-  Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap
+  Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X
 } from 'lucide-react';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, LineChart, Line, Brush
 } from 'recharts';
 
 interface DriveSession {
@@ -44,8 +44,28 @@ export default function TripsDashboard() {
     longest_duration: []
   });
   const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<'efficiency' | 'distance' | 'speed' | 'duration'>('efficiency');
+  const [selectedDrive, setSelectedDrive] = useState<DriveSession | null>(null);
+  const [selectedDrivePoints, setSelectedDrivePoints] = useState<any[]>([]);
 
   const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://127.0.0.1:3000');
+
+  const handleDriveClick = async (drive: DriveSession) => {
+    setSelectedDrive(drive);
+    setSelectedDrivePoints([]);
+    try {
+      const res = await fetch(`${API_HOST}/api/telemetry/history?start=${drive.startTime}&end=${drive.endTime}`);
+      const data = await res.json();
+      
+      const transformed = data.map((d: any) => ({
+        time: new Date(d.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        speed: (d.speed !== null && d.speed !== undefined) ? d.speed : (d.gpsSpeed || 0),
+        rpm: d.rpm || 0
+      }));
+      setSelectedDrivePoints(transformed);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const fetchData = async () => {
     try {
@@ -302,7 +322,11 @@ export default function TripsDashboard() {
                     minute: '2-digit'
                   });
                   return (
-                    <tr key={drive.id} style={styles.trRow}>
+                    <tr 
+                      key={drive.id} 
+                      style={{ ...styles.trRow, cursor: 'pointer' }} 
+                      onClick={() => handleDriveClick(drive)}
+                    >
                       <td style={styles.td}><strong>Drive #{drive.id}</strong></td>
                       <td style={styles.td}>{startStr}</td>
                       <td style={styles.td}>{drive.summary.durationMin} mins</td>
@@ -338,6 +362,56 @@ export default function TripsDashboard() {
           </div>
         )}
       </div>
+
+      {/* Drive Details Modal */}
+      {selectedDrive && (
+        <div style={styles.modalOverlay}>
+          <div className="glass-panel-static" style={styles.modalContent}>
+            <div style={styles.modalHeader}>
+              <h2 style={styles.modalTitle}>Trip Details - Drive #{selectedDrive.id}</h2>
+              <button style={styles.closeButton} onClick={() => setSelectedDrive(null)}>
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div style={{ display: 'flex', gap: '48px', marginBottom: '24px', color: 'var(--text-primary)' }}>
+              <div>
+                <strong style={{color: 'var(--text-secondary)'}}>Duration:</strong> {selectedDrive.summary.durationMin} mins<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Distance:</strong> {selectedDrive.summary.distanceKm.toFixed(2)} km<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Safety Score:</strong> {selectedDrive.summary.driverScore}/100
+              </div>
+              <div>
+                <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {selectedDrive.summary.avgSpeed.toFixed(1)} km/h<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {selectedDrive.summary.maxSpeed} km/h<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Fuel Used:</strong> {selectedDrive.summary.fuelUsedPercent}%
+              </div>
+            </div>
+
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', color: 'var(--text-primary)' }}>Speed & RPM Profile</h3>
+            {selectedDrivePoints.length === 0 ? (
+              <div style={styles.noData}>Loading telemetry points...</div>
+            ) : (
+              <div style={{ height: '300px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={selectedDrivePoints}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                    <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={11} minTickGap={30} />
+                    <YAxis yAxisId="left" stroke="var(--accent-blue)" fontSize={11} unit=" km/h" />
+                    <YAxis yAxisId="right" orientation="right" stroke="var(--accent-purple)" fontSize={11} />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: 'rgba(20,20,25,0.9)', borderRadius: '8px', border: '1px solid var(--border)' }}
+                    />
+                    <Legend />
+                    <Brush dataKey="time" height={30} stroke="var(--accent-blue)" fill="rgba(0,0,0,0.2)" />
+                    <Line yAxisId="left" type="monotone" dataKey="speed" name="Speed (km/h)" stroke="var(--accent-blue)" dot={false} strokeWidth={2} />
+                    <Line yAxisId="right" type="monotone" dataKey="rpm" name="RPM" stroke="var(--accent-purple)" dot={false} strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -504,5 +578,44 @@ const styles: Record<string, React.CSSProperties> = {
   td: {
     padding: '12px',
     color: 'var(--text-primary)'
+  },
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+    backdropFilter: 'blur(5px)'
+  },
+  modalContent: {
+    width: '90%',
+    maxWidth: '800px',
+    padding: '32px',
+    display: 'flex',
+    flexDirection: 'column',
+    maxHeight: '90vh',
+    overflowY: 'auto'
+  },
+  modalHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '24px'
+  },
+  modalTitle: {
+    fontSize: '20px',
+    fontWeight: 800,
+    color: 'var(--text-primary)'
+  },
+  closeButton: {
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-primary)',
+    cursor: 'pointer'
   }
 };
