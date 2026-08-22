@@ -16,12 +16,12 @@ export default function Navigation() {
   ];
 
   return (
-    <nav className="glass-panel-static app-sidebar" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div style={{ marginBottom: '1rem', padding: '0 0.5rem' }}>
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '0.05em' }}>
+    <nav className="glass-panel-static app-sidebar">
+      <div className="brand-block">
+        <h2>
           Axia OS
         </h2>
-        <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Telemetry System</p>
+        <p>Vehicle telemetry system</p>
       </div>
 
       <div className="nav-items-container">
