@@ -462,7 +462,7 @@ const styles: Record<string, any> = {
   },
   statsRow: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))',
     gap: '20px'
   },
   statsCard: {
@@ -495,7 +495,7 @@ const styles: Record<string, any> = {
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(500px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))',
     gap: '32px',
     marginTop: '16px'
   },
@@ -522,7 +522,7 @@ const styles: Record<string, any> = {
   },
   inputRow: {
     display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))',
     gap: '16px'
   },
   inputGroup: {
@@ -605,7 +605,9 @@ const styles: Record<string, any> = {
   itemHeader: {
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'flex-start'
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: '8px 12px'
   },
   itemName: {
     fontSize: '15px',
@@ -618,7 +620,8 @@ const styles: Record<string, any> = {
   },
   itemActions: {
     display: 'flex',
-    gap: '8px'
+    gap: '8px',
+    flexShrink: 0
   },
   itemActionBtn: {
     fontSize: '11px',
