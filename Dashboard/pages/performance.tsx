@@ -276,7 +276,7 @@ const styles: Record<string, any> = {
   },
   statsRow: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))',
     gap: '20px'
   },
   statsCard: {
@@ -309,7 +309,7 @@ const styles: Record<string, any> = {
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(500px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))',
     gap: '32px',
     marginTop: '16px'
   },

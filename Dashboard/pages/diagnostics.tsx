@@ -373,7 +373,7 @@ const styles: Record<string, any> = {
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(500px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))',
     gap: '32px',
     marginTop: '16px'
   },
@@ -401,6 +401,8 @@ const styles: Record<string, any> = {
   actionBtn: {
     display: 'flex',
     alignItems: 'center',
+    justifyContent: 'center',
+    flex: '1 1 240px',
     gap: '8px',
     padding: '12px 20px',
     borderRadius: '10px',
@@ -427,6 +429,8 @@ const styles: Record<string, any> = {
   statusRow: {
     display: 'flex',
     justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: '2px 12px',
     fontSize: '13px'
   },
   statusLabel: {
@@ -474,7 +478,8 @@ const styles: Record<string, any> = {
   dtcItemHeader: {
     display: 'flex',
     alignItems: 'center',
-    gap: '12px'
+    flexWrap: 'wrap',
+    gap: '8px 12px'
   },
   dtcBadge: {
     fontSize: '14px',
@@ -541,6 +546,8 @@ const styles: Record<string, any> = {
   timelineHeader: {
     display: 'flex',
     justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: '2px 12px',
     marginBottom: '8px',
     alignItems: 'center'
   },
