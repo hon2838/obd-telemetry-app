@@ -223,6 +223,7 @@ body {
 }
 
 .app-main > div {
+  width: 100%;
   max-width: 1480px !important;
   margin: 0 auto !important;
   padding: 28px !important;
