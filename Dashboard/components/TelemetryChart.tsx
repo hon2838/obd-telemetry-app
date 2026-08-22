@@ -3,13 +3,14 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
 import {
-  Activity, Map, Thermometer, Battery, Flame, Navigation, Clock, ActivitySquare, AlertCircle, Power, Fuel, Wrench
+  Activity, Map, Thermometer, Battery, Flame, Navigation, AlertCircle
 } from 'lucide-react';
+import { API_HOST } from '../api';
 
 interface TelemetryData {
   timestamp: number;
   rpm: number;
-  speed: number;
+  speed: number | null;
   coolantTemp: number;
   latitude: number;
   longitude: number;
@@ -25,25 +26,6 @@ interface TelemetryData {
   alertVoltage: boolean;
   timeLabel?: string;
 }
-
-interface DriveSession {
-  id: number;
-  startTime: number;
-  endTime: number;
-  label: string;
-  summary: {
-    durationMin: number;
-    maxRpm: number;
-    maxSpeed: number;
-    fuelUsedPercent: string;
-    pointCount: number;
-  };
-}
-
-const emptyDiagnostics = {
-  latestDtc: { code: "", timestamp: null },
-  latestClearStatus: { success: null, timestamp: null }
-};
 
 interface MapProps {
   latitude: number;
@@ -165,81 +147,12 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
     </div>
   );
 };
-const getApiHost = () => {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window === 'undefined') return 'http://localhost:3000';
-
-  if (window.location.hostname === 'obd.hon2838.name.my') {
-    return `${window.location.protocol}//obd-api.hon2838.name.my`;
-  }
-
-  return `${window.location.protocol}//${window.location.hostname}:3000`;
-};
-
-const API_HOST = getApiHost();
-
 export default function TelemetryDashboard() {
   const [data, setData] = useState<TelemetryData[]>([]);
   const [activeTab, setActiveTab] = useState<'engine' | 'temperatures' | 'fuel_load'>('engine');
-  
-  const [mode, setMode] = useState<'live' | 'history'>('live');
-  const [startTime, setStartTime] = useState<string>('');
-  const [endTime, setEndTime] = useState<string>('');
-  const [drives, setDrives] = useState<DriveSession[]>([]);
-  const [selectedDriveId, setSelectedDriveId] = useState<number | 'custom' | null>(null);
-
-  const [diagnostics, setDiagnostics] = useState<{
-    latestDtc: { code: string; timestamp: number | null };
-    latestClearStatus: { success: boolean | null; timestamp: number | null };
-  }>(emptyDiagnostics);
-  const [commandLoading, setCommandLoading] = useState<string | null>(null);
-
-  // Poll diagnostics status
-  useEffect(() => {
-    const fetchDiag = async () => {
-      try {
-        const response = await fetch(`${API_HOST}/api/telemetry/dtc`);
-        if (response.ok) {
-          const resJson = await response.json();
-          setDiagnostics({
-            ...emptyDiagnostics,
-            ...(resJson.latest || resJson)
-          });
-        }
-      } catch (err) {
-        console.error("Error fetching diagnostics:", err);
-      }
-    };
-    fetchDiag();
-    const diagInterval = setInterval(fetchDiag, 3000);
-    return () => clearInterval(diagInterval);
-  }, []);
-
-  const sendCommand = async (command: 'read_dtc' | 'clear_dtc') => {
-    setCommandLoading(command);
-    try {
-      const response = await fetch(`${API_HOST}/api/commands`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command })
-      });
-      if (response.ok) {
-        alert(`Command '${command === 'read_dtc' ? 'Read DTC' : 'Clear DTC'}' has been queued. The vehicle's Head Unit will execute it on the next sync (within 3 seconds).`);
-      } else {
-        alert("Failed to queue command");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Error sending command");
-    } finally {
-      setCommandLoading(null);
-    }
-  };
 
   // Poll for Live data
   useEffect(() => {
-    if (mode !== 'live') return;
-
     const fetchData = async () => {
       try {
         const response = await fetch(`${API_HOST}/api/telemetry/history`);
@@ -259,76 +172,7 @@ export default function TelemetryDashboard() {
     fetchData();
     const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
-  }, [mode]);
-
-  // Fetch drives list when entering history mode
-  useEffect(() => {
-    if (mode !== 'history') return;
-
-    const fetchDrives = async () => {
-      try {
-        const response = await fetch(`${API_HOST}/api/drives`);
-        if (response.ok) {
-          const drivesList = await response.json();
-          setDrives(drivesList);
-        }
-      } catch (err) {
-        console.error("Error fetching drive sessions:", err);
-      }
-    };
-
-    fetchDrives();
-  }, [mode]);
-
-  const fetchHistoryByTimestamps = async (startTs: number, endTs: number) => {
-    try {
-      const response = await fetch(`${API_HOST}/api/telemetry/history?start=${startTs}&end=${endTs}`);
-      if (response.ok) {
-        const result = await response.json();
-        const formattedData = result.map((item: TelemetryData) => ({
-          ...item,
-          timeLabel: new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }));
-        setData(formattedData);
-      }
-    } catch (error) {
-      console.error("Error fetching historical data:", error);
-    }
-  };
-
-  const handleDriveChange = (driveIdStr: string) => {
-    if (driveIdStr === 'custom') {
-      setSelectedDriveId('custom');
-      return;
-    }
-
-    const id = parseInt(driveIdStr);
-    const drive = drives.find(d => d.id === id);
-    if (drive) {
-      setSelectedDriveId(id);
-      
-      const formatLocalTime = (ts: number) => {
-        const d = new Date(ts);
-        const offset = d.getTimezoneOffset();
-        const localDate = new Date(d.getTime() - (offset * 60 * 1000));
-        return localDate.toISOString().slice(0, 16);
-      };
-      
-      setStartTime(formatLocalTime(drive.startTime));
-      setEndTime(formatLocalTime(drive.endTime));
-      fetchHistoryByTimestamps(drive.startTime, drive.endTime);
-    }
-  };
-
-  const fetchHistory = async () => {
-    if (!startTime || !endTime) {
-      alert("Please select both start and end times.");
-      return;
-    }
-    const startTs = new Date(startTime).getTime();
-    const endTs = new Date(endTime).getTime();
-    await fetchHistoryByTimestamps(startTs, endTs);
-  };
+  }, []);
 
   const latest = data[data.length - 1] || {
     rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
@@ -336,7 +180,7 @@ export default function TelemetryDashboard() {
     accelTime: null, alertCoolant: false, alertVoltage: false
   };
 
-  const formatVal = (val: any, decimals?: number) => {
+  const formatVal = (val: any, decimals = 2) => {
     if (val === null || val === undefined) return 'N/A';
     if (typeof val === 'number') {
       return decimals !== undefined ? val.toFixed(decimals) : val.toString();
@@ -374,7 +218,7 @@ export default function TelemetryDashboard() {
             <div key={`item-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '4px 0' }}>
               <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: entry.color }}></span>
               <span style={{ color: 'var(--text-primary)' }}>{entry.name}:</span>
-              <span style={{ fontWeight: 700, color: entry.color }}>{entry.value !== null ? entry.value.toFixed(1) : 'N/A'}</span>
+              <span style={{ fontWeight: 700, color: entry.color }}>{entry.value !== null ? Number(entry.value).toFixed(2) : 'N/A'}</span>
             </div>
           ))}
         </div>
@@ -403,7 +247,7 @@ export default function TelemetryDashboard() {
               boxShadow: '0 0 20px rgba(239, 68, 68, 0.2)'
             }}>
               <AlertCircle size={20} />
-              <span>ENGINE TEMPERATURE OVERHEATING DANGER: Coolant at {latest.coolantTemp}°C! Pull over immediately!</span>
+              <span>ENGINE TEMPERATURE OVERHEATING DANGER: Coolant at {latest.coolantTemp?.toFixed(2)}°C! Pull over immediately!</span>
             </div>
           )}
           {latest.alertVoltage && (
@@ -436,9 +280,9 @@ export default function TelemetryDashboard() {
               <span style={styles.cardTitle}>Live Route Tracking Map</span>
             </div>
             <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>
-              <span>Altitude: {latest.altitude.toFixed(0)}m</span>
+              <span>Altitude: {latest.altitude.toFixed(2)}m</span>
               <span>•</span>
-              <span>GPS Speed: {latest.gpsSpeed.toFixed(1)} km/h</span>
+              <span>GPS Speed: {latest.gpsSpeed.toFixed(2)} km/h</span>
             </div>
           </div>
         </div>
@@ -491,7 +335,7 @@ export default function TelemetryDashboard() {
           icon={<Navigation size={20} color="var(--accent-cyan)" />}
           progress={getProgress(latest.speed, 180)}
           progressColor="var(--accent-cyan)"
-          subtext={`GPS: ${latest.gpsSpeed.toFixed(1)} km/h`}
+           subtext={`GPS: ${latest.gpsSpeed.toFixed(2)} km/h`}
         />
         <MetricCard
           title="Coolant Temp"
@@ -514,7 +358,7 @@ export default function TelemetryDashboard() {
         />
         <MetricCard
           title="System Voltage"
-          value={formatVal(latest.voltage, 1)}
+           value={formatVal(latest.voltage)}
           unit="V"
           icon={<Battery size={20} color={getVoltageColor(latest.voltage)} />}
           progress={getProgress(latest.voltage, 15)}
@@ -616,83 +460,6 @@ export default function TelemetryDashboard() {
         </div>
       </div>
 
-      {/* DIAGNOSTICS & SYSTEM CONTROLS CARD */}
-      <div className="glass-panel-static" style={{ padding: '24px', marginTop: '32px', border: '1px solid var(--border)', borderRadius: '16px' }}>
-        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-          <ActivitySquare size={20} color="var(--accent-cyan)" /> Vehicle Diagnostics (OBD-II Command Queue)
-        </h3>
-
-        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          
-          <div style={{ flex: 1, minWidth: '280px' }}>
-            <div style={{ marginBottom: '16px' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>LATEST DTC READ:</div>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: diagnostics.latestDtc.code.includes("P") ? 'var(--accent-red)' : '#fff', marginTop: '4px' }}>
-                {diagnostics.latestDtc.code || "No DTC data requested yet"}
-              </div>
-              {diagnostics.latestDtc.timestamp && (
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                  Updated: {new Date(diagnostics.latestDtc.timestamp).toLocaleString()}
-                </div>
-              )}
-            </div>
-            
-            <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>LATEST CLEAR STATUS:</div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: diagnostics.latestClearStatus.success === true ? 'var(--accent-green)' : diagnostics.latestClearStatus.success === false ? 'var(--accent-red)' : '#fff', marginTop: '4px' }}>
-                {diagnostics.latestClearStatus.success === true ? "Successfully Cleared" : diagnostics.latestClearStatus.success === false ? "Failed to Clear" : "No clear executed"}
-              </div>
-              {diagnostics.latestClearStatus.timestamp && (
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                  Updated: {new Date(diagnostics.latestClearStatus.timestamp).toLocaleString()}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: '12px', width: '260px', flexDirection: 'column' }}>
-            <button
-              onClick={() => sendCommand('read_dtc')}
-              disabled={commandLoading !== null}
-              style={{
-                width: '100%',
-                background: 'rgba(59, 130, 246, 0.15)',
-                border: '1px solid var(--accent-blue)',
-                color: 'var(--accent-blue)',
-                padding: '12px 18px',
-                borderRadius: '12px',
-                fontWeight: 600,
-                fontSize: '13px',
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-                opacity: commandLoading !== null ? 0.6 : 1
-              }}
-            >
-              {commandLoading === 'read_dtc' ? "Queuing Command..." : "Queue Read DTC (Mode 03)"}
-            </button>
-            <button
-              onClick={() => sendCommand('clear_dtc')}
-              disabled={commandLoading !== null}
-              style={{
-                width: '100%',
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid var(--accent-red)',
-                color: 'var(--accent-red)',
-                padding: '12px 18px',
-                borderRadius: '12px',
-                fontWeight: 600,
-                fontSize: '13px',
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-                opacity: commandLoading !== null ? 0.6 : 1
-              }}
-            >
-              {commandLoading === 'clear_dtc' ? "Queuing Command..." : "Queue Clear DTC (Mode 04)"}
-            </button>
-          </div>
-
-        </div>
-      </div>
     </>
   );
 
@@ -702,7 +469,7 @@ export default function TelemetryDashboard() {
       <div style={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div style={styles.logoBadge}>
-            <ActivitySquare size={28} color="var(--accent-blue)" />
+            <Activity size={28} color="var(--accent-blue)" />
           </div>
           <div>
             <h1 style={styles.title}>Axia OS</h1>

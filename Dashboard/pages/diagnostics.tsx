@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import Head from 'next/head';
+import { API_HOST } from '../api';
 import {
   AlertTriangle, CheckCircle, RefreshCw, Trash2, ArrowLeft, Terminal, ShieldAlert, AlertCircle, Clock
 } from 'lucide-react';
@@ -40,8 +41,6 @@ export default function DiagnosticsDashboard() {
   const [commandLoading, setCommandLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://127.0.0.1:3000');
 
   useEffect(() => {
     return () => {
