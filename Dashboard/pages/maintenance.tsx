@@ -261,9 +261,10 @@ export default function MaintenanceDashboard() {
 
           <form onSubmit={handleSubmit} style={styles.form}>
             <div style={styles.inputGroup}>
-              <label style={styles.label}>Schedule Name</label>
-              <input 
-                type="text" 
+              <label htmlFor="maint-name-input" style={styles.label}>Schedule Name</label>
+              <input
+                id="maint-name-input"
+                type="text"
                 placeholder="e.g. Engine Oil Change"
                 value={name}
                 onChange={e => setName(e.target.value)}
@@ -277,9 +278,10 @@ export default function MaintenanceDashboard() {
 
             <div style={styles.inputRow}>
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Interval (KM)</label>
-                <input 
-                  type="number" 
+                <label htmlFor="maint-interval-km-input" style={styles.label}>Interval (KM)</label>
+                <input
+                  id="maint-interval-km-input"
+                  type="number"
                   placeholder="e.g. 10000"
                   value={intervalKm}
                   onChange={e => setIntervalKm(e.target.value)}
@@ -287,9 +289,10 @@ export default function MaintenanceDashboard() {
                 />
               </div>
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Interval (Days)</label>
-                <input 
-                  type="number" 
+                <label htmlFor="maint-interval-days-input" style={styles.label}>Interval (Days)</label>
+                <input
+                  id="maint-interval-days-input"
+                  type="number"
                   placeholder="e.g. 180"
                   value={intervalDays}
                   onChange={e => setIntervalDays(e.target.value)}
@@ -300,9 +303,10 @@ export default function MaintenanceDashboard() {
 
             <div style={styles.inputRow}>
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Last Service Odometer (KM)</label>
-                <input 
-                  type="number" 
+                <label htmlFor="maint-last-odo-input" style={styles.label}>Last Service Odometer (KM)</label>
+                <input
+                  id="maint-last-odo-input"
+                  type="number"
                   placeholder={`Default: ${currentOdoVal}`}
                   value={lastServiceOdo}
                   onChange={e => setLastServiceOdo(e.target.value)}
@@ -310,9 +314,10 @@ export default function MaintenanceDashboard() {
                 />
               </div>
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Last Service Date</label>
-                <input 
-                  type="date" 
+                <label htmlFor="maint-last-date-input" style={styles.label}>Last Service Date</label>
+                <input
+                  id="maint-last-date-input"
+                  type="date"
                   value={lastServiceDate}
                   onChange={e => setLastServiceDate(e.target.value)}
                   style={styles.input}
@@ -321,8 +326,9 @@ export default function MaintenanceDashboard() {
             </div>
 
             <div style={styles.inputGroup}>
-              <label style={styles.label}>Service Notes</label>
-              <textarea 
+              <label htmlFor="maint-notes-input" style={styles.label}>Service Notes</label>
+              <textarea
+                id="maint-notes-input"
                 placeholder="Write specific parts/brands used..."
                 value={notes}
                 onChange={e => setNotes(e.target.value)}

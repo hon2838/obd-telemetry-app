@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+// Set DASHBOARD_PASSWORD at deploy time; fallback keeps existing deployments working.
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'REDACTED_DASHBOARD_PASS';
+
 export function middleware(req: NextRequest) {
   const basicAuth = req.headers.get('authorization');
   const url = req.nextUrl;
@@ -9,8 +12,8 @@ export function middleware(req: NextRequest) {
     const authValue = basicAuth.split(' ')[1];
     const [user, pwd] = atob(authValue).split(':');
 
-    // User requested password "REDACTED_DASHBOARD_PASS". We'll allow any username with this password.
-    if (pwd === 'REDACTED_DASHBOARD_PASS') {
+    // Allow any username with the dashboard password.
+    if (pwd === DASHBOARD_PASSWORD) {
       return NextResponse.next();
     }
   }

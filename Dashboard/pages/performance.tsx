@@ -25,6 +25,13 @@ interface AccelerationRun {
   maxSpeedReached: number;
 }
 
+const formatDuration = (mins: number): string => {
+  const h = Math.floor(mins / 60);
+  const m = Math.round(mins % 60);
+  if (h <= 0) return `${m}m`;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+};
+
 export default function PerformanceDashboard() {
   const [records, setRecords] = useState<PerformanceRecords>({
     best0to100: null,
@@ -104,10 +111,10 @@ export default function PerformanceDashboard() {
             <Gauge size={20} style={{ color: 'var(--accent-cyan)' }} />
           </div>
           <span style={styles.statsCardValue}>
-            {records.topSpeed ? `${records.topSpeed.speed.toFixed(2)} km/h` : '0.00 km/h'}
+            {records.topSpeed && records.topSpeed.speed > 0 ? `${records.topSpeed.speed.toFixed(2)} km/h` : 'N/A'}
           </span>
           <span style={styles.statsCardSubtext}>
-            {records.topSpeed
+            {records.topSpeed && records.topSpeed.speed > 0
               ? `Drive #${records.topSpeed.driveId} on ${new Date(records.topSpeed.timestamp).toLocaleDateString()}`
               : 'No telemetry logged'}
           </span>
@@ -119,12 +126,12 @@ export default function PerformanceDashboard() {
             <Activity size={20} style={{ color: 'var(--accent-red)' }} />
           </div>
           <span style={styles.statsCardValue}>
-            {records.highestRpm ? `${records.highestRpm.rpm.toFixed(2)} RPM` : '0.00 RPM'}
+            {records.highestRpm && records.highestRpm.rpm > 0 ? `${records.highestRpm.rpm.toFixed(2)} RPM` : 'N/A'}
           </span>
           <span style={styles.statsCardSubtext}>
-            {records.highestRpm
+            {records.highestRpm && records.highestRpm.rpm > 0
               ? `Drive #${records.highestRpm.driveId} on ${new Date(records.highestRpm.timestamp).toLocaleDateString()}`
-              : 'No telemetry logged'}
+              : 'No RPM data recorded'}
           </span>
         </div>
 
@@ -134,10 +141,10 @@ export default function PerformanceDashboard() {
             <Clock size={20} style={{ color: 'var(--accent-purple)' }} />
           </div>
           <span style={styles.statsCardValue}>
-            {records.longestDrive ? `${records.longestDrive.durationMin}m` : '0'}
+            {records.longestDrive && records.longestDrive.durationMin > 0 ? formatDuration(records.longestDrive.durationMin) : 'N/A'}
           </span>
           <span style={styles.statsCardSubtext}>
-            {records.longestDrive
+            {records.longestDrive && records.longestDrive.durationMin > 0
               ? `Drive #${records.longestDrive.driveId} on ${records.longestDrive.date}`
               : 'No drive sessions'}
           </span>

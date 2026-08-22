@@ -173,7 +173,7 @@ export default function FuelTracker() {
         <meta name="description" content="Fuel consumption and efficiency logs for Perodua Axia" />
       </Head>
 
-      <main style={styles.mainContainer}>
+      <div style={styles.mainContainer}>
         {/* HEADER */}
         <div style={styles.header}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -248,8 +248,9 @@ export default function FuelTracker() {
               <form onSubmit={handleSubmit} style={styles.form}>
                 <div style={styles.formRow}>
                   <div style={styles.inputGroup}>
-                    <label style={styles.label}>Litres refueled (L)</label>
+                    <label htmlFor="fuel-litres-input" style={styles.label}>Litres refueled (L)</label>
                     <input
+                      id="fuel-litres-input"
                       type="number"
                       step="0.01"
                       placeholder="e.g. 28.5"
@@ -260,8 +261,9 @@ export default function FuelTracker() {
                     />
                   </div>
                   <div style={styles.inputGroup}>
-                    <label style={styles.label}>Current Odometer (km)</label>
+                    <label htmlFor="fuel-odo-input" style={styles.label}>Current Odometer (km)</label>
                     <input
+                      id="fuel-odo-input"
                       type="number"
                       step="0.1"
                       placeholder="e.g. 45890.3"
@@ -396,7 +398,7 @@ export default function FuelTracker() {
             </div>
           </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
