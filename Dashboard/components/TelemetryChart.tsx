@@ -3,9 +3,24 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
 import {
-  Activity, Map, Thermometer, Battery, Flame, Navigation, AlertCircle
+  Activity, Map, Thermometer, Battery, Flame, Navigation, AlertCircle, Clock
 } from 'lucide-react';
 import { API_HOST } from '../api';
+
+// A record older than this means the vehicle is not currently reporting
+const STALE_THRESHOLD_MS = 90 * 1000;
+
+const formatAge = (ms: number): string => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 10) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h ago`;
+};
 
 interface TelemetryData {
   timestamp: number;
@@ -150,29 +165,85 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
 export default function TelemetryDashboard() {
   const [data, setData] = useState<TelemetryData[]>([]);
   const [activeTab, setActiveTab] = useState<'engine' | 'temperatures' | 'fuel_load'>('engine');
+  const [connectionOk, setConnectionOk] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
 
-  // Poll for Live data
+  const withTimeLabel = (item: TelemetryData): TelemetryData => ({
+    ...item,
+    timeLabel: new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  });
+
+  // Poll for Live data: full history once on mount, then lightweight latest-record updates
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const response = await fetch(`${API_HOST}/api/telemetry/history`);
-        if (response.ok) {
-          const result = await response.json();
-          const formattedData = result.map((item: TelemetryData) => ({
-            ...item,
-            timeLabel: new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-          }));
-          setData(formattedData);
-        }
-      } catch (error) {
-        console.error("Error fetching telemetry data:", error);
+    let useLatestEndpoint = true;
+
+    const mergeRecord = (record: TelemetryData) => {
+      setData(prev => {
+        if (!prev.length) return [record];
+        const last = prev[prev.length - 1];
+        if (record.timestamp < last.timestamp) return prev;
+        if (record.timestamp === last.timestamp) return [...prev.slice(0, -1), record];
+        return [...prev.slice(-999), record];
+      });
+    };
+
+    const fetchFullHistory = async () => {
+      const response = await fetch(`${API_HOST}/api/telemetry/history`);
+      if (response.ok) {
+        const result = await response.json();
+        setData(result.map((item: TelemetryData) => withTimeLabel(item)));
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 3000);
+    const fetchUpdate = async () => {
+      try {
+        if (useLatestEndpoint) {
+          let response: Response;
+          try {
+            response = await fetch(`${API_HOST}/api/telemetry/latest`);
+          } catch {
+            // Older backend (404 without CORS headers reaches us as a network error):
+            // fall back to full-history polling before declaring the server offline.
+            useLatestEndpoint = false;
+            await fetchFullHistory();
+            setConnectionOk(true);
+            return;
+          }
+          if (response.status === 404 || response.status === 501) {
+            useLatestEndpoint = false;
+            await fetchFullHistory();
+          } else if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          } else {
+            const record = await response.json();
+            if (record) mergeRecord(withTimeLabel(record));
+          }
+        } else {
+          await fetchFullHistory();
+        }
+        setConnectionOk(true);
+      } catch (error) {
+        console.error("Error fetching telemetry data:", error);
+        setConnectionOk(false);
+      }
+    };
+
+    fetchFullHistory().catch((error) => {
+      console.error("Error fetching telemetry history:", error);
+      setConnectionOk(false);
+    });
+    const interval = setInterval(fetchUpdate, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  // Tick once per second so "last seen" ages up without a refetch
+  useEffect(() => {
+    const ticker = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
+
+  const lastSeenAge = data.length > 0 ? now - data[data.length - 1].timestamp : null;
+  const isStale = lastSeenAge === null || lastSeenAge > STALE_THRESHOLD_MS;
 
   const latest = data[data.length - 1] || {
     rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
@@ -229,6 +300,30 @@ export default function TelemetryDashboard() {
 
   const renderTelemetryWorkspace = () => (
     <>
+      {/* STALE DATA NOTICE */}
+      {connectionOk && isStale && (
+        <div style={{
+          background: 'rgba(245, 158, 11, 0.12)',
+          border: '1px solid rgba(245, 158, 11, 0.5)',
+          color: '#fbbf24',
+          padding: '12px 18px',
+          borderRadius: '12px',
+          fontWeight: 600,
+          fontSize: '13px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          marginBottom: '20px',
+          width: '100%'
+        }}>
+          <Clock size={18} />
+          <span>
+            Vehicle offline — engine off or head unit not reporting.
+            {data.length > 0 && ` Last known data from ${new Date(data[data.length - 1].timestamp).toLocaleString()}.`}
+          </span>
+        </div>
+      )}
+
       {/* WARNING BANNERS */}
       {(latest.alertCoolant || latest.alertVoltage) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', width: '100%' }}>
@@ -479,8 +574,25 @@ export default function TelemetryDashboard() {
 
         <div style={styles.headerControls}>
           <div className="glass-panel-static" style={styles.liveIndicatorWrapper}>
-            <span className="live-indicator"></span>
-            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--accent-green)', letterSpacing: '0.05em' }}>CONNECTED</span>
+            <span
+              className="live-indicator"
+              style={connectionOk && !isStale ? undefined : {
+                animation: 'none',
+                backgroundColor: !connectionOk ? 'var(--accent-red)' : 'var(--accent-amber)'
+              }}
+            ></span>
+            <span style={{
+              fontSize: '12px',
+              fontWeight: 700,
+              letterSpacing: '0.05em',
+              color: !connectionOk ? 'var(--accent-red)' : isStale ? 'var(--accent-amber)' : 'var(--accent-green)'
+            }}>
+              {!connectionOk
+                ? 'SERVER OFFLINE'
+                : isStale
+                  ? (lastSeenAge === null ? 'AWAITING DATA' : `LAST SEEN ${formatAge(lastSeenAge).toUpperCase()}`)
+                  : 'LIVE'}
+            </span>
           </div>
         </div>
       </div>
@@ -492,35 +604,38 @@ export default function TelemetryDashboard() {
   );
 }
 
-const MetricCard = ({ title, value, unit, icon, progress, progressColor, subtext, valueColor }: any) => (
-  <div className="glass-panel" style={styles.card}>
-    <div style={styles.cardHeader}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        {icon}
-        <span style={styles.cardTitle}>{title}</span>
-      </div>
-    </div>
-    <div style={styles.cardBody}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-        <span style={{ ...styles.cardValue, color: valueColor || 'var(--text-primary)' }}>{value}</span>
-        <span style={styles.cardUnit}>{unit}</span>
-      </div>
-      {subtext && <div style={styles.cardSubtext}>{subtext}</div>}
-      
-      {progress !== undefined && (
-        <div style={styles.progressBarBg}>
-          <div 
-            style={{ 
-              ...styles.progressBarFill, 
-              width: `${Math.min(Math.max(progress, 0), 100)}%`,
-              backgroundColor: progressColor 
-            }} 
-          />
+const MetricCard = ({ title, value, unit, icon, progress, progressColor, subtext, valueColor }: any) => {
+  const isUnavailable = value === 'N/A' || value === null || value === undefined;
+  return (
+    <div className="glass-panel" style={{ ...styles.card, ...(isUnavailable ? { opacity: 0.55 } : {}) }}>
+      <div style={styles.cardHeader}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {icon}
+          <span style={styles.cardTitle}>{title}</span>
         </div>
-      )}
+      </div>
+      <div style={styles.cardBody}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+          <span style={{ ...styles.cardValue, color: valueColor || 'var(--text-primary)' }}>{value}</span>
+          <span style={styles.cardUnit}>{unit}</span>
+        </div>
+        {subtext && <div style={styles.cardSubtext}>{subtext}</div>}
+
+        {progress !== undefined && (
+          <div style={styles.progressBarBg}>
+            <div
+              style={{
+                ...styles.progressBarFill,
+                width: `${Math.min(Math.max(progress, 0), 100)}%`,
+                backgroundColor: progressColor
+              }}
+            />
+          </div>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const styles: Record<string, React.CSSProperties> = {
   container: {

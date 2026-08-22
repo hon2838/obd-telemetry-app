@@ -859,16 +859,34 @@ fastify.get('/api/trips/leaderboard', async (request, reply) => {
 
 // Endpoint for the frontend dashboard to fetch data
 fastify.get('/api/telemetry/history', async (request, reply) => {
-  const { start, end } = request.query;
+  const { start, end, minutes, limit } = request.query;
   if (start && end) {
     const startTime = parseInt(start);
     const endTime = parseInt(end);
     const filtered = telemetryDataStore.filter(record => record.timestamp >= startTime && record.timestamp <= endTime);
     return reply.send(filtered);
   }
-  // Return the last 1000 records for rendering
-  const history = telemetryDataStore.slice(-1000);
-  return reply.send(history);
+  let records = telemetryDataStore;
+  if (minutes !== undefined) {
+    const minutesNum = parseInt(minutes);
+    if (!isNaN(minutesNum) && minutesNum > 0) {
+      const cutoff = Date.now() - minutesNum * 60 * 1000;
+      records = records.filter(record => record.timestamp >= cutoff);
+    }
+  }
+  let cap = 1000;
+  if (limit !== undefined) {
+    const limitNum = parseInt(limit);
+    if (!isNaN(limitNum) && limitNum > 0) cap = limitNum;
+  }
+  // Return the last `cap` records for rendering
+  return reply.send(records.slice(-cap));
+})
+
+// Lightweight single-record endpoint for dashboard live polling
+fastify.get('/api/telemetry/latest', async (request, reply) => {
+  const latest = telemetryDataStore[telemetryDataStore.length - 1];
+  return reply.send(latest !== undefined ? latest : null);
 })
 
 // POST /api/fuel-logs - Add one or more fuel log entries

@@ -44,7 +44,8 @@ export default function TripsDashboard() {
     highest_speed: [],
     longest_duration: []
   });
-  const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<'efficiency' | 'distance' | 'speed' | 'duration'>('efficiency');
+  const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<'efficiency' | 'distance' | 'speed' | 'duration'>('distance');
+  const [loaded, setLoaded] = useState(false);
   const [selectedDrive, setSelectedDrive] = useState<DriveSession | null>(null);
   const [selectedDrivePoints, setSelectedDrivePoints] = useState<any[]>([]);
 
@@ -77,6 +78,8 @@ export default function TripsDashboard() {
       setLeaderboard(lbData);
     } catch (err) {
       console.error('Error fetching trips/drives data:', err);
+    } finally {
+      setLoaded(true);
     }
   };
 
@@ -144,7 +147,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Total Trips</span>
             <Calendar size={20} style={{ color: 'var(--accent-blue)' }} />
           </div>
-          <span style={styles.statsCardValue}>{totalTrips}</span>
+          <span style={styles.statsCardValue}>{loaded ? totalTrips : '—'}</span>
           <span style={styles.statsCardSubtext}>Segmented drive sessions</span>
         </div>
 
@@ -153,7 +156,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Total Distance</span>
             <Navigation size={20} style={{ color: 'var(--accent-cyan)' }} />
           </div>
-          <span style={styles.statsCardValue}>{totalDistance.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></span>
+          <span style={styles.statsCardValue}>{loaded ? <>{totalDistance.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></> : '—'}</span>
           <span style={styles.statsCardSubtext}>Across all recorded drives</span>
         </div>
 
@@ -162,7 +165,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Best Trip Economy</span>
             <Fuel size={20} style={{ color: 'var(--accent-green)' }} />
           </div>
-          <span style={styles.statsCardValue}>{bestEfficiency > 0 ? bestEfficiency.toFixed(2) : 'N/A'} <span style={{ fontSize: '16px' }}>km/L</span></span>
+          <span style={styles.statsCardValue}>{loaded ? <>{bestEfficiency > 0 ? bestEfficiency.toFixed(2) : 'N/A'} <span style={{ fontSize: '16px' }}>km/L</span></> : '—'}</span>
           <span style={styles.statsCardSubtext}>Personal best fuel efficiency</span>
         </div>
 
@@ -171,7 +174,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Longest Trip</span>
             <TrendingUp size={20} style={{ color: 'var(--accent-purple)' }} />
           </div>
-          <span style={styles.statsCardValue}>{longestTrip.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></span>
+          <span style={styles.statsCardValue}>{loaded ? <>{longestTrip.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></> : '—'}</span>
           <span style={styles.statsCardSubtext}>Single longest drive session</span>
         </div>
       </div>
@@ -332,7 +335,7 @@ export default function TripsDashboard() {
                       <td style={styles.td}>{drive.summary.distanceKm.toFixed(2)} km</td>
                        <td style={styles.td}>{drive.summary.avgSpeed.toFixed(2)} km/h</td>
                        <td style={styles.td}>{drive.summary.maxSpeed.toFixed(2)} km/h</td>
-                       <td style={styles.td}>{drive.summary.fuelUsedPercent.toFixed(2)}%</td>
+                       <td style={styles.td}>{drive.summary.fuelUsedPercent > 0 ? `${drive.summary.fuelUsedPercent.toFixed(2)}%` : '—'}</td>
                       <td style={styles.td}>
                         {drive.summary.fuelEfficiencyKmL ? (
                           <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>
@@ -382,7 +385,7 @@ export default function TripsDashboard() {
               <div>
                 <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {selectedDrive.summary.avgSpeed.toFixed(2)} km/h<br/>
                 <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {selectedDrive.summary.maxSpeed.toFixed(2)} km/h<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Fuel Used:</strong> {selectedDrive.summary.fuelUsedPercent.toFixed(2)}%
+                <strong style={{color: 'var(--text-secondary)'}}>Fuel Used:</strong> {selectedDrive.summary.fuelUsedPercent > 0 ? `${selectedDrive.summary.fuelUsedPercent.toFixed(2)}%` : '— (fuel level not reported)'}
               </div>
             </div>
 
