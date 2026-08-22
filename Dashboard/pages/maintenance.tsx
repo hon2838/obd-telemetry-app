@@ -495,7 +495,7 @@ const styles: Record<string, any> = {
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 400px), 1fr))',
     gap: '32px',
     marginTop: '16px'
   },
