@@ -326,7 +326,7 @@ export default function FuelTracker() {
           </div>
 
           {/* RIGHT: HISTORY TABLE */}
-          <div style={styles.rightColumn}>
+          <div>
             <div className="glass-panel-static" style={{ ...styles.card, height: '100%', display: 'flex', flexDirection: 'column' }}>
               <h2 style={styles.cardTitle}>Refuel Log History</h2>
               <div style={styles.tableContainer}>
@@ -461,7 +461,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   statsRow: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))',
     gap: '20px'
   },
   statsCard: {
@@ -502,20 +502,14 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: '8px'
   },
   grid: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '24px',
-    alignItems: 'start'
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 400px), 1fr))',
+    gap: '32px'
   },
   leftColumn: {
-    flex: '1.2 1 500px',
     display: 'flex',
     flexDirection: 'column',
     gap: '24px'
-  },
-  rightColumn: {
-    flex: '1 1 400px',
-    alignSelf: 'stretch'
   },
   card: {
     padding: '24px',
