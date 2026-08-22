@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
+import { API_HOST } from '../api';
 import {
   Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X
 } from 'lucide-react';
@@ -46,8 +47,6 @@ export default function TripsDashboard() {
   const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<'efficiency' | 'distance' | 'speed' | 'duration'>('efficiency');
   const [selectedDrive, setSelectedDrive] = useState<DriveSession | null>(null);
   const [selectedDrivePoints, setSelectedDrivePoints] = useState<any[]>([]);
-
-  const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://127.0.0.1:3000');
 
   const handleDriveClick = async (drive: DriveSession) => {
     setSelectedDrive(drive);
@@ -117,7 +116,7 @@ export default function TripsDashboard() {
     switch (activeLeaderboardTab) {
       case 'efficiency': return `${d.summary.fuelEfficiencyKmL?.toFixed(2) || 'N/A'} km/L`;
       case 'distance': return `${d.summary.distanceKm.toFixed(2)} km`;
-      case 'speed': return `${d.summary.maxSpeed} km/h`;
+      case 'speed': return `${d.summary.maxSpeed.toFixed(2)} km/h`;
       case 'duration': return `${d.summary.durationMin} mins`;
     }
   };
@@ -154,7 +153,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Total Distance</span>
             <Navigation size={20} style={{ color: 'var(--accent-cyan)' }} />
           </div>
-          <span style={styles.statsCardValue}>{totalDistance.toFixed(1)} <span style={{ fontSize: '16px' }}>km</span></span>
+          <span style={styles.statsCardValue}>{totalDistance.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></span>
           <span style={styles.statsCardSubtext}>Across all recorded drives</span>
         </div>
 
@@ -163,7 +162,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Best Trip Economy</span>
             <Fuel size={20} style={{ color: 'var(--accent-green)' }} />
           </div>
-          <span style={styles.statsCardValue}>{bestEfficiency > 0 ? bestEfficiency.toFixed(1) : 'N/A'} <span style={{ fontSize: '16px' }}>km/L</span></span>
+          <span style={styles.statsCardValue}>{bestEfficiency > 0 ? bestEfficiency.toFixed(2) : 'N/A'} <span style={{ fontSize: '16px' }}>km/L</span></span>
           <span style={styles.statsCardSubtext}>Personal best fuel efficiency</span>
         </div>
 
@@ -172,7 +171,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Longest Trip</span>
             <TrendingUp size={20} style={{ color: 'var(--accent-purple)' }} />
           </div>
-          <span style={styles.statsCardValue}>{longestTrip.toFixed(1)} <span style={{ fontSize: '16px' }}>km</span></span>
+          <span style={styles.statsCardValue}>{longestTrip.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></span>
           <span style={styles.statsCardSubtext}>Single longest drive session</span>
         </div>
       </div>
@@ -331,9 +330,9 @@ export default function TripsDashboard() {
                       <td style={styles.td}>{startStr}</td>
                       <td style={styles.td}>{drive.summary.durationMin} mins</td>
                       <td style={styles.td}>{drive.summary.distanceKm.toFixed(2)} km</td>
-                      <td style={styles.td}>{drive.summary.avgSpeed.toFixed(1)} km/h</td>
-                      <td style={styles.td}>{drive.summary.maxSpeed} km/h</td>
-                      <td style={styles.td}>{drive.summary.fuelUsedPercent}%</td>
+                       <td style={styles.td}>{drive.summary.avgSpeed.toFixed(2)} km/h</td>
+                       <td style={styles.td}>{drive.summary.maxSpeed.toFixed(2)} km/h</td>
+                       <td style={styles.td}>{drive.summary.fuelUsedPercent.toFixed(2)}%</td>
                       <td style={styles.td}>
                         {drive.summary.fuelEfficiencyKmL ? (
                           <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>
@@ -381,9 +380,9 @@ export default function TripsDashboard() {
                 <strong style={{color: 'var(--text-secondary)'}}>Safety Score:</strong> {selectedDrive.summary.driverScore}/100
               </div>
               <div>
-                <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {selectedDrive.summary.avgSpeed.toFixed(1)} km/h<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {selectedDrive.summary.maxSpeed} km/h<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Fuel Used:</strong> {selectedDrive.summary.fuelUsedPercent}%
+                <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {selectedDrive.summary.avgSpeed.toFixed(2)} km/h<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {selectedDrive.summary.maxSpeed.toFixed(2)} km/h<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Fuel Used:</strong> {selectedDrive.summary.fuelUsedPercent.toFixed(2)}%
               </div>
             </div>
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
+import { API_HOST } from '../api';
 import {
   Fuel, Gauge, Clock, ArrowLeft, Trash2, PlusCircle, ActivitySquare, TrendingUp
 } from 'lucide-react';
@@ -8,7 +9,7 @@ import {
 } from 'recharts';
 
 interface FuelLog {
-  id: number;
+  id: string | number;
   timestamp: number;
   litres: number;
   odometer: number;
@@ -41,8 +42,6 @@ export default function FuelTracker() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
-
-  const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://127.0.0.1:3000');
 
   const fetchData = async () => {
     try {
@@ -140,7 +139,7 @@ export default function FuelTracker() {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string | number) => {
     if (!confirm('Are you sure you want to delete this log entry?')) return;
     try {
       const res = await fetch(`${API_HOST}/api/fuel-logs/${id}`, {
@@ -198,12 +197,12 @@ export default function FuelTracker() {
               <TrendingUp size={20} color="var(--accent-green)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{stats.averageKmPerLitre !== null && stats.averageKmPerLitre !== undefined ? stats.averageKmPerLitre : 'N/A'}</span>
+              <span style={styles.cardValue}>{stats.averageKmPerLitre !== null && stats.averageKmPerLitre !== undefined ? stats.averageKmPerLitre.toFixed(2) : 'N/A'}</span>
               {stats.averageKmPerLitre > 0 && <span style={styles.cardUnit}>km/L</span>}
             </div>
             <div style={styles.cardSubtext}>
               {stats.logCount >= 2 
-                ? `Range: ${stats.worstKmPerLitre} - ${stats.bestKmPerLitre} km/L`
+                ? `Range: ${stats.worstKmPerLitre.toFixed(2)} - ${stats.bestKmPerLitre.toFixed(2)} km/L`
                 : 'Need at least 2 logs to calculate economy'}
             </div>
           </div>
@@ -214,7 +213,7 @@ export default function FuelTracker() {
               <Fuel size={20} color="var(--accent-blue)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{stats.totalLitres !== null && stats.totalLitres !== undefined ? stats.totalLitres : '0.0'}</span>
+              <span style={styles.cardValue}>{stats.totalLitres !== null && stats.totalLitres !== undefined ? stats.totalLitres.toFixed(2) : '0.00'}</span>
               <span style={styles.cardUnit}>L</span>
             </div>
             <div style={styles.cardSubtext}>
@@ -228,12 +227,12 @@ export default function FuelTracker() {
               <Gauge size={20} color="var(--accent-cyan)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{stats.totalDistance !== null && stats.totalDistance !== undefined ? stats.totalDistance : '0.0'}</span>
+              <span style={styles.cardValue}>{stats.totalDistance !== null && stats.totalDistance !== undefined ? stats.totalDistance.toFixed(2) : '0.00'}</span>
               <span style={styles.cardUnit}>km</span>
             </div>
             <div style={styles.cardSubtext}>
               {logs.length > 0 
-                ? `Current Odo: ${Math.max(...logs.map(l => l.odometer))} km` 
+                ? `Current Odo: ${Math.max(...logs.map(l => l.odometer)).toFixed(2)} km`
                 : 'No odometer reading logged'}
             </div>
           </div>
@@ -353,11 +352,11 @@ export default function FuelTracker() {
                             })}
                           </td>
                           <td style={styles.td}>{log.litres.toFixed(2)} L</td>
-                          <td style={styles.td}>{log.odometer.toLocaleString()} km</td>
+                           <td style={styles.td}>{log.odometer.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km</td>
                           <td style={styles.td}>
                             {log.economy ? (
                               <span style={{ color: 'var(--accent-green)', fontWeight: 'bold' }}>
-                                {log.economy} km/L
+                                 {log.economy.toFixed(2)} km/L
                               </span>
                             ) : (
                               <span style={{ color: 'var(--text-muted)' }}>Initial fill</span>

@@ -351,6 +351,12 @@ function getDtcInfo(code) {
   };
 }
 
+function getRecordSpeed(record) {
+  return record.speed !== null && record.speed !== undefined
+    ? record.speed
+    : (record.gpsSpeed || 0);
+}
+
 // Endpoint to ingest DTC reads
 fastify.post('/api/telemetry/dtc', async (request, reply) => {
   const { dtc, timestamp } = request.body || {};
@@ -479,15 +485,14 @@ fastify.get('/api/performance/records', async (request, reply) => {
 
   // 2. Top speed ever
   let topSpeed = null;
-  const getS = r => (r.speed !== null && r.speed !== undefined) ? r.speed : (r.gpsSpeed || 0);
   const speedRecords = telemetryDataStore
-    .filter(r => getS(r) > 0)
-    .sort((a, b) => getS(b) - getS(a));
+    .filter(r => getRecordSpeed(r) > 0)
+    .sort((a, b) => getRecordSpeed(b) - getRecordSpeed(a));
   if (speedRecords.length > 0) {
     const r = speedRecords[0];
     const drive = findDrive(r.timestamp);
     topSpeed = {
-      speed: getS(r),
+      speed: getRecordSpeed(r),
       timestamp: r.timestamp,
       driveId: drive ? drive.id : null
     };
@@ -617,7 +622,7 @@ fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
         <time>${timeStr}</time>
         <extensions>
           <rpm>${r.rpm ?? 0}</rpm>
-          <speed>${r.speed ?? 0}</speed>
+          <speed>${getRecordSpeed(r)}</speed>
           <temp>${r.coolantTemp ?? 0}</temp>
         </extensions>
       </trkpt>\n`;
@@ -663,7 +668,7 @@ function segmentDrives() {
   for (const record of sorted) {
     const recordFuel = (record.fuelLevel !== null && record.fuelLevel !== undefined) ? record.fuelLevel : null;
     const recordRpm = record.rpm || 0;
-    const recordSpeed = (record.speed !== null && record.speed !== undefined) ? record.speed : (record.gpsSpeed || 0);
+    const recordSpeed = getRecordSpeed(record);
 
     if (!currentDrive) {
       currentDrive = {
@@ -723,7 +728,7 @@ function segmentDrives() {
         const dt = (p2.timestamp - p1.timestamp) / 1000;
         if (dt > 0 && dt < 10) { // Only compare points reasonably close
           // Calculate speed diff in km/h
-          const dv = ((p2.speed !== null && p2.speed !== undefined) ? p2.speed : (p2.gpsSpeed || 0)) - ((p1.speed !== null && p1.speed !== undefined) ? p1.speed : (p1.gpsSpeed || 0));
+          const dv = getRecordSpeed(p2) - getRecordSpeed(p1);
           const accel = dv / dt; // km/h per second
           
           if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
@@ -768,7 +773,7 @@ function segmentDrives() {
     }
 
     // 2. Average Speed
-    const speeds = drive.points.map(p => (p.speed !== null && p.speed !== undefined) ? p.speed : p.gpsSpeed).filter(s => s !== null && s !== undefined);
+    const speeds = drive.points.map(getRecordSpeed);
     const avgSpeed = speeds.length > 0 ? (speeds.reduce((a, b) => a + b, 0) / speeds.length) : 0;
 
     // 3. Start/End locations
@@ -993,11 +998,11 @@ fastify.get('/api/fuel-stats', async (request, reply) => {
 });
 
 // GET all maintenance items with status
-fastify.get('/api/maintenance', async (request, reply) => {
+function getMaintenanceItems() {
   const sortedLogs = [...fuelLogsStore].sort((a, b) => b.odometer - a.odometer);
   const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
 
-  const items = maintenanceStore.map(item => {
+  return maintenanceStore.map(item => {
     const kmSinceService = item.lastServiceOdo !== null && item.lastServiceOdo !== undefined
       ? Math.max(0, currentOdometer - item.lastServiceOdo)
       : 0;
@@ -1033,7 +1038,35 @@ fastify.get('/api/maintenance', async (request, reply) => {
       status
     };
   });
+}
 
+function getMaintenanceStatus(items = getMaintenanceItems()) {
+  let okCount = 0;
+  let dueSoonCount = 0;
+  let overdueCount = 0;
+  let nextUpcoming = null;
+  let minKmRemaining = Infinity;
+
+  items.forEach(item => {
+    if (item.status === 'overdue') overdueCount++;
+    else if (item.status === 'due_soon') dueSoonCount++;
+    else okCount++;
+
+    if (item.kmUntilDue !== null && item.kmUntilDue > 0 && item.kmUntilDue < minKmRemaining) {
+      minKmRemaining = item.kmUntilDue;
+      nextUpcoming = {
+        name: item.name,
+        kmRemaining: item.kmUntilDue,
+        daysRemaining: item.daysUntilDue
+      };
+    }
+  });
+
+  return { okCount, dueSoonCount, overdueCount, nextUpcoming };
+}
+
+fastify.get('/api/maintenance', async (request, reply) => {
+  const items = getMaintenanceItems();
   return reply.send(items);
 })
 
@@ -1141,61 +1174,7 @@ fastify.delete('/api/maintenance/:id', async (request, reply) => {
 
 // GET maintenance summary status
 fastify.get('/api/maintenance/status', async (request, reply) => {
-  const sortedLogs = [...fuelLogsStore].sort((a, b) => b.odometer - a.odometer);
-  const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
-
-  let okCount = 0;
-  let dueSoonCount = 0;
-  let overdueCount = 0;
-  let nextUpcoming = null;
-  let minKmRemaining = Infinity;
-
-  maintenanceStore.forEach(item => {
-    const kmSinceService = item.lastServiceOdo !== null && item.lastServiceOdo !== undefined
-      ? Math.max(0, currentOdometer - item.lastServiceOdo)
-      : 0;
-    
-    const daysSinceService = item.lastServiceDate !== null && item.lastServiceDate !== undefined
-      ? Math.max(0, (Date.now() - item.lastServiceDate) / (1000 * 60 * 60 * 24))
-      : 0;
-
-    let kmUntilDue = null;
-    if (item.intervalKm) {
-      kmUntilDue = item.intervalKm - kmSinceService;
-    }
-
-    let daysUntilDue = null;
-    if (item.intervalDays) {
-      daysUntilDue = item.intervalDays - daysSinceService;
-    }
-
-    let status = 'ok';
-    if ((kmUntilDue !== null && kmUntilDue <= 0) || (daysUntilDue !== null && daysUntilDue <= 0)) {
-      status = 'overdue';
-      overdueCount++;
-    } else if ((kmUntilDue !== null && kmUntilDue <= item.intervalKm * 0.1) || (daysUntilDue !== null && daysUntilDue <= item.intervalDays * 0.1)) {
-      status = 'due_soon';
-      dueSoonCount++;
-    } else {
-      okCount++;
-    }
-
-    if (kmUntilDue !== null && kmUntilDue > 0 && kmUntilDue < minKmRemaining) {
-      minKmRemaining = kmUntilDue;
-      nextUpcoming = {
-        name: item.name,
-        kmRemaining: parseFloat(kmUntilDue.toFixed(1)),
-        daysRemaining: daysUntilDue !== null ? Math.round(daysUntilDue) : null
-      };
-    }
-  });
-
-  return reply.send({
-    okCount,
-    dueSoonCount,
-    overdueCount,
-    nextUpcoming
-  });
+  return reply.send(getMaintenanceStatus());
 });
 
 // Run the server!

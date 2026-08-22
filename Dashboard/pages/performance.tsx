@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
+import { API_HOST } from '../api';
 import {
   Zap, Trophy, Clock, ArrowLeft, TrendingUp, Gauge, Calendar, Activity
 } from 'lucide-react';
@@ -34,8 +35,6 @@ export default function PerformanceDashboard() {
     totalDrives: 0
   });
   const [runs, setRuns] = useState<AccelerationRun[]>([]);
-
-  const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://127.0.0.1:3000');
 
   const fetchData = async () => {
     try {
@@ -105,7 +104,7 @@ export default function PerformanceDashboard() {
             <Gauge size={20} style={{ color: 'var(--accent-cyan)' }} />
           </div>
           <span style={styles.statsCardValue}>
-            {records.topSpeed ? `${records.topSpeed.speed} km/h` : '0'}
+            {records.topSpeed ? `${records.topSpeed.speed.toFixed(2)} km/h` : '0.00 km/h'}
           </span>
           <span style={styles.statsCardSubtext}>
             {records.topSpeed
@@ -120,7 +119,7 @@ export default function PerformanceDashboard() {
             <Activity size={20} style={{ color: 'var(--accent-red)' }} />
           </div>
           <span style={styles.statsCardValue}>
-            {records.highestRpm ? `${records.highestRpm.rpm} RPM` : '0'}
+            {records.highestRpm ? `${records.highestRpm.rpm.toFixed(2)} RPM` : '0.00 RPM'}
           </span>
           <span style={styles.statsCardSubtext}>
             {records.highestRpm
@@ -180,7 +179,7 @@ export default function PerformanceDashboard() {
                         <td style={{ ...styles.td, color: 'var(--accent-amber)', fontWeight: 700 }}>
                           {run.accelTime.toFixed(2)}s
                         </td>
-                        <td style={styles.td}>{run.maxSpeedReached} km/h</td>
+                        <td style={styles.td}>{run.maxSpeedReached.toFixed(2)} km/h</td>
                         <td style={styles.td}>Drive #{run.driveId}</td>
                       </tr>
                     );

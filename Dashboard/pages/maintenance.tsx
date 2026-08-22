@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
+import { API_HOST } from '../api';
 import {
   Wrench, CheckCircle, AlertTriangle, AlertOctagon, PlusCircle, Trash2, ArrowLeft, Calendar, Gauge, FileText
 } from 'lucide-react';
@@ -66,8 +67,6 @@ export default function MaintenanceDashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
-
-  const API_HOST = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.protocol + '//' + window.location.hostname + ':3000' : 'http://127.0.0.1:3000');
 
   const fetchData = async () => {
     try {
@@ -361,7 +360,7 @@ export default function MaintenanceDashboard() {
                       <div>
                         <h3 style={styles.itemName}>{item.name}</h3>
                         <span style={styles.itemMeta}>
-                          Last: {item.lastServiceOdo ? `${item.lastServiceOdo} km` : '0 km'} | {item.lastServiceDate ? new Date(item.lastServiceDate).toLocaleDateString() : 'Never'}
+                          Last: {item.lastServiceOdo ? `${item.lastServiceOdo.toFixed(2)} km` : '0.00 km'} | {item.lastServiceDate ? new Date(item.lastServiceDate).toLocaleDateString() : 'Never'}
                         </span>
                       </div>
                       <div style={styles.itemActions}>
@@ -390,7 +389,7 @@ export default function MaintenanceDashboard() {
                         <div style={styles.detailText}>
                           <Gauge size={12} />
                           <span>
-                            {item.kmSinceService.toFixed(0)} / {item.intervalKm} km ({item.kmUntilDue !== null && item.kmUntilDue <= 0 ? 'Overdue!' : `${item.kmUntilDue?.toFixed(0)} km left`})
+                            {item.kmSinceService.toFixed(2)} / {item.intervalKm.toFixed(2)} km ({item.kmUntilDue !== null && item.kmUntilDue <= 0 ? 'Overdue!' : `${item.kmUntilDue?.toFixed(2)} km left`})
                           </span>
                         </div>
                       )}
