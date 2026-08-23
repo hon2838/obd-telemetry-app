@@ -42,11 +42,14 @@ class MaintenanceActivity : AppCompatActivity() {
         val base = getApiBaseUrl(this)
         mainScope.launch(Dispatchers.IO) {
             try {
-                val statusArr = org.json.JSONArray(httpGet("$base/api/maintenance/status").ifEmpty { "[]" })
+                val statusRaw = httpGet("$base/api/maintenance/status")
+                val statusObj: org.json.JSONObject? = try {
+                    if (statusRaw.isNotBlank()) org.json.JSONObject(statusRaw) else null
+                } catch (_: Exception) { null }
                 val schedArr = try { org.json.JSONArray(httpGet("$base/api/maintenance")) } catch (e: Exception) { org.json.JSONArray("[]") }
 
                 withContext(Dispatchers.Main) {
-                    renderStatus(statusArr)
+                    renderStatus(statusObj)
                     renderSchedules(schedArr)
                 }
             } catch (e: Exception) {
@@ -118,21 +121,10 @@ class MaintenanceActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderStatus(statusArr: org.json.JSONArray) {
-        var ok = 0
-        var soon = 0
-        var overdue = 0
-        for (i in 0 until statusArr.length()) {
-            val s = statusArr.optJSONObject(i) ?: continue
-            when (s.optString("status")) {
-                "overdue" -> overdue++
-                "due_soon" -> soon++
-                else -> ok++
-            }
-        }
-        // Fallback when the status endpoint is empty or unreachable: we still
-        // count from the parsed schedule list below; defer rendering via label
-        // text so the count looks sensible even with 0 entries.
+    private fun renderStatus(statusObj: org.json.JSONObject?) {
+        val ok = statusObj?.optInt("okCount", 0) ?: 0
+        val soon = statusObj?.optInt("dueSoonCount", 0) ?: 0
+        val overdue = statusObj?.optInt("overdueCount", 0) ?: 0
         findViewById<TextView>(R.id.maintOkCount).text = ok.toString()
         findViewById<TextView>(R.id.maintSoonCount).text = soon.toString()
         findViewById<TextView>(R.id.maintOverdueCount).text = overdue.toString()
