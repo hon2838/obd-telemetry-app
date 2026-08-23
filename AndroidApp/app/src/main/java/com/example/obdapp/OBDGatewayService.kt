@@ -174,6 +174,7 @@ class OBDGatewayService : Service(), LocationListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startObdPolling()
         startTelemetrySync()
+        updateNotification("OBD: Service Running")
         return START_STICKY
     }
 
@@ -227,7 +228,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 jsonArray.put(jsonObj)
                             }
 
-                            val apiUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
+                            val apiUrl = "${getApiBaseUrl(this@OBDGatewayService)}/api/telemetry/batch"
                             val url = URL(apiUrl)
                             var connection: HttpURLConnection? = null
                             var responseBody = ""
@@ -299,7 +300,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 fuelArray.put(jsonObj)
                             }
 
-                            val fuelApiUrl = "https://obd-api.hon2838.name.my/api/fuel-logs"
+                            val fuelApiUrl = "${getApiBaseUrl(this@OBDGatewayService)}/api/fuel-logs"
                             val url = URL(fuelApiUrl)
                             var connection: HttpURLConnection? = null
                             val success = try {
@@ -353,7 +354,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 maintArray.put(jsonObj)
                             }
 
-                            val maintApiUrl = "https://obd-api.hon2838.name.my/api/maintenance"
+                            val maintApiUrl = "${getApiBaseUrl(this@OBDGatewayService)}/api/maintenance"
                             val url = URL(maintApiUrl)
                             var connection: HttpURLConnection? = null
                             val success = try {
@@ -431,9 +432,8 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     private fun uploadDtcResult(dtcRaw: String) {
-        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val serverUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
-        val dtcUrl = serverUrl.replace("/batch", "/dtc")
+        val serverUrl = getApiBaseUrl(this)
+        val dtcUrl = "$serverUrl/api/dtc"
         serviceScope.launch {
             try {
                 val url = URL(dtcUrl)
@@ -462,8 +462,8 @@ class OBDGatewayService : Service(), LocationListener {
 
     private fun uploadDtcClearStatus(success: Boolean) {
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val serverUrl = "https://obd-api.hon2838.name.my/api/telemetry/batch"
-        val dtcUrl = serverUrl.replace("/batch", "/dtc/clear")
+        val serverUrl = getApiBaseUrl(this)
+        val dtcUrl = "$serverUrl/api/dtc/clear"
         serviceScope.launch {
             try {
                 val url = URL(dtcUrl)
@@ -693,7 +693,7 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("throttle", telemetry.throttlePos ?: -1)
                         putExtra("volt", telemetry.voltage ?: -1.0f)
                         putExtra("obd_status", if (obdConnection != null) "Connected" else "GPS Only")
-                        putExtra("accel_time", telemetry.accelTime ?: -1.0)
+                        putExtra("timestamp", telemetry.timestamp)
                         putExtra("accOn", telemetry.accOn ?: false)
                         putExtra("headlightOn", telemetry.headlightOn ?: false)
                         putExtra("volume", telemetry.volume ?: -1)
@@ -758,6 +758,7 @@ class OBDGatewayService : Service(), LocationListener {
         val statusIntent = Intent("com.example.obdapp.STATUS_UPDATE").apply {
             setPackage(packageName)
             putExtra("status", text)
+            putExtra("running", true)
         }
         sendBroadcast(statusIntent)
     }
@@ -768,9 +769,13 @@ class OBDGatewayService : Service(), LocationListener {
         altitude = location.altitude
         gpsSpeed = location.speed
     }
-
     override fun onDestroy() {
         super.onDestroy()
+        sendBroadcast(Intent("com.example.obdapp.STATUS_UPDATE").apply {
+            setPackage(packageName)
+            putExtra("status", "Service Stopped")
+            putExtra("running", false)
+        })
         serviceJob.cancel()
         bluetoothSocket?.close()
         try {

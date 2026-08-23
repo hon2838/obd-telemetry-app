@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:parentTag="android.widget.LinearLayout">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/card_bg"
+        android:padding="16dp"
+        android:layout_marginBottom="16dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="10dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="LIVE TELEMETRY READOUT"
+                android:textColor="@color/text_muted"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvTelemetryAge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Waiting for data…"
+                android:textColor="@color/text_muted"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <GridLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:columnCount="2">
+
+            <!-- Latitude/Longitude -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="GPS Position" />
+                <TextView
+                    android:id="@+id/tvGpsPosition"
+                    style="@style/HudValue"
+                    android:text="0.000000, 0.000000" />
+            </LinearLayout>
+
+            <!-- GPS Speed -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="GPS Speed" />
+                <TextView
+                    android:id="@+id/tvGpsSpeed"
+                    style="@style/HudValue"
+                    android:text="0.0 km/h" />
+            </LinearLayout>
+
+            <!-- Altitude -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Altitude" />
+                <TextView
+                    android:id="@+id/tvAltitude"
+                    style="@style/HudValue"
+                    android:text="0 m" />
+            </LinearLayout>
+
+            <!-- OBD Connection -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="OBD Data" />
+                <TextView
+                    android:id="@+id/tvObdStatus"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Engine RPM -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Engine RPM" />
+                <TextView
+                    android:id="@+id/tvEngineRpm"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Coolant Temp -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Coolant Temp" />
+                <TextView
+                    android:id="@+id/tvCoolantTemp"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Throttle Position -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Throttle Position" />
+                <TextView
+                    android:id="@+id/tvThrottlePos"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- System Voltage -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="System Voltage" />
+                <TextView
+                    android:id="@+id/tvVoltage"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+        </GridLayout>
+    </LinearLayout>
+</merge>

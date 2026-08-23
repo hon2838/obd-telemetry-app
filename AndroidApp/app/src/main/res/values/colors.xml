@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#FF121214</color>
+    <color name="surface">#FF1C1C1E</color>
+    <color name="surface_stroke">#FF2C2C2E</color>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#FFAEAEB2</color>
+    <color name="text_muted">#FF8E8E93</color>
+    <color name="accent_green">#FF34C759</color>
+    <color name="accent_blue">#FF2563EB</color>
+    <color name="accent_red">#FFFF3B30</color>
+    <color name="accent_amber">#FFFF9500</color>
+    <color name="ic_launcher_background">#FF101014</color>
+</resources>

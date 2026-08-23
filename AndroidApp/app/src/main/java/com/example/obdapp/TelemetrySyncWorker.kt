@@ -69,8 +69,7 @@ class TelemetrySyncWorker(
     }
 
     private fun uploadToServer(jsonPayload: String): Boolean {
-        val prefs = applicationContext.getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val apiUrl = prefs.getString("API_URL", "http://127.0.0.1:3000/api/telemetry/batch") ?: "http://127.0.0.1:3000/api/telemetry/batch"
+        val apiUrl = "${getApiBaseUrl(applicationContext)}/api/telemetry/batch"
         val url = URL(apiUrl)
         var connection: HttpURLConnection? = null
         return try {
