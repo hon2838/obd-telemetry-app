@@ -144,7 +144,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        setupNavBar()
+        AppNav.setup(this, AppNav.Page.GATEWAY)
 
         statusText = findViewById(R.id.statusText)
         btnStart = findViewById(R.id.btnStart)
@@ -292,16 +292,6 @@ class MainActivity : AppCompatActivity() {
             } catch (e: java.lang.NumberFormatException) {
                 Toast.makeText(this, "Please enter valid numbers.", Toast.LENGTH_SHORT).show()
             }
-        }
-    }
-
-    private fun setupNavBar() {
-        val navGateway = findViewById<android.widget.TextView>(R.id.navGateway)
-        val navDiagnostics = findViewById<android.widget.TextView>(R.id.navDiagnostics)
-        navGateway.setBackgroundResource(R.drawable.nav_pill_active)
-        navGateway.setTextColor(android.graphics.Color.parseColor("#5ED7D0"))
-        navDiagnostics.setOnClickListener {
-            startActivity(android.content.Intent(this, DiagnosticsActivity::class.java))
         }
     }
 
