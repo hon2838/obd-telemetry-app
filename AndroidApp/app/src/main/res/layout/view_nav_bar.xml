@@ -32,7 +32,23 @@
             android:layout_height="wrap_content"
             android:paddingHorizontal="20dp"
             android:paddingVertical="8dp"
+            android:layout_marginEnd="10dp"
             android:text="DIAGNOSTICS"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.08"
+            android:textColor="@color/text_secondary"
+            android:background="@drawable/nav_pill_inactive"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/navTrips"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="20dp"
+            android:paddingVertical="8dp"
+            android:text="TRIPS"
             android:textSize="13sp"
             android:textStyle="bold"
             android:letterSpacing="0.08"

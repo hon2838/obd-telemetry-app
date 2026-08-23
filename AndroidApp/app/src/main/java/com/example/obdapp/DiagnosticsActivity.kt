@@ -26,30 +26,12 @@ class DiagnosticsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_diagnostics)
 
-        setupNavBar()
+        AppNav.setup(this, AppNav.Page.DIAGNOSTICS)
 
         findViewById<TextView>(R.id.btnReadDtc).setOnClickListener { queueCommand("read_dtc") }
         findViewById<TextView>(R.id.btnClearDtc).setOnClickListener { confirmAndClear() }
 
         fetchDiagnostics()
-    }
-
-    private fun setupNavBar() {
-        val navGateway = findViewById<TextView>(R.id.navGateway)
-        val navDiagnostics = findViewById<TextView>(R.id.navDiagnostics)
-        navGateway.setOnClickListener {
-            startActivity(android.content.Intent(this, MainActivity::class.java))
-        }
-        navDiagnostics.setOnClickListener {
-            startActivity(android.content.Intent(this, DiagnosticsActivity::class.java))
-        }
-        setActiveNav(navGateway, false)
-        setActiveNav(navDiagnostics, true)
-    }
-
-    private fun setActiveNav(view: TextView, active: Boolean) {
-        view.setBackgroundResource(if (active) R.drawable.nav_pill_active else R.drawable.nav_pill_inactive)
-        view.setTextColor(if (active) Color.parseColor("#5ED7D0") else Color.parseColor("#AEAEB2"))
     }
 
     private fun confirmAndClear() {
