@@ -83,7 +83,23 @@
             android:layout_height="wrap_content"
             android:paddingHorizontal="14dp"
             android:paddingVertical="8dp"
+            android:layout_marginEnd="8dp"
             android:text="PERF"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.06"
+            android:textColor="@color/text_secondary"
+            android:background="@drawable/nav_pill_inactive"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/navMaint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="8dp"
+            android:text="MAINT"
             android:textSize="13sp"
             android:textStyle="bold"
             android:letterSpacing="0.06"
