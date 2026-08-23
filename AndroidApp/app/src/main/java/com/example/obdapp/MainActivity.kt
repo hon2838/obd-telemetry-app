@@ -22,6 +22,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 
 class MainActivity : AppCompatActivity() {
@@ -44,11 +46,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvVolume: TextView
     private lateinit var tvWifiSsid: TextView
     private lateinit var tvBtConnected: TextView
+    private lateinit var tvTelemetryAge: TextView
 
     private val mainJob = kotlinx.coroutines.Job()
     private val mainScope = CoroutineScope(Dispatchers.Main + mainJob)
     private val PERMISSION_REQUEST_CODE = 101
     private var suppressInitialSpinnerCallback = false
+    private var lastTelemetryAt = 0L
+    private var ageTicker: kotlinx.coroutines.Job? = null
 
     private val telemetryReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -68,6 +73,8 @@ class MainActivity : AppCompatActivity() {
                     val volume = it.getIntExtra("volume", -1)
                     val wifiSsid = it.getStringExtra("wifiSsid") ?: ""
                     val btConnected = it.getBooleanExtra("btConnected", false)
+                    val ts = it.getLongExtra("timestamp", 0L)
+                    if (ts > 0) lastTelemetryAt = ts
 
                     tvGpsPosition.text = String.format("%.6f, %.6f", lat, lon)
                     tvGpsSpeed.text = String.format("%.1f km/h", speed)
@@ -75,9 +82,16 @@ class MainActivity : AppCompatActivity() {
                     tvObdStatus.text = obdStatus
 
                     tvEngineRpm.text = if (rpm != -1) "$rpm RPM" else "N/A"
-                    tvCoolantTemp.text = if (coolant != -1) "$coolant °C" else "N/A"
+                    tvCoolantTemp.setTextColor(if (coolant > 105) getColor(R.color.accent_red) else getColor(R.color.text_primary))
                     tvThrottlePos.text = if (throttle != -1) "$throttle %" else "N/A"
-                    tvVoltage.text = if (volt >= 0.0f) String.format("%.1f V", volt) else "N/A"
+                    tvVoltage.setTextColor(
+                        when {
+                            volt < 0f -> getColor(R.color.text_primary)
+                            volt < 11.8f -> getColor(R.color.accent_red)
+                            volt < 12.5f -> getColor(R.color.accent_amber)
+                            else -> getColor(R.color.text_primary)
+                        }
+                    )
                     
                     tvAccState.text = if (accOn) "ON" else "OFF"
                     tvHeadlightState.text = if (headlightOn) "ON" else "OFF"
@@ -86,6 +100,8 @@ class MainActivity : AppCompatActivity() {
                     tvBtConnected.text = if (btConnected) "Connected" else "Disconnected"
                 } else if (it.action == "com.example.obdapp.STATUS_UPDATE") {
                     val status = it.getStringExtra("status") ?: "Service Stopped"
+                    val running = it.getBooleanExtra("running", status != "Service Stopped")
+                    setServiceRunningUi(running)
                     updateStatusUi(status)
                 }
             }
@@ -94,15 +110,34 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatusUi(status: String) {
         statusText.text = status
-        val colorHex = when {
-            status.contains("Active") || status.contains("Polling") -> "#34C759" // Green
-            status.contains("GPS Only") -> "#FF9500" // Amber
-            status.contains("Error") -> "#FF3B30" // Red
-            else -> "#8E8E93" // Gray
+        val colorRes = when {
+            status.contains("Error", true) || status.contains("Lost", true) ||
+                status.contains("Denied", true) -> R.color.accent_red
+            status.contains("Connected", true) || status.contains("Running", true) -> R.color.accent_green
+            status.contains("GPS Only", true) || status.contains("Suspended", true) ||
+                status.contains("Connecting", true) -> R.color.accent_amber
+            else -> R.color.text_muted
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            statusIndicator.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor(colorHex))
+        statusIndicator.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(getColor(colorRes))
+    }
+
+    private fun setServiceRunningUi(running: Boolean) {
+        btnStart.isEnabled = !running
+        btnStop.isEnabled = running
+        btnStart.alpha = if (running) 0.5f else 1f
+        btnStop.alpha = if (running) 1f else 0.5f
+    }
+
+    private fun updateTelemetryAge() {
+        if (lastTelemetryAt == 0L) {
+            tvTelemetryAge.text = getString(R.string.telemetry_waiting)
+            tvTelemetryAge.setTextColor(getColor(R.color.text_muted))
+            return
         }
+        val ageSec = (System.currentTimeMillis() - lastTelemetryAt) / 1000
+        tvTelemetryAge.text = if (ageSec < 5) getString(R.string.telemetry_live) else getString(R.string.telemetry_updated, ageSec)
+        tvTelemetryAge.setTextColor(if (ageSec > 90) getColor(R.color.accent_red) else getColor(R.color.text_muted))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -127,6 +162,9 @@ class MainActivity : AppCompatActivity() {
         tvVolume = findViewById(R.id.tvVolume)
         tvWifiSsid = findViewById(R.id.tvWifiSsid)
         tvBtConnected = findViewById(R.id.tvBtConnected)
+        tvTelemetryAge = findViewById(R.id.tvTelemetryAge)
+        val etApiUrl = findViewById<EditText>(R.id.etApiUrl)
+        val btnApiSave = findViewById<Button>(R.id.btnApiSave)
         val cbAutoStart = findViewById<android.widget.CheckBox>(R.id.cbAutoStart)
 
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
@@ -134,6 +172,19 @@ class MainActivity : AppCompatActivity() {
         cbAutoStart.isChecked = prefs.getBoolean("AUTO_START_BOOT", true)
         cbAutoStart.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean("AUTO_START_BOOT", isChecked).apply()
+        }
+
+        // API Server Config card — persists the backend origin used by the
+        // gateway service, fuel sync, and TelemetrySyncWorker.
+        etApiUrl.setText(getApiBaseUrl(this))
+        btnApiSave.setOnClickListener {
+            val entered = etApiUrl.text.toString().trim()
+            if (!entered.startsWith("http://") && !entered.startsWith("https://")) {
+                Toast.makeText(this, "URL must start with http:// or https://", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            saveApiBaseUrl(this, entered)
+            Toast.makeText(this, "API URL saved", Toast.LENGTH_SHORT).show()
         }
 
         setupBluetoothSpinner()
@@ -184,53 +235,56 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 val db = AppDatabase.getDatabase(applicationContext)
+                btnLogFuel.isEnabled = false
                 mainScope.launch(Dispatchers.IO) {
-                    db.fuelLogDao().insert(fuelLog)
-                    
-                    // Attempt immediate sync
                     try {
-                        val unsyncedLogs = db.fuelLogDao().getUnsyncedLogs()
-                        if (unsyncedLogs.isNotEmpty()) {
-                            val fuelArray = org.json.JSONArray()
-                            unsyncedLogs.forEach { log ->
-                                val jsonObj = org.json.JSONObject().apply {
-                                    put("id", log.id)
-                                    put("timestamp", log.timestamp)
-                                    put("litres", log.litres)
-                                    put("odometer", log.odometer)
-                                    put("source", "app")
-                                }
-                                fuelArray.put(jsonObj)
-                            }
-                            
-                            val apiUrl = "https://obd-api.hon2838.name.my/api/fuel-logs"
-                            val url = java.net.URL(apiUrl)
-                            val connection = url.openConnection() as java.net.HttpURLConnection
-                            connection.requestMethod = "POST"
-                            connection.setRequestProperty("Content-Type", "application/json")
-                            connection.setRequestProperty("X-API-Key", "SUPER_SECURE_OBD_APP_KEY_2026")
-                            connection.doOutput = true
-                            connection.connectTimeout = 5000
-                            
-                            val writer = java.io.OutputStreamWriter(connection.outputStream)
-                            writer.write(fuelArray.toString())
-                            writer.flush()
-                            writer.close()
-                            
-                            if (connection.responseCode in 200..299) {
-                                unsyncedLogs.forEach { it.synced = true }
-                                db.fuelLogDao().updateLogs(unsyncedLogs)
-                                db.fuelLogDao().deleteSyncedLogs()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+                        db.fuelLogDao().insert(fuelLog)
 
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "Refuel logged successfully!", Toast.LENGTH_SHORT).show()
-                        etFuelLitres.text.clear()
-                        etFuelOdometer.text.clear()
+                        // Attempt immediate sync
+                        try {
+                            val unsyncedLogs = db.fuelLogDao().getUnsyncedLogs()
+                            if (unsyncedLogs.isNotEmpty()) {
+                                val fuelArray = org.json.JSONArray()
+                                unsyncedLogs.forEach { log ->
+                                    val jsonObj = org.json.JSONObject().apply {
+                                        put("id", log.id)
+                                        put("timestamp", log.timestamp)
+                                        put("litres", log.litres)
+                                        put("odometer", log.odometer)
+                                        put("source", "app")
+                                    }
+                                    fuelArray.put(jsonObj)
+                                }
+
+                                val url = java.net.URL(getApiBaseUrl(this@MainActivity) + "/api/fuel-logs")
+                                val connection = url.openConnection() as java.net.HttpURLConnection
+                                connection.requestMethod = "POST"
+                                connection.setRequestProperty("Content-Type", "application/json")
+                                connection.setRequestProperty("X-API-Key", "SUPER_SECURE_OBD_APP_KEY_2026")
+                                connection.doOutput = true
+                                connection.connectTimeout = 5000
+
+                                val writer = java.io.OutputStreamWriter(connection.outputStream)
+                                writer.write(fuelArray.toString())
+                                writer.flush()
+                                writer.close()
+
+                                if (connection.responseCode in 200..299) {
+                                    unsyncedLogs.forEach { it.synced = true }
+                                    db.fuelLogDao().updateLogs(unsyncedLogs)
+                                    db.fuelLogDao().deleteSyncedLogs()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    } finally {
+                        withContext(Dispatchers.Main) {
+                            btnLogFuel.isEnabled = true
+                            Toast.makeText(this@MainActivity, "Refuel logged successfully!", Toast.LENGTH_SHORT).show()
+                            etFuelLitres.text.clear()
+                            etFuelOdometer.text.clear()
+                        }
                     }
                 }
             } catch (e: java.lang.NumberFormatException) {
@@ -259,8 +313,8 @@ class MainActivity : AppCompatActivity() {
             macList.add("")
         }
 
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, deviceList)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        val adapter = ArrayAdapter(this, R.layout.spinner_closed_item, deviceList)
+        adapter.setDropDownViewResource(R.layout.spinner_dropdown_item)
         spinner.adapter = adapter
 
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
@@ -302,11 +356,13 @@ class MainActivity : AppCompatActivity() {
             startService(intent)
         }
         statusText.text = "Service Running..."
+        setServiceRunningUi(true)
     }
 
     private fun stopOBDService() {
         val intent = Intent(this, OBDGatewayService::class.java)
         stopService(intent)
+        setServiceRunningUi(false)
         updateStatusUi("Service Stopped")
     }
 
@@ -359,10 +415,16 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(telemetryReceiver, filter)
 
         val isRunning = isServiceRunning(OBDGatewayService::class.java)
-        if (isRunning) {
-            updateStatusUi("Service Running...")
-        } else {
-            updateStatusUi("Service Stopped")
+        setServiceRunningUi(isRunning)
+        updateStatusUi(if (isRunning) "Service Running..." else "Service Stopped")
+
+        // Tick once per second so the staleness caption ages without a broadcast
+        ageTicker?.cancel()
+        ageTicker = mainScope.launch {
+            while (isActive) {
+                delay(1000)
+                updateTelemetryAge()
+            }
         }
     }
 
@@ -373,6 +435,8 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        ageTicker?.cancel()
+        ageTicker = null
     }
 
     override fun onDestroy() {

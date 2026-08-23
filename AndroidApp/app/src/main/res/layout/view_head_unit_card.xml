@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:parentTag="android.widget.LinearLayout">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/card_bg"
+        android:padding="16dp"
+        android:layout_marginBottom="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="HEAD UNIT STATUS"
+            android:textColor="@color/text_muted"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
+
+        <GridLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:columnCount="2">
+
+            <!-- ACC State -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="ACC Power" />
+                <TextView
+                    android:id="@+id/tvAccState"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Headlight State -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Headlight" />
+                <TextView
+                    android:id="@+id/tvHeadlightState"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Volume -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Volume Level" />
+                <TextView
+                    android:id="@+id/tvVolume"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- WiFi SSID -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="WiFi SSID" />
+                <TextView
+                    android:id="@+id/tvWifiSsid"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- BT Connected -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Bluetooth" />
+                <TextView
+                    android:id="@+id/tvBtConnected"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+        </GridLayout>
+    </LinearLayout>
+</merge>

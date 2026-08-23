@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="telemetry_waiting">Waiting for data…</string>
+    <string name="telemetry_live">Live</string>
+    <string name="telemetry_updated">Updated %1$ds ago</string>
+</resources>
