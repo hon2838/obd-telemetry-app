@@ -9,12 +9,13 @@ import android.widget.TextView
 // view_nav_bar.xml, then call AppNav.setup(activity, page) in onCreate.
 object AppNav {
 
-    enum class Page { GATEWAY, DIAGNOSTICS, TRIPS }
+    enum class Page { GATEWAY, DIAGNOSTICS, TRIPS, FUEL }
 
     fun setup(activity: Activity, current: Page) {
         bind(activity, current, Page.GATEWAY, R.id.navGateway, MainActivity::class.java)
         bind(activity, current, Page.DIAGNOSTICS, R.id.navDiagnostics, DiagnosticsActivity::class.java)
         bind(activity, current, Page.TRIPS, R.id.navTrips, TripsActivity::class.java)
+        bind(activity, current, Page.FUEL, R.id.navFuel, FuelActivity::class.java)
     }
 
     private fun bind(activity: Activity, current: Page, page: Page, pillId: Int, target: Class<*>) {
