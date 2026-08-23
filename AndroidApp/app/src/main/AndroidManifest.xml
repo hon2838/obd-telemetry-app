@@ -37,6 +37,7 @@
         <activity android:name=".DiagnosticsActivity" />
         <activity android:name=".TripsActivity" />
         <activity android:name=".FuelActivity" />
+        <activity android:name=".PerformanceActivity" />
 
         <service
             android:name=".OBDGatewayService"

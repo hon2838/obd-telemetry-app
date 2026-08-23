@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <include layout="@layout/view_nav_bar" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Performance"
+            android:textColor="@color/text_primary"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Personal records and acceleration runs"
+            android:textColor="@color/text_muted"
+            android:textSize="14sp"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Records: 2x2 grid -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="10dp">
+
+            <LinearLayout style="@style/PerfCard">
+                <TextView android:id="@+id/perfBest0to100" style="@style/PerfValue" />
+                <TextView android:id="@+id/perfBest0to100Sub" style="@style/PerfSub" />
+                <TextView style="@style/PerfLabel" android:text="BEST 0-100 KM/H" />
+            </LinearLayout>
+
+            <LinearLayout style="@style/PerfCard" android:layout_marginStart="8dp">
+                <TextView android:id="@+id/perfTopSpeed" style="@style/PerfValue" />
+                <TextView android:id="@+id/perfTopSpeedSub" style="@style/PerfSub" />
+                <TextView style="@style/PerfLabel" android:text="TOP SPEED EVER" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout style="@style/PerfCard">
+                <TextView android:id="@+id/perfHighestRpm" style="@style/PerfValue" />
+                <TextView android:id="@+id/perfHighestRpmSub" style="@style/PerfSub" />
+                <TextView style="@style/PerfLabel" android:text="HIGHEST RPM" />
+            </LinearLayout>
+
+            <LinearLayout style="@style/PerfCard" android:layout_marginStart="8dp">
+                <TextView android:id="@+id/perfLongestDrive" style="@style/PerfValue" />
+                <TextView android:id="@+id/perfLongestDriveSub" style="@style/PerfSub" />
+                <TextView style="@style/PerfLabel" android:text="LONGEST DRIVE" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Lifetime summary -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/card_bg"
+            android:padding="14dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:id="@+id/perfLifetime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="—"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0-100 KM/H ACCELERATION RUNS"
+            android:textColor="@color/text_muted"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
+
+        <LinearLayout
+            android:id="@+id/runsContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Loading runs…"
+                android:textColor="@color/text_muted"
+                android:textSize="13sp"
+                android:padding="8dp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>
