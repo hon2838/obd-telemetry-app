@@ -38,8 +38,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
-const val API_KEY = "SUPER_SECURE_OBD_APP_KEY_2026"
-
 // Define custom commands for parameters not built into eltonvs:kotlin-obd-api or to ensure compatibility
 class LoadCommand : ObdCommand() {
     override val tag = "ENGINE_LOAD"
@@ -236,7 +234,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 connection = url.openConnection() as HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", API_KEY)
+                                connection.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
 
@@ -307,7 +305,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 connection = url.openConnection() as HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", API_KEY)
+                                connection.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
                                 connection.readTimeout = 5000
@@ -361,7 +359,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 connection = url.openConnection() as HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", API_KEY)
+                                connection.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
                                 connection.readTimeout = 5000
@@ -440,9 +438,9 @@ class OBDGatewayService : Service(), LocationListener {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-API-Key", API_KEY)
+                conn.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
                 conn.doOutput = true
-                
+
                 val payload = JSONObject().apply {
                     put("dtc", dtcRaw)
                     put("timestamp", System.currentTimeMillis())
@@ -461,7 +459,6 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     private fun uploadDtcClearStatus(success: Boolean) {
-        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
         val serverUrl = getApiBaseUrl(this)
         val dtcUrl = "$serverUrl/api/dtc/clear"
         serviceScope.launch {
@@ -470,9 +467,9 @@ class OBDGatewayService : Service(), LocationListener {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-API-Key", API_KEY)
+                conn.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
                 conn.doOutput = true
-                
+
                 val payload = JSONObject().apply {
                     put("success", success)
                     put("timestamp", System.currentTimeMillis())

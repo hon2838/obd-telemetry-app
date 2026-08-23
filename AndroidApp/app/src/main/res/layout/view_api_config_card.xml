@@ -40,12 +40,33 @@
             android:inputType="textUri"
             android:hint="https://obd-api.hon2838.name.my" />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="API Key (X-API-Key):"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:layout_marginTop="10dp"
+            android:layout_marginBottom="6dp" />
+
+        <EditText
+            android:id="@+id/etApiKey"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:background="@drawable/spinner_bg"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp"
+            android:inputType="textVisiblePassword"
+            android:hint="API key" />
+
         <Button
             android:id="@+id/btnApiSave"
             android:layout_width="match_parent"
             android:layout_height="42dp"
             android:layout_marginTop="10dp"
-            android:text="Save API URL"
+            android:text="Save API Settings"
             android:textColor="#FFFFFF"
             android:textSize="13sp"
             android:textStyle="bold"

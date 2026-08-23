@@ -34,11 +34,11 @@
             </intent-filter>
         </activity>
 
-        <activity android:name=".DiagnosticsActivity" />
-        <activity android:name=".TripsActivity" />
-        <activity android:name=".FuelActivity" />
-        <activity android:name=".PerformanceActivity" />
-        <activity android:name=".MaintenanceActivity" />
+        <activity android:name=".DiagnosticsActivity" android:exported="false" />
+        <activity android:name=".TripsActivity" android:exported="false" />
+        <activity android:name=".FuelActivity" android:exported="false" />
+        <activity android:name=".PerformanceActivity" android:exported="false" />
+        <activity android:name=".MaintenanceActivity" android:exported="false" />
 
         <service
             android:name=".OBDGatewayService"

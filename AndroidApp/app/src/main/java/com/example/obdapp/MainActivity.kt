@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private var suppressInitialSpinnerCallback = false
     private var lastTelemetryAt = 0L
     private var ageTicker: kotlinx.coroutines.Job? = null
+    private var sparkline: SparklineView? = null
 
     private val telemetryReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -93,6 +94,8 @@ class MainActivity : AppCompatActivity() {
                         }
                     )
                     
+                    sparkline?.push(if (rpm != -1) rpm else null, speed)
+
                     tvAccState.text = if (accOn) "ON" else "OFF"
                     tvHeadlightState.text = if (headlightOn) "ON" else "OFF"
                     tvVolume.text = if (volume != -1) volume.toString() else "N/A"
@@ -165,7 +168,9 @@ class MainActivity : AppCompatActivity() {
         tvWifiSsid = findViewById(R.id.tvWifiSsid)
         tvBtConnected = findViewById(R.id.tvBtConnected)
         tvTelemetryAge = findViewById(R.id.tvTelemetryAge)
+        sparkline = findViewById(R.id.sparkline)
         val etApiUrl = findViewById<EditText>(R.id.etApiUrl)
+        val etApiKey = findViewById<EditText>(R.id.etApiKey)
         val btnApiSave = findViewById<Button>(R.id.btnApiSave)
         val cbAutoStart = findViewById<android.widget.CheckBox>(R.id.cbAutoStart)
 
@@ -176,17 +181,20 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean("AUTO_START_BOOT", isChecked).apply()
         }
 
-        // API Server Config card — persists the backend origin used by the
-        // gateway service, fuel sync, and TelemetrySyncWorker.
+        // API Server Config card — persists the backend origin and ingest key
+        // used by the gateway service, fuel sync, and TelemetrySyncWorker.
         etApiUrl.setText(getApiBaseUrl(this))
+        etApiKey.setText(getApiKey(this))
         btnApiSave.setOnClickListener {
             val entered = etApiUrl.text.toString().trim()
+            val keyEntered = etApiKey.text.toString().trim()
             if (!entered.startsWith("http://") && !entered.startsWith("https://")) {
                 Toast.makeText(this, "URL must start with http:// or https://", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             saveApiBaseUrl(this, entered)
-            Toast.makeText(this, "API URL saved", Toast.LENGTH_SHORT).show()
+            if (keyEntered.isNotEmpty()) saveApiKey(this, keyEntered)
+            Toast.makeText(this, "API settings saved", Toast.LENGTH_SHORT).show()
         }
 
         setupBluetoothSpinner()
@@ -262,7 +270,7 @@ class MainActivity : AppCompatActivity() {
                                 val connection = url.openConnection() as java.net.HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", "SUPER_SECURE_OBD_APP_KEY_2026")
+                                connection.setRequestProperty("X-API-Key", getApiKey(this@MainActivity))
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
 
