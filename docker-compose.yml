@@ -2,27 +2,60 @@ version: '3.8'
 
 services:
   server:
-    build: ./Server
+    build:
+      context: ./Server
+      # Build identity. The Makefile / CI passes these in
+      # via `--build-arg`, otherwise the Dockerfile defaults
+      # (dev / unknown) are used. The resulting image
+      # reports them in /healthz and `docker inspect`.
+      args:
+        - SERVICE_VERSION=${SERVICE_VERSION:-1.1.0}
+        - BUILD_COMMIT=${BUILD_COMMIT:-unknown}
+        - BUILD_TIME=${BUILD_TIME:-unknown}
+    image: obd-telemetry-server:${BUILD_COMMIT:-latest}
     ports:
       - "3000:3000"
-    environment:
-      - NODE_ENV=production
+    env_file:
+      # Reads the .env file at the repo root. Contains
+      # OBD_API_KEY and DASHBOARD_PASSWORD. If the keys are
+      # missing, the server boot-guard (Server/server.js)
+      # refuses to start. If the .env file is absent the
+      # container is created but the server exits 1
+      # immediately, which is the right fail-closed behavior.
+      - .env
     volumes:
       - server-data:/app/data
     restart: always
+    healthcheck:
+      # Mirror the Dockerfile HEALTHCHECK. Compose's block
+      # wins for `docker ps`; the Dockerfile block wins for
+      # `docker inspect`. Both should match.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/healthz | grep -q '\"status\":\"ok\"' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   dashboard:
     build:
       context: ./Dashboard
       args:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+        - SERVICE_VERSION=${SERVICE_VERSION:-1.1.0}
+        - BUILD_COMMIT=${BUILD_COMMIT:-unknown}
+        - BUILD_TIME=${BUILD_TIME:-unknown}
+    image: obd-telemetry-dashboard:${BUILD_COMMIT:-latest}
     ports:
       - "3003:3001"
-    environment:
-      - NODE_ENV=production
+    env_file:
+      - .env
     depends_on:
       - server
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   server-data:
