@@ -1227,11 +1227,55 @@ fastify.get('/api/maintenance/status', async (request, reply) => {
   return reply.send(getMaintenanceStatus());
 });
 
+// Liveness + readiness probe. Used by the container HEALTHCHECK
+// and external uptime monitors. Returns 200 with build identity
+// (version + commit) and a snapshot of the in-memory data store
+// size. No auth required: the point of a healthcheck is that
+// an external probe (k8s, compose, an uptime monitor) can call
+// it without credentials. We deliberately do NOT include any
+// secrets in the response.
+const PACKAGE_VERSION = require('./package.json').version;
+let SERVER_STARTED_AT = null;
+
+fastify.get('/healthz', async (request, reply) => {
+  return reply.send({
+    status: 'ok',
+    service: 'obd-telemetry-server',
+    version: PACKAGE_VERSION,
+    uptime_seconds: SERVER_STARTED_AT ? Math.floor((Date.now() - SERVER_STARTED_AT) / 1000) : 0,
+    telemetry_records: telemetryDataStore.length,
+    fuel_logs: fuelLogsStore.length,
+    maintenance_items: typeof maintenanceItemsStore !== 'undefined' ? maintenanceItemsStore.length : 0,
+  });
+});
+
 // Run the server!
 const start = async () => {
   try {
     await fastify.listen({ port: 3000, host: '0.0.0.0' })
+    SERVER_STARTED_AT = Date.now()
     fastify.log.info(`Server listening on ${fastify.server.address().port}`)
+
+    // Graceful shutdown: on SIGTERM/SIGINT, call fastify.close()
+    // which (1) stops accepting new connections, (2) waits for
+    // in-flight requests to finish, (3) calls onClose hooks.
+    // This is the difference between retaining the last batch
+    // and losing up to a few seconds of telemetry on a docker
+    // restart. We do NOT use process.exit() here because
+    // fastify.close() handles the lifecycle internally.
+    const shutdown = async (signal) => {
+      fastify.log.info(`Received ${signal}, closing fastify gracefully...`)
+      try {
+        await fastify.close()
+        fastify.log.info('fastify closed cleanly, exiting')
+        process.exit(0)
+      } catch (err) {
+        fastify.log.error(`Error during shutdown: ${err}`)
+        process.exit(1)
+      }
+    }
+    process.on('SIGTERM', () => shutdown('SIGTERM'))
+    process.on('SIGINT', () => shutdown('SIGINT'))
   } catch (err) {
     fastify.log.error(err)
     process.exit(1)
