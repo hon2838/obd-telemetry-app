@@ -1,7 +1,35 @@
 const fastify = require('fastify')({ logger: true })
 const cors = require('@fastify/cors')
+const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
+
+// Read the expected API key from the environment at module load.
+// We deliberately do NOT provide a default: shipping a literal
+// in the repo or the running image means anyone with the source
+// (or any public mirror) has the credential. Fail-closed on
+// missing — the server refuses to start.
+const OBD_API_KEY = process.env.OBD_API_KEY
+if (!OBD_API_KEY || OBD_API_KEY.length < 32) {
+  // Reject early so a misconfigured deploy (forgot to set the
+  // env var) can't silently start accepting the wrong key.
+  // We require >=32 chars so even an accidentally-short var
+  // (e.g. "test") can't be the production credential.
+  console.error('FATAL: OBD_API_KEY env var is missing or < 32 chars. Refusing to start.')
+  process.exit(1)
+}
+
+// Constant-time comparison helper. Used to authenticate the
+// X-API-Key header without leaking the expected key one byte
+// at a time. Returns false (and never throws) for mismatched
+// lengths or empty inputs; callers should check truthiness.
+function constantTimeEquals(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  const aBuf = Buffer.from(a)
+  const bBuf = Buffer.from(b)
+  if (aBuf.length !== bBuf.length) return false
+  return crypto.timingSafeEqual(aBuf, bBuf)
+}
 
 const DB_DIR = path.join(__dirname, 'data')
 const DB_PATH = path.join(DB_DIR, 'telemetry.json')
@@ -168,7 +196,11 @@ fastify.post('/api/telemetry/batch', {
 }, async (request, reply) => {
   try {
     const apiKey = request.headers['x-api-key'];
-    if (apiKey !== 'SUPER_SECURE_OBD_APP_KEY_2026') {
+    // Constant-time comparison to prevent timing attacks that
+    // could leak the expected key one byte at a time. The key
+    // is read from process.env.OBD_API_KEY at boot (see top of
+    // file); this branch never falls back to a literal.
+    if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
       return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
     }
 
@@ -895,7 +927,7 @@ fastify.post('/api/fuel-logs', async (request, reply) => {
     const apiKey = request.headers['x-api-key'];
     // Dashboard doesn't send API key currently, so we allow requests without it.
     // However, if one IS provided, it must be correct.
-    if (apiKey && apiKey !== 'SUPER_SECURE_OBD_APP_KEY_2026') {
+    if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
       return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
     }
 
@@ -1095,7 +1127,7 @@ fastify.post('/api/maintenance', async (request, reply) => {
     const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
     
     const apiKey = request.headers['x-api-key'];
-    if (apiKey && apiKey !== 'SUPER_SECURE_OBD_APP_KEY_2026') {
+    if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
       return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
     }
 

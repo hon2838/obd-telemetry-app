@@ -1,3 +1,10 @@
+// The server requires OBD_API_KEY to start (we removed the
+// historical default literal as a security fix). Tests must
+// provide a sufficiently-long key; we use a 64-char hex string
+// so the test matches the production 32-char minimum.
+const TEST_API_KEY = 'a'.repeat(64);
+process.env.OBD_API_KEY = TEST_API_KEY;
+
 const { fastify, segmentDrives, getHaversineDistance, telemetryDataStore } = require('./server');
 const request = require('supertest');
 
@@ -93,6 +100,31 @@ describe('API Endpoints Integration', () => {
       expect(response.statusCode).toBe(401);
     });
 
+    it('returns 401 if API key is the right length but wrong value', async () => {
+      // Constant-time comparison must reject the right length
+      // with a 401, not crash, when the bytes differ. Uses the
+      // same length as TEST_API_KEY to isolate the value from
+      // the length check.
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/api/telemetry/batch',
+        headers: { 'x-api-key': 'b'.repeat(TEST_API_KEY.length) },
+        payload: []
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('returns 401 if no API key header is sent', async () => {
+      // Tests the !apiKey branch in the handler (don't trip
+      // the constant-time comparison with an empty buffer).
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/api/telemetry/batch',
+        payload: []
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
     it('ingests telemetry successfully with correct API key', async () => {
       const payload = [{
         timestamp: Date.now(),
@@ -102,7 +134,7 @@ describe('API Endpoints Integration', () => {
       const response = await fastify.inject({
         method: 'POST',
         url: '/api/telemetry/batch',
-        headers: { 'x-api-key': 'SUPER_SECURE_OBD_APP_KEY_2026' },
+        headers: { 'x-api-key': TEST_API_KEY },
         payload: payload
       });
       

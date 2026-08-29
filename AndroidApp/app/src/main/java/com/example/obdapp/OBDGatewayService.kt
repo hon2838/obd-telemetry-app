@@ -194,6 +194,21 @@ class OBDGatewayService : Service(), LocationListener {
                 var hadFailures = false
                 var hadSuccess = false
                 try {
+                    // Guard: no API key configured. The previous
+                    // version of this app shipped a default key
+                    // in the APK ("SUPER_SECURE_OBD_APP_KEY_2026")
+                    // which made the shared secret recoverable
+                    // by anyone who installed the app. The user
+                    // now has to enter the key from the server's
+                    // deploy config; until they do, we skip the
+                    // sync and surface the problem in the
+                    // notification so it's obvious instead of
+                    // silently failing with 401s.
+                    if (getApiKey(applicationContext).isEmpty()) {
+                        updateNotification("OBD: API key not configured — open API Server Config to set it")
+                        delay(syncDelay)
+                        continue
+                    }
                     // Only attempt sync if network is available
                     if (isNetworkAvailable()) {
                         val unsyncedRecords = dao.getUnsyncedRecords()
