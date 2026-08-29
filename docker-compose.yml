@@ -15,14 +15,12 @@ services:
     image: obd-telemetry-server:${BUILD_COMMIT:-latest}
     ports:
       - "3000:3000"
-    env_file:
-      # Reads the .env file at the repo root. Contains
-      # OBD_API_KEY and DASHBOARD_PASSWORD. If the keys are
-      # missing, the server boot-guard (Server/server.js)
-      # refuses to start. If the .env file is absent the
-      # container is created but the server exits 1
-      # immediately, which is the right fail-closed behavior.
-      - .env
+    environment:
+      # Required. The server boot-guard (Server/server.js)
+      # refuses to start if OBD_API_KEY is missing or
+      # < 32 chars. Set in .env at the repo root.
+      - OBD_API_KEY=${OBD_API_KEY}
+      - NODE_ENV=production
     volumes:
       - server-data:/app/data
     restart: always
@@ -46,8 +44,10 @@ services:
     image: obd-telemetry-dashboard:${BUILD_COMMIT:-latest}
     ports:
       - "3003:3001"
-    env_file:
-      - .env
+    environment:
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NODE_ENV=production
     depends_on:
       - server
     restart: always
