@@ -39,7 +39,11 @@ export function middleware(req: NextRequest) {
   });
 }
 
-// Protect all routes except static files
+// Protect all routes except static files and the unauthenticated
+// /healthz probe endpoint. The healthz route lives at
+// /pages/api/healthz.ts (or wherever the app's catch-all page is)
+// and is used by the container HEALTHCHECK and external uptime
+// monitors.
 export const config = {
-  matcher: '/((?!_next/static|_next/image|favicon.ico).*)',
+  matcher: '/((?!_next/static|_next/image|favicon.ico|healthz).*)',
 };

@@ -27,12 +27,11 @@ RUN npm run build
 
 EXPOSE 3001
 
-# Healthcheck the Next.js server. The page itself returns 200
-# on / (with the Basic-Auth challenge); we use wget to fetch
-# it and check the response code. (We can't read JSON here
-# without a JSON parser; the auth-protected dashboard is
-# enough to prove the process is alive.)
+# Healthcheck the Next.js server. /healthz is a tiny page
+# (Dashboard/pages/healthz.tsx) that's excluded from the
+# auth middleware; it returns 200 with a JSON body containing
+# "status":"ok" when the Next.js process is alive.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget -qO- http://localhost:3001/ >/dev/null || exit 1
+  CMD wget -qO- http://localhost:3001/healthz | grep -q '"status":"ok"' || exit 1
 
 CMD ["npm", "start"]

@@ -52,7 +52,11 @@ services:
       - server
     restart: always
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/ >/dev/null || exit 1"]
+      # /healthz returns 200 with {"status":"ok",...} when the
+      # Next.js process is alive. The page is excluded from
+      # auth in middleware.ts, so we don't need to send
+      # credentials to probe it.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/healthz | grep -q '\"status\":\"ok\"' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
