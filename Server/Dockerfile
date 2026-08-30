@@ -26,7 +26,11 @@ EXPOSE 3000
 # failing container; this HEALTHCHECK just lets `docker ps`
 # show the right state and lets orchestrators remove the
 # container from the load-balancer pool.
+# Use 127.0.0.1 not localhost. On Alpine, /etc/hosts has
+# `::1 localhost` listed first, so `localhost` resolves to
+# IPv6; the Node process binds 0.0.0.0:3000 (IPv4 only) and
+# the IPv6 connection is refused. 127.0.0.1 skips the resolver.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget -qO- http://localhost:3000/healthz | grep -q '"status":"ok"' || exit 1
+  CMD wget -qO- http://127.0.0.1:3000/healthz | grep -q '"status":"ok"' || exit 1
 
 CMD ["npm", "start"]

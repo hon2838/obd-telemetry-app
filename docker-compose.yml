@@ -27,8 +27,10 @@ services:
     healthcheck:
       # Mirror the Dockerfile HEALTHCHECK. Compose's block
       # wins for `docker ps`; the Dockerfile block wins for
-      # `docker inspect`. Both should match.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/healthz | grep -q '\"status\":\"ok\"' || exit 1"]
+      # `docker inspect`. Both should match. Use 127.0.0.1
+      # (not localhost) to skip the IPv6/IPv4 DNS resolver
+      # issue on Alpine.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz | grep -q '\"status\":\"ok\"' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -55,8 +57,9 @@ services:
       # /healthz returns 200 with {"status":"ok",...} when the
       # Next.js process is alive. The page is excluded from
       # auth in middleware.ts, so we don't need to send
-      # credentials to probe it.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/healthz | grep -q '\"status\":\"ok\"' || exit 1"]
+      # credentials to probe it. Use 127.0.0.1 (not localhost)
+      # to skip the IPv6/IPv4 DNS resolver issue on Alpine.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/healthz | grep -q '\"status\":\"ok\"' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
