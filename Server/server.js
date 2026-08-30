@@ -101,37 +101,84 @@ if (fs.existsSync(MAINT_PATH)) {
   }
 }
 
+// Path for the persisted command queue. The queue survives
+// container restarts: if `docker restart` happens while a
+// command is queued, the next boot will load it back so the
+// head unit can still pick it up.
+const COMMANDS_QUEUE_PATH = path.join(DB_DIR, 'commands_queue.json');
+
+// ----- Atomic file writer -----------------------------------------------
+//
+// The previous version of this code had five near-identical
+// save helpers, each doing `fs.promises.writeFile(...).catch(log)`.
+// That has two failure modes:
+//   1. Overlapping writes: a high-frequency batch ingest could
+//      trigger two writes at once. fs.writeFile isn't atomic;
+//      a second write that starts before the first rename can
+//      produce a torn JSON file (the next read fails and the
+//      file is renamed .bak.<timestamp>, losing data).
+//   2. Silent loss on crash: a write that's mid-flight when
+//      the process gets SIGKILL'd leaves a half-written file.
+//      The data is gone.
+//
+// persist(path, data) fixes both:
+//   - A per-path promise chain serializes writes (write N+1
+//     starts only after write N resolves).
+//   - A write to path + rename is atomic on POSIX: the file
+//     either points to the old content or the new, never a
+//     mix.
+//   - On error, the temp file is unlinked so a future successful
+//     write doesn't pile up `.tmp` debris.
+//   - Errors are still logged (so we don't lose visibility),
+//     but they don't crash the process.
+const _writeChains = new Map();
+function persist(path, data) {
+  const prev = _writeChains.get(path) || Promise.resolve();
+  const next = prev
+    .then(async () => {
+      const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
+      await fs.promises.writeFile(tmp, JSON.stringify(data, null, 2));
+      await fs.promises.rename(tmp, path);
+    })
+    .catch(err => {
+      fastify.log.error(`Failed to persist ${path}: ${err}`);
+    });
+  _writeChains.set(path, next);
+  return next;
+}
+
+// Initialize command queue from disk (if present) so a
+// container restart doesn't drop pending DTC commands.
 let pendingCommands = [];
+if (fs.existsSync(COMMANDS_QUEUE_PATH)) {
+  try {
+    const loaded = JSON.parse(fs.readFileSync(COMMANDS_QUEUE_PATH, 'utf8'));
+    if (Array.isArray(loaded)) {
+      pendingCommands = loaded;
+      if (pendingCommands.length > 0) {
+        fastify.log.info(`Restored ${pendingCommands.length} pending command(s) from disk`);
+      }
+    }
+  } catch (err) {
+    fastify.log.error(`Failed to load ${COMMANDS_QUEUE_PATH}, starting empty: ${err}`);
+    fs.renameSync(COMMANDS_QUEUE_PATH, `${COMMANDS_QUEUE_PATH}.bak.${Date.now()}`);
+  }
+}
 
 // Helper to save telemetry data to disk
-const saveToDisk = () => {
-  fs.promises.writeFile(DB_PATH, JSON.stringify(telemetryDataStore, null, 2))
-    .catch(err => fastify.log.error('Failed to write telemetry data to disk:', err));
-}
+const saveToDisk = () => persist(DB_PATH, telemetryDataStore);
 
 // Helper to save diagnostics to disk
-const saveDiagnostics = () => {
-  fs.promises.writeFile(DIAG_PATH, JSON.stringify(diagnosticsStore, null, 2))
-    .catch(err => fastify.log.error('Failed to write diagnostics to disk:', err));
-}
+const saveDiagnostics = () => persist(DIAG_PATH, diagnosticsStore);
 
 // Helper to save DTC history to disk
-const saveDtcHistory = () => {
-  fs.promises.writeFile(DTC_HIST_PATH, JSON.stringify(dtcHistoryStore, null, 2))
-    .catch(err => fastify.log.error('Failed to write DTC history to disk:', err));
-}
+const saveDtcHistory = () => persist(DTC_HIST_PATH, dtcHistoryStore);
 
 // Helper to save fuel logs to disk
-const saveFuelLogs = () => {
-  fs.promises.writeFile(FUEL_PATH, JSON.stringify(fuelLogsStore, null, 2))
-    .catch(err => fastify.log.error('Failed to write fuel logs to disk:', err));
-}
+const saveFuelLogs = () => persist(FUEL_PATH, fuelLogsStore);
 
 // Helper to save maintenance to disk
-const saveMaintenance = () => {
-  fs.promises.writeFile(MAINT_PATH, JSON.stringify(maintenanceStore, null, 2))
-    .catch(err => fastify.log.error('Failed to write maintenance to disk:', err));
-}
+const saveMaintenance = () => persist(MAINT_PATH, maintenanceStore);
 
 const helmet = require('@fastify/helmet')
 const rateLimit = require('@fastify/rate-limit')
@@ -236,9 +283,13 @@ fastify.post('/api/telemetry/batch', {
 
     saveToDisk();
 
-    // Pull queued commands and clear
+    // Pull queued commands and clear. Persist the empty queue
+    // so a crash between this assignment and the response
+    // doesn't leave a phantom command in commands_queue.json
+    // (which would get re-sent to the next head unit that syncs).
     const commandsToSend = [...pendingCommands];
     pendingCommands = [];
+    persist(COMMANDS_QUEUE_PATH, pendingCommands);
 
     return reply.status(201).send({ 
       success: true, 
@@ -253,13 +304,50 @@ fastify.post('/api/telemetry/batch', {
 })
 
 // Queue diagnostic command from Dashboard
-fastify.post('/api/commands', async (request, reply) => {
+//
+// Security: this endpoint used to accept any POST and queue
+// a `read_dtc` or `clear_dtc` against the head unit. Since
+// the endpoint is reachable from the public dashboard (and
+// therefore from anyone who can reach obd-api.hon2838.name.my),
+// the previous version was a remote-attack surface: an attacker
+// could repeatedly trigger `clear_dtc` and silently wipe any
+// stored diagnostic codes. We now require the X-API-Key
+// header (same secret the agent uses for telemetry) and a
+// per-IP rate limit via @fastify/rate-limit.
+//
+// Queue: a container restart used to drop pending commands.
+// They now persist to commands_queue.json (see persist() above)
+// so a SIGKILL mid-flight doesn't lose queued work. The cap
+// of 10 prevents an attacker (or a buggy loop) from filling
+// the disk.
+const MAX_PENDING_COMMANDS = 10;
+fastify.post('/api/commands', {
+  config: {
+    rateLimit: {
+      max: 30,
+      timeWindow: '1 minute',
+    },
+  },
+}, async (request, reply) => {
+  const apiKey = request.headers['x-api-key'];
+  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  }
   const { command } = request.body || {};
   if (!command || (command !== 'read_dtc' && command !== 'clear_dtc')) {
     return reply.status(400).send({ error: 'Invalid command. Must be read_dtc or clear_dtc' });
   }
+  if (pendingCommands.length >= MAX_PENDING_COMMANDS) {
+    return reply.status(429).send({
+      error: 'Command queue is full. The head unit will drain it on next sync; retry shortly.',
+      queue_size: pendingCommands.length,
+    });
+  }
   pendingCommands.push(command);
-  return reply.send({ success: true, message: `Command ${command} queued.` });
+  // Persist the queue so a restart doesn't drop this command.
+  // We await so the response reflects the on-disk state.
+  await persist(COMMANDS_QUEUE_PATH, pendingCommands);
+  return reply.send({ success: true, message: `Command ${command} queued.`, queue_size: pendingCommands.length });
 })
 
 const DTC_DATABASE = {
