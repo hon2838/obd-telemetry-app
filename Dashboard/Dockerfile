@@ -30,8 +30,10 @@ EXPOSE 3001
 # Healthcheck the Next.js server. /healthz is a tiny page
 # (Dashboard/pages/healthz.tsx) that's excluded from the
 # auth middleware; it returns 200 with a JSON body containing
-# "status":"ok" when the Next.js process is alive.
+# "status":"ok" when the Next.js process is alive. Use
+# 127.0.0.1 (not localhost) to skip the IPv6/IPv4 DNS resolver
+# issue on Alpine.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget -qO- http://localhost:3001/healthz | grep -q '"status":"ok"' || exit 1
+  CMD wget -qO- http://127.0.0.1:3001/healthz | grep -q '"status":"ok"' || exit 1
 
 CMD ["npm", "start"]
