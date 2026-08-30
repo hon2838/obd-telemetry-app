@@ -1337,6 +1337,115 @@ fastify.get('/healthz', async (request, reply) => {
   });
 });
 
+// ----- Android APK distribution ----------------------------------------
+//
+// The head unit downloads the latest APK from these endpoints.
+// The APK is baked into the image at /app/agent/app-debug.apk by
+// the build pipeline (see Makefile `make apk-and-server`).
+// The version.json sidecar carries the version code/name and a
+// SHA-256 so the head unit's installer can verify the download
+// before installing.
+//
+// Routes:
+//   GET /api/agent/latest         — JSON {versionCode, versionName,
+//                                     size_bytes, sha256, download_url}
+//   GET /api/agent/latest.apk     — the binary APK itself
+//
+// Both are unauthenticated on purpose: the APK contains the
+// public-facing client and the URL is on the public dashboard
+// subdomain. The HMAC for telemetry ingest is unrelated.
+const APK_DOWNLOAD_PATH = process.env.APK_PATH || path.join(__dirname, 'agent', 'app-debug.apk');
+const APK_VERSION_FILE = process.env.APK_VERSION_PATH || path.join(__dirname, 'agent', 'version.json');
+
+function _readApkVersion() {
+  // Returns {versionCode, versionName, size_bytes, sha256} or
+  // null if the APK isn't baked into this image. The build
+  // pipeline writes version.json; if absent (developer build
+  // that didn't run `make apk-and-server`), we synthesize a
+  // placeholder so the route returns something useful rather
+  // than 503.
+  if (fs.existsSync(APK_VERSION_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(APK_VERSION_FILE, 'utf8'));
+    } catch (err) {
+      fastify.log.warn(`Failed to parse ${APK_VERSION_FILE}: ${err}`);
+    }
+  }
+  if (fs.existsSync(APK_DOWNLOAD_PATH)) {
+    const stat = fs.statSync(APK_DOWNLOAD_PATH);
+    return {
+      versionCode: 0,
+      versionName: 'unknown',
+      size_bytes: stat.size,
+      sha256: '',
+      note: 'version.json not found; using placeholder values from filesystem stat',
+    };
+  }
+  return null;
+}
+
+fastify.get('/api/agent/latest', async (request, reply) => {
+  const info = _readApkVersion();
+  if (!info) {
+    return reply.status(404).send({
+      error: 'No APK baked into this image. Run `make apk-and-server` to bundle one.',
+    });
+  }
+  return reply.send({
+    download_url: '/api/agent/latest.apk',
+    ...info,
+  });
+});
+
+fastify.get('/api/agent/latest.apk', async (request, reply) => {
+  if (!fs.existsSync(APK_DOWNLOAD_PATH)) {
+    return reply.status(404).send({
+      error: 'No APK baked into this image. Run `make apk-and-server` to bundle one.',
+    });
+  }
+  const stat = fs.statSync(APK_DOWNLOAD_PATH);
+  const info = _readApkVersion() || {};
+  // Use the version code in the filename so the URL is
+  // cache-busted; HTTP caches will then re-check with HEAD
+  // requests on subsequent visits.
+  const filename = `obd-telemetry-agent-${info.versionName || 'unknown'}.apk`;
+  reply.header('Content-Type', 'application/vnd.android.package-archive');
+  reply.header('Content-Length', stat.size);
+  reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+  // Short cache so a freshly-deployed APK is picked up within
+  // a minute; long enough that frequent polling isn't a DOS
+  // vector.
+  reply.header('Cache-Control', 'public, max-age=60');
+  return reply.send(fs.createReadStream(APK_DOWNLOAD_PATH));
+});
+
+// ----- Installer script --------------------------------------------------
+//
+// `curl -sSL https://obd-api.hon2838.name.my/install.sh | sudo bash -s -- --api-key ...`
+// is the one-liner the operator runs on the head unit. The
+// script is baked into the image at /app/install.sh by the
+// Dockerfile (or it can be overridden via OBD_INSTALL_SCRIPT).
+// If absent (e.g. developer build), the route returns a stub
+// shell script that prints a clear error.
+const INSTALL_SCRIPT_PATH = process.env.OBD_INSTALL_SCRIPT
+  || (fs.existsSync('/app/install.sh')
+      ? '/app/install.sh'
+      : path.join(__dirname, '..', 'static', 'install.sh'));
+
+fastify.get('/install.sh', async (request, reply) => {
+  if (!fs.existsSync(INSTALL_SCRIPT_PATH)) {
+    return reply.status(404).send(
+      '#!/bin/sh\n' +
+      'echo "install.sh is not bundled in this server image."\n' +
+      'echo "See https://github.com/hon2838/obd-telemetry-app for the script."\n' +
+      'exit 1\n'
+    );
+  }
+  reply.header('Content-Type', 'text/x-shellscript');
+  reply.header('Cache-Control', 'no-store');
+  return reply.send(fs.createReadStream(INSTALL_SCRIPT_PATH));
+});
+
 // Run the server!
 const start = async () => {
   try {
