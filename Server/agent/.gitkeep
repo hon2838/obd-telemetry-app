@@ -1,0 +1,8 @@
+# Keep this directory in git even when empty. The build
+# pipeline (Makefile `make apk-bundle`) writes app-debug.apk
+# and version.json here before `podman build` runs. The
+# server then exposes them at /api/agent/*.
+#
+# If you're seeing this in a fresh clone, run
+#   make apk-bundle
+# to populate the directory before building the server image.

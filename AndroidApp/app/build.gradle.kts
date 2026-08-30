@@ -11,8 +11,13 @@ android {
         applicationId = "com.example.obdapp"
         minSdk = 23
         targetSdk = 29
-        versionCode = 1
-        versionName = "1.0"
+        // Bump versionCode when shipping a new APK; Android
+        // refuses to install a new build over the old one if
+        // versionCode is <= what's already on the device.
+        // versionName is the human-readable label the user
+        // sees in the app's About screen.
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
     buildTypes {

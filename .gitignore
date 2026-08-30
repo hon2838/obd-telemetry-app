@@ -23,12 +23,16 @@ yarn-error.log*
 
 # Server storage
 Server/data/
+Server/agent/app-debug.apk
+Server/agent/version.json
+Server/install.sh
 *.db
 *.json
 !package.json
 !tsconfig.json
 !manifest.json
 !project.json
+!Server/agent/.gitkeep
 
 # Misc
 .DS_Store
