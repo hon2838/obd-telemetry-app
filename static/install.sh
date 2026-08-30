@@ -46,6 +46,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Always follow redirects. The Cloudflare-tunneled URL may
+# 301 from http->https or apex->www; the script has to handle
+# both transparently. The curl invocations below use
+# `curl -fsSL --max-time ...` which includes the -L flag.
+
 # ----- color output ------------------------------------------------------
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
