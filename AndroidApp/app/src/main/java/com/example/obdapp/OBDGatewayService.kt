@@ -283,8 +283,11 @@ class OBDGatewayService : Service(), LocationListener {
                                         if (responseJson.has("commands")) {
                                             val commandsArray = responseJson.getJSONArray("commands")
                                             for (i in 0 until commandsArray.length()) {
-                                                val cmd = commandsArray.getString(i)
-                                                handleIncomingCommand(cmd)
+                                                // Server may send a plain string or an
+                                                // object {command, vehicleId} — accept both.
+                                                val cmd = commandsArray.optJSONObject(i)?.optString("command")
+                                                    ?: commandsArray.optString(i)
+                                                if (cmd.isNotEmpty()) handleIncomingCommand(cmd)
                                             }
                                         }
                                     } catch (jsonEx: Exception) {

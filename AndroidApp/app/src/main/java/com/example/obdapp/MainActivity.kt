@@ -335,29 +335,82 @@ class MainActivity : AppCompatActivity() {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
-        btnAddVehicle.setOnClickListener {
-            val input = EditText(this).apply {
-                hint = "e.g. My Car, Wife's Car"
-                setSingleLine(true)
+        btnAddVehicle.setOnClickListener { showAddVehicleDialog() }
+    }
+
+    // Adds a vehicle in two steps: register with the server first (a
+    // local-only id would make every subsequent ingest fail with
+    // 400 Unknown vehicleId), then store the server-assigned id locally.
+    // 409 (name already registered) counts as registered.
+    private fun showAddVehicleDialog() {
+        val input = EditText(this).apply {
+            hint = "e.g. My Car, Wife's Car"
+            setSingleLine(true)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Add Vehicle")
+            .setMessage("Name the vehicle. Pair its OBD adapter in the Bluetooth section while it is selected.")
+            .setView(input)
+            .setPositiveButton("Add", null) // listener set below so we can control dismissal
+            .setNegativeButton("Cancel", null)
+            .show()
+
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { btn ->
+            val name = input.text.toString().trim()
+            if (name.isEmpty()) {
+                Toast.makeText(this, "Vehicle name cannot be empty.", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
             }
-            AlertDialog.Builder(this)
-                .setTitle("Add Vehicle")
-                .setMessage("Name the vehicle. Pair its OBD adapter in the Bluetooth section while it is selected.")
-                .setView(input)
-                .setPositiveButton("Add") { _, _ ->
-                    val name = input.text.toString().trim()
-                    if (name.isEmpty()) {
-                        Toast.makeText(this, "Vehicle name cannot be empty.", Toast.LENGTH_SHORT).show()
-                        return@setPositiveButton
+            btn.isEnabled = false
+            mainScope.launch(Dispatchers.IO) {
+                var serverId: String? = null
+                try {
+                    val conn = java.net.URL(getApiBaseUrl(this@MainActivity) + "/api/vehicles")
+                        .openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("X-API-Key", getApiKey(this@MainActivity))
+                    conn.doOutput = true
+                    conn.connectTimeout = 8000
+                    conn.outputStream.use {
+                        it.write(org.json.JSONObject().apply { put("name", name) }.toString().toByteArray())
                     }
-                    val vehicle = VehiclePrefs.addVehicle(this, name, null)
-                    VehiclePrefs.setActiveVehicle(this, vehicle.id)
-                    setupVehicleGarage()
-                    setupBluetoothSpinner()
-                    Toast.makeText(this, "Added ${vehicle.name}", Toast.LENGTH_SHORT).show()
+                    val code = conn.responseCode
+                    if (code == 201 || code == 409) {
+                        serverId = try {
+                            org.json.JSONObject(conn.inputStream.bufferedReader().readText()).optString("id")
+                        } catch (_: Exception) { null }
+                        if (serverId.isNullOrEmpty() && code == 409) {
+                            // Duplicate name: server rejected with an error body.
+                            // Resolve against the registry list instead.
+                            val listConn = java.net.URL(getApiBaseUrl(this@MainActivity) + "/api/vehicles")
+                                .openConnection() as java.net.HttpURLConnection
+                            listConn.connectTimeout = 8000
+                            val arr = org.json.JSONArray(listConn.inputStream.bufferedReader().readText())
+                            for (i in 0 until arr.length()) {
+                                val v = arr.optJSONObject(i) ?: continue
+                                if (v.optString("name").equals(name, ignoreCase = true)) {
+                                    serverId = v.optString("id")
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) { }
+                withContext(Dispatchers.Main) {
+                    btn.isEnabled = true
+                    if (!serverId.isNullOrEmpty()) {
+                        dialog.dismiss()
+                        val vehicle = VehiclePrefs.addVehicle(this@MainActivity, name, null, serverId)
+                        VehiclePrefs.setActiveVehicle(this@MainActivity, vehicle.id)
+                        setupVehicleGarage()
+                        setupBluetoothSpinner()
+                        Toast.makeText(this@MainActivity, "Added ${vehicle.name}", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this@MainActivity, "Could not reach server — vehicle not added.", Toast.LENGTH_LONG).show()
+                    }
                 }
-                .setNegativeButton("Cancel", null)
-                .show()
+            }
         }
     }
 

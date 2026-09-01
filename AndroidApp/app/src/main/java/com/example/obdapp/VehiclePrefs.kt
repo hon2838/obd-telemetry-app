@@ -80,12 +80,17 @@ object VehiclePrefs {
         prefs(context).edit().putString(KEY_ACTIVE_ID, id).apply()
     }
 
-    fun addVehicle(context: Context, name: String, mac: String?): Vehicle {
+    // serverId: when the server assigned an id at registration time
+    // (POST /api/vehicles), reuse it so local and remote ids agree.
+    fun addVehicle(context: Context, name: String, mac: String?, serverId: String? = null): Vehicle {
         val vehicles = getVehicles(context).toMutableList()
-        var id: String
-        do {
-            id = "veh-" + java.util.UUID.randomUUID().toString().substring(0, 8)
-        } while (vehicles.any { it.id == id })
+        val id = serverId?.takeIf { it.isNotEmpty() } ?: run {
+            var generated: String
+            do {
+                generated = "veh-" + java.util.UUID.randomUUID().toString().substring(0, 8)
+            } while (vehicles.any { it.id == generated })
+            generated
+        }
         val vehicle = Vehicle(id, name.trim(), mac)
         vehicles.add(vehicle)
         saveVehicles(context, vehicles)
