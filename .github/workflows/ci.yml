@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  server-tests:
+    name: Server unit & integration tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: Server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Jest tests
+        run: npm test
+
+  dashboard-build:
+    name: Dashboard typecheck & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: Dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Next.js build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: https://obd-api.hon2838.name.my
+
+  apk-bundle-verify:
+    name: Verify APK release bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify staged APK matches version.json metadata
+        run: |
+          set -e
+          if [ ! -f Server/agent/app-debug.apk ]; then
+            echo "::error::Server/agent/app-debug.apk is missing from the repository."
+            exit 1
+          fi
+          if [ ! -f Server/agent/version.json ]; then
+            echo "::error::Server/agent/version.json is missing."
+            exit 1
+          fi
+          if [ ! -f Server/install.sh ]; then
+            echo "::error::Server/install.sh is missing."
+            exit 1
+          fi
+
+          EXPECTED_SHA=$(node -e 'console.log(require("./Server/agent/version.json").sha256)')
+          ACTUAL_SHA=$(sha256sum Server/agent/app-debug.apk | awk '{print $1}')
+
+          echo "Expected SHA256: $EXPECTED_SHA"
+          echo "Actual SHA256:   $ACTUAL_SHA"
+
+          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            echo "::error::Server/agent/app-debug.apk SHA256 does not match version.json."
+            exit 1
+          fi
+          echo "OK: APK bundle integrity verified."
