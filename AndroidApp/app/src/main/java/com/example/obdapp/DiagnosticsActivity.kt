@@ -54,7 +54,11 @@ class DiagnosticsActivity : AppCompatActivity() {
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.doOutput = true
                 conn.connectTimeout = 5000
-                conn.outputStream.use { it.write("{\"command\":\"$command\"}".toByteArray()) }
+                val body = org.json.JSONObject().apply {
+                    put("command", command)
+                    put("vehicleId", VehiclePrefs.getActiveVehicleId(this@DiagnosticsActivity))
+                }.toString()
+                conn.outputStream.use { it.write(body.toByteArray()) }
                 ok = conn.responseCode in 200..299
                 if (!ok) error = "HTTP ${conn.responseCode}"
             } catch (e: Exception) {
@@ -82,7 +86,8 @@ class DiagnosticsActivity : AppCompatActivity() {
         val base = getApiBaseUrl(this)
         mainScope.launch(Dispatchers.IO) {
             try {
-                val conn = URL("$base/api/telemetry/dtc").openConnection() as HttpURLConnection
+                val vid = VehiclePrefs.getActiveVehicleId(this@DiagnosticsActivity)
+                val conn = URL("$base/api/telemetry/dtc?vehicle=$vid").openConnection() as HttpURLConnection
                 conn.connectTimeout = 5000
                 val body = conn.inputStream.bufferedReader().readText()
                 val json = org.json.JSONObject(body)

@@ -15,6 +15,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.EditText
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -149,6 +150,8 @@ class MainActivity : AppCompatActivity() {
 
         AppNav.setup(this, AppNav.Page.GATEWAY)
 
+        setupVehicleGarage()
+
         statusText = findViewById(R.id.statusText)
         btnStart = findViewById(R.id.btnStart)
         btnStop = findViewById(R.id.btnStop)
@@ -241,7 +244,8 @@ class MainActivity : AppCompatActivity() {
                 val fuelLog = FuelLogEntity(
                     timestamp = System.currentTimeMillis(),
                     litres = litres,
-                    odometer = odometer
+                    odometer = odometer,
+                    vehicleId = VehiclePrefs.getActiveVehicleId(this@MainActivity)
                 )
 
                 val db = AppDatabase.getDatabase(applicationContext)
@@ -258,6 +262,7 @@ class MainActivity : AppCompatActivity() {
                                 unsyncedLogs.forEach { log ->
                                     val jsonObj = org.json.JSONObject().apply {
                                         put("id", log.id)
+                                        put("vehicleId", log.vehicleId)
                                         put("timestamp", log.timestamp)
                                         put("litres", log.litres)
                                         put("odometer", log.odometer)
@@ -303,6 +308,59 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Garage card: pick which vehicle new records belong to. Switching
+    // the active vehicle also switches the OBD adapter selection (each
+    // vehicle remembers its own paired ELM327).
+    private fun setupVehicleGarage() {
+        val vehicleSpinner = findViewById<Spinner>(R.id.vehicleSpinner)
+        val btnAddVehicle = findViewById<TextView>(R.id.btnAddVehicle)
+
+        val vehicles = VehiclePrefs.getVehicles(this)
+        val names = vehicles.map { it.name }
+        val adapter = ArrayAdapter(this, R.layout.spinner_closed_item, names)
+        adapter.setDropDownViewResource(R.layout.spinner_dropdown_item)
+        vehicleSpinner.adapter = adapter
+
+        val activeId = VehiclePrefs.getActiveVehicleId(this)
+        val activeIndex = vehicles.indexOfFirst { it.id == activeId }
+        vehicleSpinner.setSelection(if (activeIndex >= 0) activeIndex else 0)
+
+        vehicleSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            private var suppress = activeIndex >= 0
+            override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                if (suppress) { suppress = false; return }
+                VehiclePrefs.setActiveVehicle(this@MainActivity, vehicles[position].id)
+                setupBluetoothSpinner() // re-select the adapter bound to this vehicle
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        btnAddVehicle.setOnClickListener {
+            val input = EditText(this).apply {
+                hint = "e.g. My Car, Wife's Car"
+                setSingleLine(true)
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Add Vehicle")
+                .setMessage("Name the vehicle. Pair its OBD adapter in the Bluetooth section while it is selected.")
+                .setView(input)
+                .setPositiveButton("Add") { _, _ ->
+                    val name = input.text.toString().trim()
+                    if (name.isEmpty()) {
+                        Toast.makeText(this, "Vehicle name cannot be empty.", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
+                    val vehicle = VehiclePrefs.addVehicle(this, name, null)
+                    VehiclePrefs.setActiveVehicle(this, vehicle.id)
+                    setupVehicleGarage()
+                    setupBluetoothSpinner()
+                    Toast.makeText(this, "Added ${vehicle.name}", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
     private fun setupBluetoothSpinner() {
         val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
         val pairedDevices: Set<BluetoothDevice>? = bluetoothAdapter?.bondedDevices
@@ -327,8 +385,7 @@ class MainActivity : AppCompatActivity() {
         adapter.setDropDownViewResource(R.layout.spinner_dropdown_item)
         spinner.adapter = adapter
 
-        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val savedMac = prefs.getString("MAC_ADDRESS", "")
+        val savedMac = VehiclePrefs.getActiveAdapterMac(this)
         if (!savedMac.isNullOrEmpty()) {
             val index = macList.indexOf(savedMac)
             if (index >= 0) {
@@ -336,7 +393,6 @@ class MainActivity : AppCompatActivity() {
                 spinner.setSelection(index)
             }
         } else {
-            prefs.edit().remove("MAC_ADDRESS").apply()
             spinner.setSelection(0)
         }
 
@@ -348,11 +404,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val mac = macList[position]
-                if (mac.isNotEmpty()) {
-                    prefs.edit().putString("MAC_ADDRESS", mac).apply()
-                } else {
-                    prefs.edit().remove("MAC_ADDRESS").apply()
-                }
+                VehiclePrefs.setActiveAdapterMac(this@MainActivity, mac.ifEmpty { null })
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }

@@ -31,12 +31,22 @@ function constantTimeEquals(a, b) {
   return crypto.timingSafeEqual(aBuf, bBuf)
 }
 
-const DB_DIR = path.join(__dirname, 'data')
+// Data directory is env-overridable so test suites can run against a
+// temp dir instead of polluting real (dev/prod) store files.
+const DB_DIR = process.env.OBD_DATA_DIR || path.join(__dirname, 'data')
 const DB_PATH = path.join(DB_DIR, 'telemetry.json')
 const DIAG_PATH = path.join(DB_DIR, 'diagnostics.json')
 const FUEL_PATH = path.join(DB_DIR, 'fuel_logs.json')
 const DTC_HIST_PATH = path.join(DB_DIR, 'dtc_history.json')
 const MAINT_PATH = path.join(DB_DIR, 'maintenance.json')
+const VEHICLES_PATH = path.join(DB_DIR, 'vehicles.json')
+
+// Multi-vehicle support. Every record in every store carries a
+// `vehicleId`; the reserved id 'default' owns all pre-existing data so a
+// server upgrade never rewrites or orphans history. Clients that don't
+// send a vehicleId (older head units) ingest into 'default' unchanged.
+const DEFAULT_VEHICLE_ID = 'default'
+const VEHICLE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
 // Ensure data directory exists
 if (!fs.existsSync(DB_DIR)) {
@@ -54,18 +64,35 @@ if (fs.existsSync(DB_PATH)) {
   }
 }
 
-// Load diagnostics or start fresh
-let diagnosticsStore = {
-  latestDtc: { code: "", timestamp: null },
-  latestClearStatus: { success: null, timestamp: null }
-}
+// Load diagnostics or start fresh. The multi-vehicle layout is
+// { byVehicle: { <vehicleId>: { latestDtc, latestClearStatus } } };
+// a legacy flat { latestDtc, latestClearStatus } file is migrated
+// into the default vehicle's slot on load.
+let diagnosticsStore = { byVehicle: {} }
 if (fs.existsSync(DIAG_PATH)) {
   try {
-    diagnosticsStore = JSON.parse(fs.readFileSync(DIAG_PATH, 'utf8'))
+    const loaded = JSON.parse(fs.readFileSync(DIAG_PATH, 'utf8'))
+    if (loaded && typeof loaded === 'object' && loaded.byVehicle) {
+      diagnosticsStore = loaded
+    } else if (loaded && typeof loaded === 'object') {
+      diagnosticsStore = { byVehicle: { [DEFAULT_VEHICLE_ID]: loaded } }
+    }
   } catch (err) {
     fastify.log.error('Error reading diagnostics file, backing up and starting fresh:', err)
     fs.renameSync(DIAG_PATH, `${DIAG_PATH}.bak.${Date.now()}`)
   }
+}
+
+// Per-vehicle diagnostics slot accessor — creates the empty slot on
+// first touch so callers always get a well-formed object back.
+function getDiagnosticsFor(vehicleId) {
+  if (!diagnosticsStore.byVehicle[vehicleId]) {
+    diagnosticsStore.byVehicle[vehicleId] = {
+      latestDtc: { code: "", timestamp: null },
+      latestClearStatus: { success: null, timestamp: null }
+    }
+  }
+  return diagnosticsStore.byVehicle[vehicleId]
 }
 
 // Load DTC history or start fresh
@@ -98,6 +125,18 @@ if (fs.existsSync(MAINT_PATH)) {
   } catch (err) {
     fastify.log.error('Error reading maintenance file, backing up and starting fresh:', err)
     fs.renameSync(MAINT_PATH, `${MAINT_PATH}.bak.${Date.now()}`)
+  }
+}
+
+// Load vehicle registry or start fresh
+let vehiclesStore = []
+if (fs.existsSync(VEHICLES_PATH)) {
+  try {
+    const loaded = JSON.parse(fs.readFileSync(VEHICLES_PATH, 'utf8'))
+    if (Array.isArray(loaded)) vehiclesStore = loaded
+  } catch (err) {
+    fastify.log.error('Error reading vehicles file, backing up and starting fresh:', err)
+    fs.renameSync(VEHICLES_PATH, `${VEHICLES_PATH}.bak.${Date.now()}`)
   }
 }
 
@@ -147,14 +186,68 @@ function persist(path, data) {
   return next;
 }
 
+// ----- Vehicle registry helpers ------------------------------------------
+
+const saveVehicles = () => persist(VEHICLES_PATH, vehiclesStore)
+
+// The 'default' vehicle is created lazily on boot and always exists; it
+// receives all legacy data and all ingest that arrives without a vehicleId.
+function ensureDefaultVehicle() {
+  if (!vehiclesStore.some(v => v.id === DEFAULT_VEHICLE_ID)) {
+    vehiclesStore.push({ id: DEFAULT_VEHICLE_ID, name: 'Default Vehicle', createdAt: Date.now() })
+    persist(VEHICLES_PATH, vehiclesStore)
+  }
+}
+ensureDefaultVehicle()
+
+function vehicleExists(id) {
+  return typeof id === 'string' && vehiclesStore.some(v => v.id === id)
+}
+
+// Stamp a record list in-memory so legacy rows (no vehicleId) read as
+// belonging to the default vehicle. Nothing is rewritten to disk here —
+// the field is persisted the next time the store is naturally saved, so
+// a deploy can't corrupt or truncate existing files on boot.
+function stampLegacyVehicleIds(records) {
+  for (const r of records) {
+    if (r && r.vehicleId === undefined) r.vehicleId = DEFAULT_VEHICLE_ID
+  }
+}
+stampLegacyVehicleIds(telemetryDataStore)
+stampLegacyVehicleIds(fuelLogsStore)
+stampLegacyVehicleIds(maintenanceStore)
+stampLegacyVehicleIds(dtcHistoryStore)
+
+// Resolve the vehicle scope for a read request: undefined/null means
+// "all vehicles" (combined view, the pre-multicar behavior the dashboard
+// still relies on); a value must be a known vehicle id.
+function resolveVehicleQuery(query) {
+  const requested = query?.vehicle
+  if (requested === undefined || requested === null || requested === '') return null
+  if (!vehicleExists(requested)) return undefined // signals 400
+  return requested
+}
+
+function filterByVehicle(records, vehicleId) {
+  if (!vehicleId) return records
+  return records.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === vehicleId)
+}
+
 // Initialize command queue from disk (if present) so a
 // container restart doesn't drop pending DTC commands.
+// Entries are { command, vehicleId } so a queued command only
+// drains to head units syncing that same vehicle; legacy plain
+// string entries load as targeting the default vehicle.
 let pendingCommands = [];
 if (fs.existsSync(COMMANDS_QUEUE_PATH)) {
   try {
     const loaded = JSON.parse(fs.readFileSync(COMMANDS_QUEUE_PATH, 'utf8'));
     if (Array.isArray(loaded)) {
-      pendingCommands = loaded;
+      pendingCommands = loaded.map(entry =>
+        typeof entry === 'string'
+          ? { command: entry, vehicleId: DEFAULT_VEHICLE_ID }
+          : entry
+      );
       if (pendingCommands.length > 0) {
         fastify.log.info(`Restored ${pendingCommands.length} pending command(s) from disk`);
       }
@@ -203,6 +296,7 @@ const telemetryRecordSchema = {
   required: ['timestamp'],
   properties: {
     timestamp: { type: 'number' },
+    vehicleId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
     rpm: { type: ['number', 'null'] },
     speed: { type: ['number', 'null'] },
     coolantTemp: { type: ['number', 'null'] },
@@ -253,10 +347,19 @@ fastify.post('/api/telemetry/batch', {
 
     const payload = request.body;
 
+    // Reject batches that reference an unknown vehicle rather than
+    // silently re-homing them into the default vehicle — a typo'd
+    // vehicleId would otherwise split one car's history in two.
+    for (const record of payload) {
+      if (record.vehicleId !== undefined && !vehicleExists(record.vehicleId)) {
+        return reply.status(400).send({ error: `Unknown vehicleId: ${record.vehicleId}` });
+      }
+    }
 
     payload.forEach(record => {
       telemetryDataStore.push({
         timestamp: record.timestamp,
+        vehicleId: record.vehicleId || DEFAULT_VEHICLE_ID,
         rpm: record.rpm,
         speed: record.speed,
         coolantTemp: record.coolantTemp,
@@ -283,12 +386,14 @@ fastify.post('/api/telemetry/batch', {
 
     saveToDisk();
 
-    // Pull queued commands and clear. Persist the empty queue
-    // so a crash between this assignment and the response
-    // doesn't leave a phantom command in commands_queue.json
-    // (which would get re-sent to the next head unit that syncs).
-    const commandsToSend = [...pendingCommands];
-    pendingCommands = [];
+    // Pull queued commands for the vehicle(s) in this batch and
+    // clear only those. Persist the remaining queue so a crash
+    // between this filter and the response doesn't leave a
+    // phantom command (which would get re-sent to the next head
+    // unit that syncs) — and so other vehicles' commands survive.
+    const batchVehicles = new Set(payload.map(r => r.vehicleId || DEFAULT_VEHICLE_ID));
+    const commandsToSend = pendingCommands.filter(c => batchVehicles.has(c.vehicleId));
+    pendingCommands = pendingCommands.filter(c => !batchVehicles.has(c.vehicleId));
     persist(COMMANDS_QUEUE_PATH, pendingCommands);
 
     return reply.status(201).send({ 
@@ -333,9 +438,12 @@ fastify.post('/api/commands', {
   if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
     return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
   }
-  const { command } = request.body || {};
+  const { command, vehicleId } = request.body || {};
   if (!command || (command !== 'read_dtc' && command !== 'clear_dtc')) {
     return reply.status(400).send({ error: 'Invalid command. Must be read_dtc or clear_dtc' });
+  }
+  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
+    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
   }
   if (pendingCommands.length >= MAX_PENDING_COMMANDS) {
     return reply.status(429).send({
@@ -343,7 +451,7 @@ fastify.post('/api/commands', {
       queue_size: pendingCommands.length,
     });
   }
-  pendingCommands.push(command);
+  pendingCommands.push({ command, vehicleId: vehicleId || DEFAULT_VEHICLE_ID });
   // Persist the queue so a restart doesn't drop this command.
   // We await so the response reflects the on-disk state.
   await persist(COMMANDS_QUEUE_PATH, pendingCommands);
@@ -479,12 +587,17 @@ function getRecordSpeed(record) {
 
 // Endpoint to ingest DTC reads
 fastify.post('/api/telemetry/dtc', async (request, reply) => {
-  const { dtc, timestamp } = request.body || {};
+  const { dtc, timestamp, vehicleId } = request.body || {};
+  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
+    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
+  }
+  const vid = vehicleId || DEFAULT_VEHICLE_ID;
   const time = timestamp || Date.now();
   const rawCodeStr = dtc || "No trouble codes found";
-  
-  diagnosticsStore.latestDtc = { 
-    code: rawCodeStr, 
+
+  const diag = getDiagnosticsFor(vid);
+  diag.latestDtc = {
+    code: rawCodeStr,
     timestamp: time
   };
   saveDiagnostics();
@@ -493,6 +606,7 @@ fastify.post('/api/telemetry/dtc', async (request, reply) => {
   const parsedCodes = parseDtcCodes(rawCodeStr);
   dtcHistoryStore.push({
     id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+    vehicleId: vid,
     timestamp: time,
     type: 'read',
     codes: parsedCodes,
@@ -505,12 +619,17 @@ fastify.post('/api/telemetry/dtc', async (request, reply) => {
 
 // Endpoint to ingest DTC clears
 fastify.post('/api/telemetry/dtc/clear', async (request, reply) => {
-  const { success, timestamp } = request.body || {};
+  const { success, timestamp, vehicleId } = request.body || {};
+  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
+    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
+  }
+  const vid = vehicleId || DEFAULT_VEHICLE_ID;
   const time = timestamp || Date.now();
   const clearSuccess = success ?? false;
 
-  diagnosticsStore.latestClearStatus = { 
-    success: clearSuccess, 
+  const diag = getDiagnosticsFor(vid);
+  diag.latestClearStatus = {
+    success: clearSuccess,
     timestamp: time
   };
   saveDiagnostics();
@@ -518,6 +637,7 @@ fastify.post('/api/telemetry/dtc/clear', async (request, reply) => {
   // Add to history
   dtcHistoryStore.push({
     id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+    vehicleId: vid,
     timestamp: time,
     type: 'clear',
     codes: [],
@@ -528,11 +648,33 @@ fastify.post('/api/telemetry/dtc/clear', async (request, reply) => {
   return reply.send({ success: true });
 })
 
-// Fetch diagnostics status
+// Fetch diagnostics status. `?vehicle=` scopes to one vehicle; without
+// it the most recent DTC read across all vehicles is returned (the
+// pre-multicar single-latest behavior the dashboard expects).
 fastify.get('/api/telemetry/dtc', async (request, reply) => {
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+
+  const history = filterByVehicle(dtcHistoryStore, vehicle);
+
+  let latest;
+  if (vehicle) {
+    latest = diagnosticsStore.byVehicle[vehicle] || {
+      latestDtc: { code: "", timestamp: null },
+      latestClearStatus: { success: null, timestamp: null }
+    };
+  } else {
+    latest = Object.values(diagnosticsStore.byVehicle)
+      .filter(d => d.latestDtc && d.latestDtc.timestamp)
+      .sort((a, b) => b.latestDtc.timestamp - a.latestDtc.timestamp)[0] || {
+        latestDtc: { code: "", timestamp: null },
+        latestClearStatus: { success: null, timestamp: null }
+      };
+  }
+
   return reply.send({
-    latest: diagnosticsStore,
-    history: dtcHistoryStore
+    latest,
+    history
   });
 })
 
@@ -554,8 +696,12 @@ fastify.get('/api/dtc/lookup/:code', async (request, reply) => {
 
 // GET all acceleration runs
 fastify.get('/api/performance/runs', async (request, reply) => {
-  const drives = segmentDrives();
-  const sortedRuns = telemetryDataStore
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+
+  const drives = segmentDrives(vehicle);
+  const scopedStore = filterByVehicle(telemetryDataStore, vehicle);
+  const sortedRuns = scopedStore
     .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0)
     .sort((a, b) => a.timestamp - b.timestamp);
 
@@ -580,15 +726,19 @@ fastify.get('/api/performance/runs', async (request, reply) => {
 
 // GET performance personal records
 fastify.get('/api/performance/records', async (request, reply) => {
-  const drives = segmentDrives();
-  
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+
+  const drives = segmentDrives(vehicle);
+  const scopedStore = filterByVehicle(telemetryDataStore, vehicle);
+
   const findDrive = (timestamp) => {
     // Binary search could be used, but since it's just finding 3 items, find() is fine here because N is only the number of drives, not telemetry points!
     return drives.find(d => timestamp >= d.startTime && timestamp <= d.endTime);
   };
 
   // 1. Find all runs with non-null accelTime
-  const runs = telemetryDataStore
+  const runs = scopedStore
     .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0);
   
   let bestRun = null;
@@ -605,7 +755,7 @@ fastify.get('/api/performance/records', async (request, reply) => {
 
   // 2. Top speed ever
   let topSpeed = null;
-  const speedRecords = telemetryDataStore
+  const speedRecords = scopedStore
     .filter(r => getRecordSpeed(r) > 0)
     .sort((a, b) => getRecordSpeed(b) - getRecordSpeed(a));
   if (speedRecords.length > 0) {
@@ -620,7 +770,7 @@ fastify.get('/api/performance/records', async (request, reply) => {
 
   // 3. Highest RPM ever
   let highestRpm = null;
-  const rpmRecords = telemetryDataStore
+  const rpmRecords = scopedStore
     .filter(r => r.rpm !== null && r.rpm !== undefined)
     .sort((a, b) => b.rpm - a.rpm);
   if (rpmRecords.length > 0 && rpmRecords[0].rpm > 0) {
@@ -657,38 +807,13 @@ fastify.get('/api/performance/records', async (request, reply) => {
   });
 })
 
-// Helper to calculate drive bounds
+// Helper to calculate drive bounds. Delegates to segmentDrives() so
+// gap logic and id format (now `<vehicleId>-<n>`) can't drift between
+// the listing and export paths.
 const getDriveBounds = (driveId) => {
   if (telemetryDataStore.length === 0) return null;
-  const sorted = [...telemetryDataStore].sort((a, b) => a.timestamp - b.timestamp);
-  
-  const drives = [];
-  let currentDrive = null;
-  const GAP_THRESHOLD_MS = 5 * 60 * 1000;
-
-  for (const record of sorted) {
-    if (!currentDrive) {
-      currentDrive = {
-        id: 1,
-        startTime: record.timestamp,
-        endTime: record.timestamp,
-      };
-    } else if (record.timestamp - currentDrive.endTime > GAP_THRESHOLD_MS) {
-      drives.push(currentDrive);
-      currentDrive = {
-        id: drives.length + 1,
-        startTime: record.timestamp,
-        endTime: record.timestamp,
-      };
-    } else {
-      currentDrive.endTime = record.timestamp;
-    }
-  }
-  if (currentDrive) {
-    drives.push(currentDrive);
-  }
-  
-  return drives.find(d => d.id === parseInt(driveId)) || null;
+  const target = String(driveId);
+  return segmentDrives().find(d => String(d.id) === target) || null;
 }
 
 // Drive CSV Exporter
@@ -699,8 +824,14 @@ fastify.get('/api/drives/:id/export/csv', async (request, reply) => {
     return reply.status(404).send({ error: 'Drive session not found' });
   }
 
-  const records = telemetryDataStore.filter(r => r.timestamp >= bounds.startTime && r.timestamp <= bounds.endTime);
-  
+  // Time window alone could catch another car's points when drives
+  // overlap; scope strictly to the drive's own vehicle.
+  const records = telemetryDataStore.filter(r =>
+    r.timestamp >= bounds.startTime &&
+    r.timestamp <= bounds.endTime &&
+    (r.vehicleId || DEFAULT_VEHICLE_ID) === bounds.vehicleId
+  );
+
   let csv = 'Timestamp,Time,RPM,Speed,CoolantTemp,Latitude,Longitude,Altitude,GPSSpeed,EngineLoad,ThrottlePos,FuelLevel,AmbientTemp,Voltage,AccelTime,AlertCoolant,AlertVoltage\n';
   
   records.forEach(r => {
@@ -721,7 +852,11 @@ fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
     return reply.status(404).send({ error: 'Drive session not found' });
   }
 
-  const records = telemetryDataStore.filter(r => r.timestamp >= bounds.startTime && r.timestamp <= bounds.endTime);
+  const records = telemetryDataStore.filter(r =>
+    r.timestamp >= bounds.startTime &&
+    r.timestamp <= bounds.endTime &&
+    (r.vehicleId || DEFAULT_VEHICLE_ID) === bounds.vehicleId
+  );
 
   let gpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Axia Telemetry Core" xmlns="http://www.topografix.com/GPX/1/1">
@@ -774,13 +909,10 @@ function getHaversineDistance(lat1, lon1, lat2, lon2) {
 }
 
 // Internal function to segment telemetry data into drive objects with summary stats
-function segmentDrives() {
-  if (telemetryDataStore.length === 0) {
-    return [];
-  }
-
-  const sorted = [...telemetryDataStore].sort((a, b) => a.timestamp - b.timestamp);
-  
+// Split one chronologically-sorted record list into raw drive
+// segments using a 5-minute inactivity gap. Returns segments
+// without id/summary — segmentDrives() owns identity assignment.
+function segmentRecordsByGap(sorted) {
   const drives = [];
   let currentDrive = null;
   const GAP_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes inactivity starts a new drive
@@ -792,7 +924,6 @@ function segmentDrives() {
 
     if (!currentDrive) {
       currentDrive = {
-        id: 1,
         startTime: record.timestamp,
         endTime: record.timestamp,
         maxRpm: recordRpm,
@@ -805,7 +936,6 @@ function segmentDrives() {
     } else if (record.timestamp - currentDrive.endTime > GAP_THRESHOLD_MS) {
       drives.push(currentDrive);
       currentDrive = {
-        id: drives.length + 1,
         startTime: record.timestamp,
         endTime: record.timestamp,
         maxRpm: recordRpm,
@@ -832,6 +962,33 @@ function segmentDrives() {
   if (currentDrive) {
     drives.push(currentDrive);
   }
+
+  return drives;
+}
+
+function segmentDrives(vehicleId = null) {
+  const source = filterByVehicle(telemetryDataStore, vehicleId);
+  if (source.length === 0) {
+    return [];
+  }
+
+  // Group by vehicle BEFORE the gap segmentation so two cars
+  // reporting over the same time window never merge into one drive.
+  const byVehicle = new Map();
+  for (const record of source) {
+    const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
+    if (!byVehicle.has(vid)) byVehicle.set(vid, []);
+    byVehicle.get(vid).push(record);
+  }
+
+  const drives = [];
+  for (const [vid, records] of byVehicle) {
+    const sorted = [...records].sort((a, b) => a.timestamp - b.timestamp);
+    segmentRecordsByGap(sorted).forEach((seg, i) => {
+      drives.push({ ...seg, id: `${vid}-${i + 1}`, vehicleId: vid });
+    });
+  }
+  drives.sort((a, b) => a.startTime - b.startTime);
 
   return drives.map(drive => {
     let score = 100;
@@ -901,16 +1058,21 @@ function segmentDrives() {
     const startLocation = validGps.length > 0 ? { lat: validGps[0].latitude, lon: validGps[0].longitude } : null;
     const endLocation = validGps.length > 0 ? { lat: validGps[validGps.length - 1].latitude, lon: validGps[validGps.length - 1].longitude } : null;
 
-    // 4. Fuel used and fuel efficiency
+    // 4. Fuel used and fuel efficiency. Tank size is a per-vehicle
+    // property (set on the vehicle in the registry); cars without one
+    // fall back to the original default so existing stats don't shift.
     let fuelUsedPercent = 0;
     if (drive.startLevel !== null && drive.endLevel !== null) {
       fuelUsedPercent = Math.max(0, drive.startLevel - drive.endLevel);
     }
-    const fuelUsedLitres = (fuelUsedPercent / 100) * 36; // Axia 36L tank size
+    const vehicle = vehiclesStore.find(v => v.id === drive.vehicleId);
+    const tankLitres = (vehicle && Number(vehicle.tankLitres) > 0) ? Number(vehicle.tankLitres) : 36;
+    const fuelUsedLitres = (fuelUsedPercent / 100) * tankLitres;
     const fuelEfficiencyKmL = (fuelUsedLitres > 0 && distanceKm > 0) ? (distanceKm / fuelUsedLitres) : null;
 
     return {
       id: drive.id,
+      vehicleId: drive.vehicleId,
       startTime: drive.startTime,
       endTime: drive.endTime,
       label: `Drive #${drive.id} - ${startStr} (${durationMin} min, ${drive.recordCount} pts)`,
@@ -934,13 +1096,17 @@ function segmentDrives() {
 
 // Endpoint to detect and segment drives
 fastify.get('/api/drives', async (request, reply) => {
-  const formattedDrives = segmentDrives();
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+  const formattedDrives = segmentDrives(vehicle);
   return reply.send([...formattedDrives].reverse()); // Newest drives first
 })
 
 // Endpoint to fetch leaderboard of trips
 fastify.get('/api/trips/leaderboard', async (request, reply) => {
-  const drives = segmentDrives();
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+  const drives = segmentDrives(vehicle);
   if (drives.length === 0) {
     return reply.send({
       best_efficiency: [],
@@ -980,13 +1146,16 @@ fastify.get('/api/trips/leaderboard', async (request, reply) => {
 // Endpoint for the frontend dashboard to fetch data
 fastify.get('/api/telemetry/history', async (request, reply) => {
   const { start, end, minutes, limit } = request.query;
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+
   if (start && end) {
     const startTime = parseInt(start);
     const endTime = parseInt(end);
-    const filtered = telemetryDataStore.filter(record => record.timestamp >= startTime && record.timestamp <= endTime);
+    const filtered = filterByVehicle(telemetryDataStore, vehicle).filter(record => record.timestamp >= startTime && record.timestamp <= endTime);
     return reply.send(filtered);
   }
-  let records = telemetryDataStore;
+  let records = filterByVehicle(telemetryDataStore, vehicle);
   if (minutes !== undefined) {
     const minutesNum = parseInt(minutes);
     if (!isNaN(minutesNum) && minutesNum > 0) {
@@ -1005,7 +1174,11 @@ fastify.get('/api/telemetry/history', async (request, reply) => {
 
 // Lightweight single-record endpoint for dashboard live polling
 fastify.get('/api/telemetry/latest', async (request, reply) => {
-  const latest = telemetryDataStore[telemetryDataStore.length - 1];
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+
+  const records = filterByVehicle(telemetryDataStore, vehicle);
+  const latest = records[records.length - 1];
   return reply.send(latest !== undefined ? latest : null);
 })
 
@@ -1027,6 +1200,14 @@ fastify.post('/api/fuel-logs', async (request, reply) => {
     const logsToAdd = Array.isArray(payload) ? payload : [payload];
     let addedCount = 0;
 
+    // Validate every referenced vehicle before writing anything so a
+    // batch with a bad vehicleId fails atomically, not halfway.
+    for (const item of logsToAdd) {
+      if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
+        return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
+      }
+    }
+
     logsToAdd.forEach((item, index) => {
       const litres = parseFloat(item.litres);
       const odometer = parseFloat(item.odometer);
@@ -1038,6 +1219,7 @@ fastify.post('/api/fuel-logs', async (request, reply) => {
         // Always generate a unique server ID since Android app is write-only for logs
         // and its local auto-increment IDs will reset if app data is cleared
         id: `${Date.now()}-${index}-${Math.floor(Math.random() * 10000)}`,
+        vehicleId: item.vehicleId || DEFAULT_VEHICLE_ID,
         timestamp: parseInt(item.timestamp) || Date.now(),
         litres,
         odometer,
@@ -1058,7 +1240,10 @@ fastify.post('/api/fuel-logs', async (request, reply) => {
 
 // GET /api/fuel-logs - Fetch all fuel log entries
 fastify.get('/api/fuel-logs', async (request, reply) => {
-  const sortedLogs = [...fuelLogsStore].sort((a, b) => b.odometer - a.odometer);
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+
+  const sortedLogs = [...filterByVehicle(fuelLogsStore, vehicle)].sort((a, b) => b.odometer - a.odometer);
   return reply.send(sortedLogs);
 });
 
@@ -1085,18 +1270,22 @@ fastify.delete('/api/fuel-logs/:id', async (request, reply) => {
 
 // GET /api/fuel-stats - Get calculated fuel stats (average km/L, total litres, total distance)
 fastify.get('/api/fuel-stats', async (request, reply) => {
-  if (fuelLogsStore.length < 2) {
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+
+  const scopedLogs = filterByVehicle(fuelLogsStore, vehicle);
+  if (scopedLogs.length < 2) {
     return reply.send({
       averageKmPerLitre: 0,
       bestKmPerLitre: 0,
       worstKmPerLitre: 0,
-      totalLitres: fuelLogsStore.reduce((acc, log) => acc + log.litres, 0),
+      totalLitres: scopedLogs.reduce((acc, log) => acc + log.litres, 0),
       totalDistance: 0,
-      logCount: fuelLogsStore.length
+      logCount: scopedLogs.length
     });
   }
 
-  const sorted = [...fuelLogsStore].sort((a, b) => a.odometer - b.odometer);
+  const sorted = [...scopedLogs].sort((a, b) => a.odometer - b.odometer);
   
   let totalLitresIntervals = 0;
   let totalDistanceIntervals = 0;
@@ -1119,7 +1308,7 @@ fastify.get('/api/fuel-stats', async (request, reply) => {
   const minOdo = sorted[0].odometer;
   const maxOdo = sorted[sorted.length - 1].odometer;
   const totalDistance = maxOdo - minOdo;
-  const totalLitres = fuelLogsStore.reduce((acc, log) => acc + log.litres, 0);
+  const totalLitres = scopedLogs.reduce((acc, log) => acc + log.litres, 0);
 
   const averageKmPerLitre = totalLitresIntervals > 0 ? (totalDistanceIntervals / totalLitresIntervals) : 0;
   const bestKmPerLitre = economies.length > 0 ? Math.max(...economies) : 0;
@@ -1131,16 +1320,19 @@ fastify.get('/api/fuel-stats', async (request, reply) => {
     worstKmPerLitre: parseFloat(worstKmPerLitre.toFixed(2)),
     totalLitres: parseFloat(totalLitres.toFixed(1)),
     totalDistance: parseFloat(totalDistance.toFixed(1)),
-    logCount: fuelLogsStore.length
+    logCount: scopedLogs.length
   });
 });
 
-// GET all maintenance items with status
-function getMaintenanceItems() {
-  const sortedLogs = [...fuelLogsStore].sort((a, b) => b.odometer - a.odometer);
+// GET all maintenance items with status. `vehicleId` scopes both the
+// items list and the current-odometer baseline (highest fuel-log
+// odometer of that vehicle) to one car.
+function getMaintenanceItems(vehicleId = null) {
+  const scopedLogs = filterByVehicle(fuelLogsStore, vehicleId);
+  const sortedLogs = [...scopedLogs].sort((a, b) => b.odometer - a.odometer);
   const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
 
-  return maintenanceStore.map(item => {
+  return filterByVehicle(maintenanceStore, vehicleId).map(item => {
     const kmSinceService = item.lastServiceOdo !== null && item.lastServiceOdo !== undefined
       ? Math.max(0, currentOdometer - item.lastServiceOdo)
       : 0;
@@ -1204,16 +1396,15 @@ function getMaintenanceStatus(items = getMaintenanceItems()) {
 }
 
 fastify.get('/api/maintenance', async (request, reply) => {
-  const items = getMaintenanceItems();
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+  const items = getMaintenanceItems(vehicle);
   return reply.send(items);
 })
 
 // POST a new maintenance item
 fastify.post('/api/maintenance', async (request, reply) => {
   try {
-    const sortedLogs = [...fuelLogsStore].sort((a, b) => b.odometer - a.odometer);
-    const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
-    
     const apiKey = request.headers['x-api-key'];
     if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
       return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
@@ -1223,8 +1414,23 @@ fastify.post('/api/maintenance', async (request, reply) => {
     const itemsToAdd = Array.isArray(payload) ? payload : [payload];
     let addedCount = 0;
 
+    // Validate every referenced vehicle before writing anything so a
+    // batch with a bad vehicleId fails atomically, not halfway.
+    for (const item of itemsToAdd) {
+      if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
+        return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
+      }
+    }
+
     itemsToAdd.forEach((item, index) => {
       if (!item.name) return;
+
+      // Current odometer baseline comes from the item's own vehicle so
+      // a schedule created from car B never inherits car A's odometer.
+      const vid = item.vehicleId || DEFAULT_VEHICLE_ID;
+      const vehicleLogs = filterByVehicle(fuelLogsStore, vid);
+      const sortedLogs = [...vehicleLogs].sort((a, b) => b.odometer - a.odometer);
+      const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
 
       const intervalKm = item.intervalKm ? parseFloat(item.intervalKm) : null;
       const intervalDays = item.intervalDays ? parseInt(item.intervalDays) : null;
@@ -1233,6 +1439,7 @@ fastify.post('/api/maintenance', async (request, reply) => {
 
       maintenanceStore.push({
         id: item.id || `${Date.now()}-${index}-${Math.floor(Math.random() * 10000)}`,
+        vehicleId: vid,
         name: item.name,
         intervalKm,
         intervalDays,
@@ -1268,7 +1475,8 @@ fastify.put('/api/maintenance/:id', async (request, reply) => {
 
     // If update requests marking as serviced now (resetting counters)
     if (body.markServiced) {
-      const sortedLogs = [...fuelLogsStore].sort((a, b) => b.odometer - a.odometer);
+      const vehicleLogs = filterByVehicle(fuelLogsStore, item.vehicleId || DEFAULT_VEHICLE_ID);
+      const sortedLogs = [...vehicleLogs].sort((a, b) => b.odometer - a.odometer);
       const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
       item.lastServiceOdo = currentOdometer;
       item.lastServiceDate = Date.now();
@@ -1312,8 +1520,147 @@ fastify.delete('/api/maintenance/:id', async (request, reply) => {
 
 // GET maintenance summary status
 fastify.get('/api/maintenance/status', async (request, reply) => {
-  return reply.send(getMaintenanceStatus());
+  const vehicle = resolveVehicleQuery(request.query);
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+  return reply.send(getMaintenanceStatus(getMaintenanceItems(vehicle)));
 });
+
+// ----- Vehicle registry CRUD ----------------------------------------------
+//
+// Vehicles are a small, rarely-changed config list, so writes are
+// guarded by the same shared API key as other mutating endpoints
+// (absent header is tolerated for dashboard parity, but a wrong key
+// is always rejected). Deleting a vehicle that still owns data is
+// refused with 409 unless ?reassign=default explicitly re-homes the
+// records — this prevents accidental history loss.
+
+fastify.get('/api/vehicles', async (request, reply) => {
+  return reply.send(vehiclesStore.map(v => ({
+    ...v,
+    recordCount: {
+      telemetry: telemetryDataStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
+      fuelLogs: fuelLogsStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
+      maintenance: maintenanceStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
+    }
+  })));
+})
+
+function isValidVehicleName(name) {
+  return typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 64
+}
+
+fastify.post('/api/vehicles', async (request, reply) => {
+  const apiKey = request.headers['x-api-key'];
+  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  }
+
+  const { name, vehicleId, tankLitres } = request.body || {};
+  if (!isValidVehicleName(name)) {
+    return reply.status(400).send({ error: 'Body must include a name (1-64 chars)' });
+  }
+
+  let id = vehicleId;
+  if (id !== undefined) {
+    if (typeof id !== 'string' || !VEHICLE_ID_PATTERN.test(id)) {
+      return reply.status(400).send({ error: 'vehicleId must match [A-Za-z0-9_-]{1,64}' });
+    }
+    if (id === DEFAULT_VEHICLE_ID) {
+      return reply.status(400).send({ error: `'${DEFAULT_VEHICLE_ID}' is reserved` });
+    }
+    if (vehicleExists(id)) {
+      return reply.status(409).send({ error: `Vehicle already exists: ${id}` });
+    }
+  } else {
+    do {
+      id = `veh-${crypto.randomBytes(4).toString('hex')}`;
+    } while (vehicleExists(id));
+  }
+
+  const vehicle = { id, name: name.trim(), createdAt: Date.now() };
+  if (tankLitres !== undefined) {
+    const tank = Number(tankLitres);
+    if (!Number.isFinite(tank) || tank <= 0 || tank > 500) {
+      return reply.status(400).send({ error: 'tankLitres must be a positive number (<= 500)' });
+    }
+    vehicle.tankLitres = tank;
+  }
+
+  vehiclesStore.push(vehicle);
+  await persist(VEHICLES_PATH, vehiclesStore);
+  return reply.status(201).send(vehicle);
+})
+
+fastify.put('/api/vehicles/:id', async (request, reply) => {
+  const apiKey = request.headers['x-api-key'];
+  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  }
+
+  const vehicle = vehiclesStore.find(v => v.id === request.params.id);
+  if (!vehicle) {
+    return reply.status(404).send({ error: 'Vehicle not found' });
+  }
+
+  const { name, tankLitres } = request.body || {};
+  if (name !== undefined) {
+    if (!isValidVehicleName(name)) {
+      return reply.status(400).send({ error: 'name must be 1-64 chars' });
+    }
+    vehicle.name = name.trim();
+  }
+  if (tankLitres !== undefined) {
+    const tank = Number(tankLitres);
+    if (!Number.isFinite(tank) || tank <= 0 || tank > 500) {
+      return reply.status(400).send({ error: 'tankLitres must be a positive number (<= 500)' });
+    }
+    vehicle.tankLitres = tank;
+  }
+
+  await persist(VEHICLES_PATH, vehiclesStore);
+  return reply.send(vehicle);
+})
+
+fastify.delete('/api/vehicles/:id', async (request, reply) => {
+  const apiKey = request.headers['x-api-key'];
+  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  }
+
+  const id = request.params.id;
+  if (id === DEFAULT_VEHICLE_ID) {
+    return reply.status(400).send({ error: 'The default vehicle cannot be deleted' });
+  }
+  if (!vehicleExists(id)) {
+    return reply.status(404).send({ error: 'Vehicle not found' });
+  }
+
+  const reassign = request.query.reassign === DEFAULT_VEHICLE_ID;
+  const ownsData = (records) => records.some(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === id);
+  if (!reassign && (ownsData(telemetryDataStore) || ownsData(fuelLogsStore) || ownsData(maintenanceStore) || ownsData(dtcHistoryStore))) {
+    return reply.status(409).send({
+      error: 'Vehicle still owns records. Pass ?reassign=default to move them to the default vehicle.',
+    });
+  }
+  if (reassign) {
+    for (const store of [telemetryDataStore, fuelLogsStore, maintenanceStore, dtcHistoryStore]) {
+      for (const r of store) {
+        if ((r.vehicleId || DEFAULT_VEHICLE_ID) === id) r.vehicleId = DEFAULT_VEHICLE_ID;
+      }
+    }
+    saveToDisk();
+    saveFuelLogs();
+    saveMaintenance();
+    saveDtcHistory();
+  }
+
+  // Splice (not filter-reassign) so any exported/shared reference to
+  // the registry array stays valid.
+  const idx = vehiclesStore.findIndex(v => v.id === id);
+  if (idx !== -1) vehiclesStore.splice(idx, 1);
+  await persist(VEHICLES_PATH, vehiclesStore);
+  return reply.send({ success: true, message: reassign ? 'Vehicle deleted; records reassigned to default.' : 'Vehicle deleted.' });
+})
 
 // Liveness + readiness probe. Used by the container HEALTHCHECK
 // and external uptime monitors. Returns 200 with build identity
@@ -1483,4 +1830,4 @@ if (require.main === module) {
   start()
 }
 
-module.exports = { fastify, segmentDrives, getHaversineDistance, telemetryDataStore }
+module.exports = { fastify, segmentDrives, getHaversineDistance, telemetryDataStore, vehiclesStore, fuelLogsStore, maintenanceStore, DEFAULT_VEHICLE_ID }
