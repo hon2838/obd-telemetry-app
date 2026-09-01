@@ -85,14 +85,28 @@ describe('Multi-vehicle support', () => {
       expect((await createVehicle({ name: 'x'.repeat(65) })).statusCode).toBe(400);
     });
 
-    it('requires a matching API key when one is provided', async () => {
-      const res = await fastify.inject({
+    it('requires a matching API key on every mutation', async () => {
+      const wrong = await fastify.inject({
         method: 'POST',
         url: '/api/vehicles',
         headers: { 'x-api-key': 'b'.repeat(64) },
         payload: { name: 'Nope' },
       });
-      expect(res.statusCode).toBe(401);
+      expect(wrong.statusCode).toBe(401);
+
+      const missing = await fastify.inject({
+        method: 'POST',
+        url: '/api/vehicles',
+        payload: { name: 'Nope' },
+      });
+      expect(missing.statusCode).toBe(401);
+
+      const noDelete = await fastify.inject({
+        method: 'DELETE',
+        url: '/api/vehicles/axia',
+        payload: {},
+      });
+      expect(noDelete.statusCode).toBe(401);
     });
 
     it('renames a vehicle via PUT', async () => {
@@ -225,14 +239,14 @@ describe('Multi-vehicle support', () => {
         method: 'POST', url: '/api/telemetry/batch', headers: AUTH,
         payload: [{ timestamp: Date.now(), latitude: 0, longitude: 0, gpsSpeed: 0, vehicleId: 'queue-car' }],
       });
-      expect(sync1.json().commands).toEqual([{ command: 'read_dtc', vehicleId: 'queue-car' }]);
+      expect(sync1.json().commands).toEqual(['read_dtc']);
 
       // default vehicle syncs: gets the default-vehicle command
       const sync2 = await fastify.inject({
         method: 'POST', url: '/api/telemetry/batch', headers: AUTH,
         payload: [{ timestamp: Date.now(), latitude: 0, longitude: 0, gpsSpeed: 0 }],
       });
-      expect(sync2.json().commands).toEqual([{ command: 'clear_dtc', vehicleId: DEFAULT_VEHICLE_ID }]);
+      expect(sync2.json().commands).toEqual(['clear_dtc']);
 
       // both queues are now drained
       const sync3 = await fastify.inject({

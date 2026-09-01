@@ -69,7 +69,7 @@ class PerformanceActivity : AppCompatActivity() {
             if (best != null && best.optDouble("time", Double.NaN).isNaN().not())
                 String.format(Locale.getDefault(), "%.2fs", best.optDouble("time")) else "N/A"
         findViewById<TextView>(R.id.perfBest0to100Sub).text =
-            if (best != null) "Drive #${best.optInt("driveId")}" else "No runs recorded yet"
+            if (best != null) "Drive #${best.optString("driveId")}" else "No runs recorded yet"
 
         val top = r.optJSONObject("topSpeed")
         findViewById<TextView>(R.id.perfTopSpeed).text =
@@ -77,7 +77,7 @@ class PerformanceActivity : AppCompatActivity() {
                 String.format(Locale.getDefault(), "%.1f km/h", top.optDouble("speed")) else "N/A"
         findViewById<TextView>(R.id.perfTopSpeedSub).text =
             if (top != null && top.optDouble("speed", 0.0) > 0) {
-                "Drive #${top.optInt("driveId")} • ${dateFmt.format(Date(top.optLong("timestamp")))}"
+                "Drive #${top.optString("driveId")} • ${dateFmt.format(Date(top.optLong("timestamp")))}"
             } else "No telemetry logged"
 
         val rpm = r.optJSONObject("highestRpm")
@@ -86,7 +86,7 @@ class PerformanceActivity : AppCompatActivity() {
                 String.format(Locale.getDefault(), "%.0f RPM", rpm.optDouble("rpm")) else "N/A"
         findViewById<TextView>(R.id.perfHighestRpmSub).text =
             if (rpm != null && rpm.optDouble("rpm", 0.0) > 0)
-                "Drive #${rpm.optInt("driveId")}" else "No RPM data recorded"
+                "Drive #${rpm.optString("driveId")}" else "No RPM data recorded"
 
         val longest = r.optJSONObject("longestDrive")
         findViewById<TextView>(R.id.perfLongestDrive).text =
@@ -94,7 +94,7 @@ class PerformanceActivity : AppCompatActivity() {
                 formatDuration(longest.optInt("durationMin")) else "N/A"
         findViewById<TextView>(R.id.perfLongestDriveSub).text =
             if (longest != null && longest.optInt("durationMin", 0) > 0)
-                "Drive #${longest.optInt("driveId")} • ${longest.optString("date")}" else "No drive sessions"
+                "Drive #${longest.optString("driveId")} • ${longest.optString("date")}" else "No drive sessions"
 
         val totalDrives = r.optInt("totalDrives", 0)
         val totalMin = r.optInt("totalDrivingTime", 0)
@@ -140,8 +140,8 @@ class PerformanceActivity : AppCompatActivity() {
 
             row.addView(TextView(this).apply {
                 text = String.format(Locale.getDefault(),
-                    "0-100 km/h  •  top speed %.1f km/h  •  Drive #%d",
-                    run.optDouble("maxSpeedReached", 0.0), run.optInt("driveId", 0))
+                    "0-100 km/h  •  top speed %.1f km/h  •  Drive #%s",
+                    run.optDouble("maxSpeedReached", 0.0), run.optString("driveId"))
                 setTextColor(Color.parseColor("#AEAEB2"))
                 textSize = 13f
                 setPadding(0, 10, 0, 0)

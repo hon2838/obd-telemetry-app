@@ -86,7 +86,7 @@ class TripsActivity : AppCompatActivity() {
 
     private fun tripRow(drive: org.json.JSONObject): View {
         val s = drive.optJSONObject("summary") ?: org.json.JSONObject()
-        val id = drive.optInt("id", 0)
+        val id = drive.optString("id", "?")
         val start = drive.optLong("startTime", 0)
         val durationMin = s.optInt("durationMin", 0)
         val distanceKm = s.optDouble("distanceKm", 0.0)

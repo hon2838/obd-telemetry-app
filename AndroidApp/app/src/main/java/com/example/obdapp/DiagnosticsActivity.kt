@@ -52,6 +52,7 @@ class DiagnosticsActivity : AppCompatActivity() {
                 val conn = URL("$base/api/commands").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("X-API-Key", getApiKey(this@DiagnosticsActivity))
                 conn.doOutput = true
                 conn.connectTimeout = 5000
                 val body = org.json.JSONObject().apply {

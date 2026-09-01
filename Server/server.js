@@ -171,6 +171,11 @@ const COMMANDS_QUEUE_PATH = path.join(DB_DIR, 'commands_queue.json');
 //   - Errors are still logged (so we don't lose visibility),
 //     but they don't crash the process.
 const _writeChains = new Map();
+// Shutdown hook: never SIGKILL mid-write. Awaiting the chains on close
+// guarantees every queued atomic rename lands before the process exits.
+fastify.addHook('onClose', async () => {
+  await Promise.allSettled([..._writeChains.values()]);
+});
 function persist(path, data) {
   const prev = _writeChains.get(path) || Promise.resolve();
   const next = prev
@@ -395,11 +400,15 @@ fastify.post('/api/telemetry/batch', {
     const commandsToSend = pendingCommands.filter(c => batchVehicles.has(c.vehicleId));
     pendingCommands = pendingCommands.filter(c => !batchVehicles.has(c.vehicleId));
     persist(COMMANDS_QUEUE_PATH, pendingCommands);
+    // Wire format stays plain strings (legacy head units parse
+    // commands[i] as a string); vehicle routing already happened
+    // via batchVehicles, so the id adds nothing for the client.
+    const commandStrings = commandsToSend.map(c => (typeof c === 'string') ? c : c.command);
 
     return reply.status(201).send({ 
       success: true, 
       message: `Ingested ${payload.length} records successfully.`,
-      commands: commandsToSend
+      commands: commandStrings
     });
 
   } catch (err) {
@@ -665,8 +674,9 @@ fastify.get('/api/telemetry/dtc', async (request, reply) => {
     };
   } else {
     latest = Object.values(diagnosticsStore.byVehicle)
-      .filter(d => d.latestDtc && d.latestDtc.timestamp)
-      .sort((a, b) => b.latestDtc.timestamp - a.latestDtc.timestamp)[0] || {
+      .filter(d => (d.latestDtc && d.latestDtc.timestamp) || (d.latestClearStatus && d.latestClearStatus.timestamp))
+      .sort((a, b) => (Math.max(b.latestDtc?.timestamp || 0, b.latestClearStatus?.timestamp || 0))
+                     - Math.max(a.latestDtc?.timestamp || 0, a.latestClearStatus?.timestamp || 0))[0] || {
         latestDtc: { code: "", timestamp: null },
         latestClearStatus: { success: null, timestamp: null }
       };
@@ -708,9 +718,11 @@ fastify.get('/api/performance/runs', async (request, reply) => {
   const runs = [];
   let dIndex = 0;
   for (const r of sortedRuns) {
+    const rVehicle = r.vehicleId || DEFAULT_VEHICLE_ID;
     while (dIndex < drives.length && drives[dIndex].endTime < r.timestamp) dIndex++;
     let drive = null;
-    if (dIndex < drives.length && drives[dIndex].startTime <= r.timestamp && drives[dIndex].endTime >= r.timestamp) {
+    if (dIndex < drives.length && drives[dIndex].startTime <= r.timestamp && drives[dIndex].endTime >= r.timestamp
+        && drives[dIndex].vehicleId === rVehicle) {
       drive = drives[dIndex];
     }
     runs.push({
@@ -732,9 +744,12 @@ fastify.get('/api/performance/records', async (request, reply) => {
   const drives = segmentDrives(vehicle);
   const scopedStore = filterByVehicle(telemetryDataStore, vehicle);
 
-  const findDrive = (timestamp) => {
-    // Binary search could be used, but since it's just finding 3 items, find() is fine here because N is only the number of drives, not telemetry points!
-    return drives.find(d => timestamp >= d.startTime && timestamp <= d.endTime);
+  const findDrive = (record) => {
+    // Match on both time window and vehicle so concurrent drives from
+    // different cars never lend each other their ids.
+    const ts = record.timestamp;
+    const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
+    return drives.find(d => ts >= d.startTime && ts <= d.endTime && d.vehicleId === vid);
   };
 
   // 1. Find all runs with non-null accelTime
@@ -745,7 +760,7 @@ fastify.get('/api/performance/records', async (request, reply) => {
   if (runs.length > 0) {
     const sortedRuns = [...runs].sort((a, b) => a.accelTime - b.accelTime);
     const r = sortedRuns[0];
-    const drive = findDrive(r.timestamp);
+    const drive = findDrive(r);
     bestRun = {
       time: r.accelTime,
       timestamp: r.timestamp,
@@ -760,7 +775,7 @@ fastify.get('/api/performance/records', async (request, reply) => {
     .sort((a, b) => getRecordSpeed(b) - getRecordSpeed(a));
   if (speedRecords.length > 0) {
     const r = speedRecords[0];
-    const drive = findDrive(r.timestamp);
+    const drive = findDrive(r);
     topSpeed = {
       speed: getRecordSpeed(r),
       timestamp: r.timestamp,
@@ -775,7 +790,7 @@ fastify.get('/api/performance/records', async (request, reply) => {
     .sort((a, b) => b.rpm - a.rpm);
   if (rpmRecords.length > 0 && rpmRecords[0].rpm > 0) {
     const r = rpmRecords[0];
-    const drive = findDrive(r.timestamp);
+    const drive = findDrive(r);
     highestRpm = {
       rpm: r.rpm,
       timestamp: r.timestamp,
@@ -1551,7 +1566,7 @@ function isValidVehicleName(name) {
 
 fastify.post('/api/vehicles', async (request, reply) => {
   const apiKey = request.headers['x-api-key'];
-  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
+  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
     return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
   }
 
@@ -1593,7 +1608,7 @@ fastify.post('/api/vehicles', async (request, reply) => {
 
 fastify.put('/api/vehicles/:id', async (request, reply) => {
   const apiKey = request.headers['x-api-key'];
-  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
+  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
     return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
   }
 
@@ -1623,7 +1638,7 @@ fastify.put('/api/vehicles/:id', async (request, reply) => {
 
 fastify.delete('/api/vehicles/:id', async (request, reply) => {
   const apiKey = request.headers['x-api-key'];
-  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
+  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
     return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
   }
 
@@ -1648,10 +1663,40 @@ fastify.delete('/api/vehicles/:id', async (request, reply) => {
         if ((r.vehicleId || DEFAULT_VEHICLE_ID) === id) r.vehicleId = DEFAULT_VEHICLE_ID;
       }
     }
+    // Re-home the vehicle's diagnostics slot and any queued commands
+    // so nothing dangles after the id disappears from the registry.
+    const diagSlot = diagnosticsStore.byVehicle[id];
+    if (diagSlot) {
+      const existing = diagnosticsStore.byVehicle[DEFAULT_VEHICLE_ID];
+      if (existing) {
+        if (!existing.latestDtc?.timestamp && diagSlot.latestDtc?.timestamp) existing.latestDtc = diagSlot.latestDtc;
+        if (!existing.latestClearStatus?.timestamp && diagSlot.latestClearStatus?.timestamp) existing.latestClearStatus = diagSlot.latestClearStatus;
+      } else {
+        diagnosticsStore.byVehicle[DEFAULT_VEHICLE_ID] = diagSlot;
+      }
+      delete diagnosticsStore.byVehicle[id];
+      saveDiagnostics();
+    }
+    const hadCommands = pendingCommands.some(c => c.vehicleId === id);
+    if (hadCommands) {
+      pendingCommands = pendingCommands.map(c => c.vehicleId === id ? { ...c, vehicleId: DEFAULT_VEHICLE_ID } : c);
+      persist(COMMANDS_QUEUE_PATH, pendingCommands);
+    }
     saveToDisk();
     saveFuelLogs();
     saveMaintenance();
     saveDtcHistory();
+  } else {
+    // Deleting outright: drop the vehicle's diagnostics slot and any
+    // queued commands so they can't consume queue slots forever.
+    if (diagnosticsStore.byVehicle[id]) {
+      delete diagnosticsStore.byVehicle[id];
+      saveDiagnostics();
+    }
+    if (pendingCommands.some(c => c.vehicleId === id)) {
+      pendingCommands = pendingCommands.filter(c => c.vehicleId !== id);
+      persist(COMMANDS_QUEUE_PATH, pendingCommands);
+    }
   }
 
   // Splice (not filter-reassign) so any exported/shared reference to
@@ -1680,7 +1725,7 @@ fastify.get('/healthz', async (request, reply) => {
     uptime_seconds: SERVER_STARTED_AT ? Math.floor((Date.now() - SERVER_STARTED_AT) / 1000) : 0,
     telemetry_records: telemetryDataStore.length,
     fuel_logs: fuelLogsStore.length,
-    maintenance_items: typeof maintenanceItemsStore !== 'undefined' ? maintenanceItemsStore.length : 0,
+    maintenance_items: maintenanceStore.length,
   });
 });
 
