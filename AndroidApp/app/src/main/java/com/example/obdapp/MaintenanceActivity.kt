@@ -40,13 +40,14 @@ class MaintenanceActivity : AppCompatActivity() {
 
     private fun fetchMaintenance() {
         val base = getApiBaseUrl(this)
+        val vid = VehiclePrefs.getActiveVehicleId(this)
         mainScope.launch(Dispatchers.IO) {
             try {
-                val statusRaw = httpGet("$base/api/maintenance/status")
+                val statusRaw = httpGet("$base/api/maintenance/status?vehicle=$vid")
                 val statusObj: org.json.JSONObject? = try {
                     if (statusRaw.isNotBlank()) org.json.JSONObject(statusRaw) else null
                 } catch (_: Exception) { null }
-                val schedArr = try { org.json.JSONArray(httpGet("$base/api/maintenance")) } catch (e: Exception) { org.json.JSONArray("[]") }
+                val schedArr = try { org.json.JSONArray(httpGet("$base/api/maintenance?vehicle=$vid")) } catch (e: Exception) { org.json.JSONArray("[]") }
 
                 withContext(Dispatchers.Main) {
                     renderStatus(statusObj)
@@ -86,6 +87,7 @@ class MaintenanceActivity : AppCompatActivity() {
 
         val obj = org.json.JSONObject().apply {
             put("name", name)
+            put("vehicleId", VehiclePrefs.getActiveVehicleId(this@MaintenanceActivity))
             put("intervalKm", kmStr.toIntOrNull() ?: 0)
             put("intervalDays", daysStr.toIntOrNull() ?: 0)
             if (notes.isNotBlank()) put("notes", notes)

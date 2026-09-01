@@ -37,10 +37,11 @@ class FuelActivity : AppCompatActivity() {
 
     private fun fetchFuel() {
         val base = getApiBaseUrl(this)
+        val vid = VehiclePrefs.getActiveVehicleId(this)
         mainScope.launch(Dispatchers.IO) {
             try {
-                val stats = org.json.JSONObject(httpGet("$base/api/fuel-stats"))
-                val logsJson = org.json.JSONArray(httpGet("$base/api/fuel-logs"))
+                val stats = org.json.JSONObject(httpGet("$base/api/fuel-stats?vehicle=$vid"))
+                val logsJson = org.json.JSONArray(httpGet("$base/api/fuel-logs?vehicle=$vid"))
                 val logs = (0 until logsJson.length()).map {
                     val l = logsJson.getJSONObject(it)
                     FuelLogRow(

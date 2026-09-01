@@ -30,6 +30,7 @@ class TelemetrySyncWorker(
             unsyncedRecords.forEach { record ->
                 val jsonObj = JSONObject().apply {
                     put("timestamp", record.timestamp)
+                    put("vehicleId", record.vehicleId)
                     put("rpm", record.rpm ?: JSONObject.NULL)
                     put("speed", record.speed ?: JSONObject.NULL)
                     put("coolantTemp", record.coolantTemp ?: JSONObject.NULL)

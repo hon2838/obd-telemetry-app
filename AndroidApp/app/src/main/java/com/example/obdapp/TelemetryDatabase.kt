@@ -1,5 +1,6 @@
 package com.example.obdapp
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.Dao
@@ -31,6 +32,7 @@ data class TelemetryEntity(
     val volume: Int? = null,
     val wifiSsid: String? = null,
     val btConnected: Boolean? = null,
+    @ColumnInfo(defaultValue = "default") val vehicleId: String = "default",
     var synced: Boolean = false
 )
 
@@ -44,7 +46,7 @@ interface TelemetryDao {
 
     @Update
     suspend fun updateRecords(records: List<TelemetryEntity>)
-    
+
     @Query("DELETE FROM telemetry_data WHERE synced = 1")
     suspend fun deleteSyncedRecords()
 }

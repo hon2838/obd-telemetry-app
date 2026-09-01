@@ -34,10 +34,11 @@ class PerformanceActivity : AppCompatActivity() {
 
     private fun fetchPerformance() {
         val base = getApiBaseUrl(this)
+        val vid = VehiclePrefs.getActiveVehicleId(this)
         mainScope.launch(Dispatchers.IO) {
             try {
-                val records = org.json.JSONObject(httpGet("$base/api/performance/records"))
-                val runs = org.json.JSONArray(httpGet("$base/api/performance/runs"))
+                val records = org.json.JSONObject(httpGet("$base/api/performance/records?vehicle=$vid"))
+                val runs = org.json.JSONArray(httpGet("$base/api/performance/runs?vehicle=$vid"))
                 withContext(Dispatchers.Main) {
                     renderRecords(records)
                     renderRuns(runs)

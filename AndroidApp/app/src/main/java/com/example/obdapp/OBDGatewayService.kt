@@ -146,9 +146,7 @@ class OBDGatewayService : Service(), LocationListener {
     private var deviceMacAddress: String? = null
 
     private fun getSelectedObdMac(): String? {
-        val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
-        val mac = prefs.getString("MAC_ADDRESS", "")?.trim()
-        return if (mac.isNullOrEmpty()) null else mac
+        return VehiclePrefs.getActiveAdapterMac(this)
     }
 
     override fun onCreate() {
@@ -217,6 +215,7 @@ class OBDGatewayService : Service(), LocationListener {
                             unsyncedRecords.forEach { record ->
                                 val jsonObj = JSONObject().apply {
                                     put("timestamp", record.timestamp)
+                                    put("vehicleId", record.vehicleId)
                                     put("rpm", record.rpm ?: JSONObject.NULL)
                                     put("speed", record.speed ?: JSONObject.NULL)
                                     put("coolantTemp", record.coolantTemp ?: JSONObject.NULL)
@@ -305,6 +304,7 @@ class OBDGatewayService : Service(), LocationListener {
                             unsyncedLogs.forEach { log ->
                                 val jsonObj = JSONObject().apply {
                                     put("id", log.id)
+                                    put("vehicleId", log.vehicleId)
                                     put("timestamp", log.timestamp)
                                     put("litres", log.litres)
                                     put("odometer", log.odometer)
@@ -357,6 +357,7 @@ class OBDGatewayService : Service(), LocationListener {
                             unsyncedMaint.forEach { item ->
                                 val jsonObj = JSONObject().apply {
                                     put("id", item.serverId)
+                                    put("vehicleId", item.vehicleId)
                                     put("name", item.name)
                                     put("intervalKm", item.intervalKm ?: JSONObject.NULL)
                                     put("intervalDays", item.intervalDays ?: JSONObject.NULL)
@@ -458,6 +459,7 @@ class OBDGatewayService : Service(), LocationListener {
 
                 val payload = JSONObject().apply {
                     put("dtc", dtcRaw)
+                    put("vehicleId", VehiclePrefs.getActiveVehicleId(this@OBDGatewayService))
                     put("timestamp", System.currentTimeMillis())
                 }
                 
@@ -487,6 +489,7 @@ class OBDGatewayService : Service(), LocationListener {
 
                 val payload = JSONObject().apply {
                     put("success", success)
+                    put("vehicleId", VehiclePrefs.getActiveVehicleId(this@OBDGatewayService))
                     put("timestamp", System.currentTimeMillis())
                 }
                 
@@ -670,6 +673,7 @@ class OBDGatewayService : Service(), LocationListener {
 
                     val telemetry = TelemetryEntity(
                         timestamp = System.currentTimeMillis(),
+                        vehicleId = VehiclePrefs.getActiveVehicleId(this@OBDGatewayService),
                         rpm = rpm,
                         speed = speed,
                         coolantTemp = coolantTemp,

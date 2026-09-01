@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class], version = 6, exportSchema = false)
+@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class], version = 7, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun telemetryDao(): TelemetryDao
     abstract fun fuelLogDao(): FuelLogDao
@@ -25,6 +25,17 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // Multi-vehicle support: every queued record carries the vehicle it
+        // was captured for. Existing rows keep their history bucket by
+        // defaulting to 'default' — never wipe local queued data on upgrade.
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `telemetry_data` ADD COLUMN `vehicleId` TEXT NOT NULL DEFAULT 'default'")
+                db.execSQL("ALTER TABLE `fuel_logs` ADD COLUMN `vehicleId` TEXT NOT NULL DEFAULT 'default'")
+                db.execSQL("ALTER TABLE `maintenance_items` ADD COLUMN `vehicleId` TEXT NOT NULL DEFAULT 'default'")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -32,8 +43,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "obd_telemetry_database"
                 )
+                .addMigrations(MIGRATION_4_5, MIGRATION_6_7)
                 .fallbackToDestructiveMigration()
-                .addMigrations(MIGRATION_4_5)
                 .build()
                 INSTANCE = instance
                 instance

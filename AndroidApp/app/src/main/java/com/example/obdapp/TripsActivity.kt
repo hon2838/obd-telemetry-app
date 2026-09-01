@@ -36,9 +36,10 @@ class TripsActivity : AppCompatActivity() {
 
     private fun fetchTrips() {
         val base = getApiBaseUrl(this)
+        val vid = VehiclePrefs.getActiveVehicleId(this)
         mainScope.launch(Dispatchers.IO) {
             try {
-                val conn = URL("$base/api/drives").openConnection() as HttpURLConnection
+                val conn = URL("$base/api/drives?vehicle=$vid").openConnection() as HttpURLConnection
                 conn.connectTimeout = 8000
                 val arr = org.json.JSONArray(conn.inputStream.bufferedReader().readText())
 
