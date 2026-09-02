@@ -22,6 +22,7 @@
             <include layout="@layout/view_nav_bar" />
             <include layout="@layout/view_title_header" />
             <include layout="@layout/view_status_card" />
+            <include layout="@layout/view_vehicle_card" />
             <include layout="@layout/view_bluetooth_card" />
             <include layout="@layout/view_api_config_card" />
             <include layout="@layout/view_settings_card" />
