@@ -44,19 +44,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    const backendRes = await fetch(backendUrl, fetchOptions);
-    const data = await backendRes.text();
+    const candidateBases = [
+      process.env.INTERNAL_API_URL,
+      'http://server:3000',
+      'http://127.0.0.1:3000',
+      process.env.NEXT_PUBLIC_API_URL,
+    ].filter(Boolean) as string[];
 
-    res.status(backendRes.status);
-    backendRes.headers.forEach((val, key) => {
-      const lower = key.toLowerCase();
-      if (lower !== 'content-encoding' && lower !== 'transfer-encoding') {
-        res.setHeader(key, val);
+    let lastError: any = null;
+    for (const backendBase of candidateBases) {
+      const backendUrl = `${backendBase.replace(/\/$/, '')}/api/${pathStr}${queryString}`;
+      try {
+        const backendRes = await fetch(backendUrl, fetchOptions);
+        const data = await backendRes.text();
+
+        res.status(backendRes.status);
+        backendRes.headers.forEach((val, key) => {
+          const lower = key.toLowerCase();
+          if (lower !== 'content-encoding' && lower !== 'transfer-encoding') {
+            res.setHeader(key, val);
+          }
+        });
+        return res.send(data);
+      } catch (err) {
+        lastError = err;
       }
-    });
-    return res.send(data);
-  } catch (err: any) {
-    console.error('API proxy error:', err);
+    }
+
+    console.error('API proxy error:', lastError);
     return res.status(502).json({ error: 'Backend API unreachable' });
+  } catch (err: any) {
+    console.error('API proxy processing error:', err);
+    return res.status(500).json({ error: 'Internal proxy error' });
   }
 }

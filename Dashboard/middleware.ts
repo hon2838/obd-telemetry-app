@@ -21,16 +21,31 @@ export async function middleware(req: NextRequest) {
         return NextResponse.next();
       }
 
-      // Check User Account authentication against backend server
-      const apiHost = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:3000';
-      const loginRes = await fetch(`${apiHost.replace(/\/$/, '')}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: user || 'admin', password: pwd }),
-      }).catch(() => null);
+      // Check User Account authentication against backend server candidates
+      const candidateHosts = [
+        process.env.INTERNAL_API_URL,
+        'http://server:3000',
+        'http://127.0.0.1:3000',
+        process.env.NEXT_PUBLIC_API_URL,
+      ].filter(Boolean) as string[];
 
-      if (loginRes && loginRes.ok) {
-        return NextResponse.next();
+      for (const host of candidateHosts) {
+        try {
+          const loginRes = await fetch(`${host.replace(/\/$/, '')}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: user || 'admin', password: pwd }),
+          });
+          if (loginRes.ok) {
+            return NextResponse.next();
+          }
+          if (loginRes.status === 401 || loginRes.status === 400) {
+            // Server responded with explicit bad credentials
+            break;
+          }
+        } catch (_e) {
+          // Network connection error, try next candidate
+        }
       }
     } catch (_err) {
       // Fallback
