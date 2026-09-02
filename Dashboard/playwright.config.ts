@@ -11,7 +11,7 @@ export default defineConfig({
     trace: 'on-first-retry',
     httpCredentials: {
       username: 'admin',
-      password: 'admin12345',
+      password: process.env.DASHBOARD_TEST_PASSWORD || 'mathew1974',
     },
   },
   projects: [

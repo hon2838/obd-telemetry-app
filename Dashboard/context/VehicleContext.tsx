@@ -83,7 +83,9 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const activeVehicle = vehicles.find(v => v.id === activeVehicleId) || null;
 
   const buildUrl = useCallback((path: string, params?: Record<string, string | number | boolean | undefined | null>) => {
-    const url = new URL(`${API_HOST}${path.startsWith('/') ? path : `/${path}`}`);
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    const baseOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    const url = new URL(`${API_HOST ? API_HOST : ''}${cleanPath}`, baseOrigin);
     if (activeVehicleId && activeVehicleId !== 'all') {
       url.searchParams.set('vehicle', activeVehicleId);
     }
@@ -93,6 +95,10 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
           url.searchParams.set(k, String(v));
         }
       });
+    }
+    // Return relative path for same-origin browser calls
+    if (!API_HOST) {
+      return `${url.pathname}${url.search}`;
     }
     return url.toString();
   }, [activeVehicleId]);
