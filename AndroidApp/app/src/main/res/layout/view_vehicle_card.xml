@@ -48,5 +48,19 @@
             android:background="@drawable/btn_diag_read_bg"
             android:clickable="true"
             android:focusable="true" />
+
+        <TextView
+            android:id="@+id/btnPairDevice"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="PAIR VIA QR / PIN"
+            android:textColor="#5ED7D0"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:background="@drawable/btn_diag_read_bg"
+            android:clickable="true"
+            android:focusable="true" />
     </LinearLayout>
 </merge>

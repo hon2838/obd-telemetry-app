@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { Activity, Clock, Fuel, Navigation as NavIcon, AlertCircle, Wrench, Car, ChevronDown, Check, Plus } from 'lucide-react';
+import { Activity, Clock, Fuel, Navigation as NavIcon, AlertCircle, Wrench, Car, ChevronDown, Check, Plus, Shield, Radio } from 'lucide-react';
 import { useVehicle } from '../context/VehicleContext';
 
 export default function Navigation() {
@@ -18,6 +18,8 @@ export default function Navigation() {
     { name: 'Diagnostics', href: '/diagnostics', icon: AlertCircle },
     { name: 'Maintenance', href: '/maintenance', icon: Wrench },
     { name: 'Garage & Fleet', href: '/garage', icon: Car },
+    { name: 'Pair Car (QR/PIN)', href: '/pair', icon: Radio },
+    { name: 'Account & Security', href: '/account', icon: Shield },
   ];
 
   // Close dropdown on click outside

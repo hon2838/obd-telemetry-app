@@ -275,7 +275,7 @@ class MainActivity : AppCompatActivity() {
                                 val connection = url.openConnection() as java.net.HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", getApiKey(this@MainActivity))
+                                applyAuthHeader(connection, this@MainActivity)
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
 
@@ -306,6 +306,10 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Please enter valid numbers.", Toast.LENGTH_SHORT).show()
             }
         }
+
+        if (!isDeviceConfigured(this)) {
+            showPairingDialog()
+        }
     }
 
     // Garage card: pick which vehicle new records belong to. Switching
@@ -314,6 +318,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupVehicleGarage() {
         val vehicleSpinner = findViewById<Spinner>(R.id.vehicleSpinner)
         val btnAddVehicle = findViewById<TextView>(R.id.btnAddVehicle)
+        val btnPairDevice = findViewById<TextView?>(R.id.btnPairDevice)
 
         val vehicles = VehiclePrefs.getVehicles(this)
         val names = vehicles.map { it.name }
@@ -336,6 +341,125 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnAddVehicle.setOnClickListener { showAddVehicleDialog() }
+        btnPairDevice?.setOnClickListener { showPairingDialog() }
+    }
+
+    private var pairingJob: kotlinx.coroutines.Job? = null
+
+    private fun showPairingDialog() {
+        pairingJob?.cancel()
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(48, 36, 48, 36)
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        }
+        val titleView = TextView(this).apply {
+            text = "Pair Head Unit with Account"
+            textSize = 18f
+            setTextColor(getColor(R.color.accent_cyan))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        }
+        val pinView = TextView(this).apply {
+            text = "Connecting..."
+            textSize = 28f
+            setTextColor(getColor(R.color.text_primary))
+            setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+            setPadding(0, 24, 0, 16)
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        }
+        val descView = TextView(this).apply {
+            text = "Scan QR code or visit https://obd.hon2838.name.my/pair on your phone and enter the PIN above."
+            textSize = 12f
+            setTextColor(getColor(R.color.text_muted))
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        }
+        val statusView = TextView(this).apply {
+            text = "Waiting for confirmation..."
+            textSize = 12f
+            setTextColor(getColor(R.color.accent_amber))
+            setPadding(0, 16, 0, 0)
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        }
+        layout.addView(titleView)
+        layout.addView(pinView)
+        layout.addView(descView)
+        layout.addView(statusView)
+
+        val builder = AlertDialog.Builder(this)
+            .setView(layout)
+            .setNegativeButton("Cancel") { d, _ ->
+                pairingJob?.cancel()
+                d.dismiss()
+            }
+        val dialog = builder.create()
+        dialog.show()
+
+        pairingJob = mainScope.launch(Dispatchers.IO) {
+            try {
+                val initUrl = java.net.URL("${getApiBaseUrl(this@MainActivity)}/api/auth/device/initiate")
+                val conn = initUrl.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.doOutput = true
+                conn.connectTimeout = 8000
+
+                val payload = org.json.JSONObject().apply {
+                    put("fingerprint", DeviceIdentity.getHardwareFingerprint(this@MainActivity))
+                }
+
+                conn.outputStream.use { it.write(payload.toString().toByteArray()) }
+                if (conn.responseCode in 200..299) {
+                    val resp = org.json.JSONObject(conn.inputStream.bufferedReader().readText())
+                    val code = resp.getString("pairingCode")
+                    val pollToken = resp.getString("pollToken")
+
+                    withContext(Dispatchers.Main) {
+                        pinView.text = code
+                        statusView.text = "Waiting for phone approval..."
+                    }
+
+                    var approved = false
+                    while (!approved && isActive) {
+                        delay(2500)
+                        try {
+                            val pollUrl = java.net.URL("${getApiBaseUrl(this@MainActivity)}/api/auth/device/poll?token=$pollToken")
+                            val pollConn = pollUrl.openConnection() as java.net.HttpURLConnection
+                            pollConn.connectTimeout = 5000
+                            if (pollConn.responseCode in 200..299) {
+                                val pollResp = org.json.JSONObject(pollConn.inputStream.bufferedReader().readText())
+                                if (pollResp.optString("status") == "approved") {
+                                    approved = true
+                                    val token = pollResp.getString("deviceToken")
+                                    val vId = pollResp.optString("vehicleId", "default")
+                                    val vName = pollResp.optString("vehicleName", "Default Vehicle")
+
+                                    saveDeviceToken(this@MainActivity, token)
+                                    VehiclePrefs.setActiveVehicle(this@MainActivity, vId)
+
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(this@MainActivity, "Successfully paired to $vName!", Toast.LENGTH_LONG).show()
+                                        setupVehicleGarage()
+                                        dialog.dismiss()
+                                        if (!isServiceRunning(OBDGatewayService::class.java)) {
+                                            startOBDService()
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) { }
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        statusView.text = "Failed to connect to pairing server."
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    statusView.text = "Error: ${e.message}"
+                }
+            }
+        }
     }
 
     // Adds a vehicle in two steps: register with the server first (a
@@ -351,7 +475,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Add Vehicle")
             .setMessage("Name the vehicle. Pair its OBD adapter in the Bluetooth section while it is selected.")
             .setView(input)
-            .setPositiveButton("Add", null) // listener set below so we can control dismissal
+            .setPositiveButton("Add", null)
             .setNegativeButton("Cancel", null)
             .show()
 
@@ -369,7 +493,7 @@ class MainActivity : AppCompatActivity() {
                         .openConnection() as java.net.HttpURLConnection
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/json")
-                    conn.setRequestProperty("X-API-Key", getApiKey(this@MainActivity))
+                    applyAuthHeader(conn, this@MainActivity)
                     conn.doOutput = true
                     conn.connectTimeout = 8000
                     conn.outputStream.use {

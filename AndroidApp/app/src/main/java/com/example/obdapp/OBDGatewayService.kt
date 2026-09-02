@@ -202,8 +202,8 @@ class OBDGatewayService : Service(), LocationListener {
                     // sync and surface the problem in the
                     // notification so it's obvious instead of
                     // silently failing with 401s.
-                    if (getApiKey(applicationContext).isEmpty()) {
-                        updateNotification("OBD: API key not configured — open API Server Config to set it")
+                    if (!isDeviceConfigured(applicationContext)) {
+                        updateNotification("OBD: Car not paired — scan QR in app to pair")
                         delay(syncDelay)
                         continue
                     }
@@ -248,7 +248,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 connection = url.openConnection() as HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
+                                applyAuthHeader(connection, this@OBDGatewayService)
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
 
@@ -323,7 +323,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 connection = url.openConnection() as HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
+                                applyAuthHeader(connection, this@OBDGatewayService)
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
                                 connection.readTimeout = 5000
@@ -378,7 +378,7 @@ class OBDGatewayService : Service(), LocationListener {
                                 connection = url.openConnection() as HttpURLConnection
                                 connection.requestMethod = "POST"
                                 connection.setRequestProperty("Content-Type", "application/json")
-                                connection.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
+                                applyAuthHeader(connection, this@OBDGatewayService)
                                 connection.doOutput = true
                                 connection.connectTimeout = 5000
                                 connection.readTimeout = 5000
@@ -457,7 +457,7 @@ class OBDGatewayService : Service(), LocationListener {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
+                applyAuthHeader(conn, this@OBDGatewayService)
                 conn.doOutput = true
 
                 val payload = JSONObject().apply {
@@ -487,7 +487,7 @@ class OBDGatewayService : Service(), LocationListener {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-API-Key", getApiKey(this@OBDGatewayService))
+                applyAuthHeader(conn, this@OBDGatewayService)
                 conn.doOutput = true
 
                 val payload = JSONObject().apply {
