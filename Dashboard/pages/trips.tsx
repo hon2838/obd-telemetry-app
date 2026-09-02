@@ -1,15 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import { API_HOST } from '../api';
+import { useVehicle } from '../context/VehicleContext';
 import {
-  Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X
+  Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X, Car
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, LineChart, Line, Brush
 } from 'recharts';
 
 interface DriveSession {
-  id: number;
+  id: string | number;
+  vehicleId?: string;
   startTime: number;
   endTime: number;
   label: string;
@@ -37,6 +39,7 @@ interface LeaderboardData {
 }
 
 export default function TripsDashboard() {
+  const { activeVehicleId, buildUrl } = useVehicle();
   const [drives, setDrives] = useState<DriveSession[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardData>({
     best_efficiency: [],
@@ -53,7 +56,7 @@ export default function TripsDashboard() {
     setSelectedDrive(drive);
     setSelectedDrivePoints([]);
     try {
-      const res = await fetch(`${API_HOST}/api/telemetry/history?start=${drive.startTime}&end=${drive.endTime}`);
+      const res = await fetch(buildUrl('/api/telemetry/history', { start: drive.startTime, end: drive.endTime }));
       const data = await res.json();
       
       const transformed = data.map((d: any) => ({
@@ -69,13 +72,13 @@ export default function TripsDashboard() {
 
   const fetchData = async () => {
     try {
-      const drivesRes = await fetch(`${API_HOST}/api/drives`);
+      const drivesRes = await fetch(buildUrl('/api/drives'));
       const drivesData = await drivesRes.json();
-      setDrives(drivesData);
+      setDrives(Array.isArray(drivesData) ? drivesData : []);
 
-      const lbRes = await fetch(`${API_HOST}/api/trips/leaderboard`);
+      const lbRes = await fetch(buildUrl('/api/trips/leaderboard'));
       const lbData = await lbRes.json();
-      setLeaderboard(lbData);
+      setLeaderboard(lbData || { best_efficiency: [], longest_distance: [], highest_speed: [], longest_duration: [] });
     } catch (err) {
       console.error('Error fetching trips/drives data:', err);
     } finally {
@@ -84,10 +87,11 @@ export default function TripsDashboard() {
   };
 
   useEffect(() => {
+    setSelectedDrive(null);
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeVehicleId, buildUrl]);
 
   // Compute overall stats
   const totalTrips = drives.length;

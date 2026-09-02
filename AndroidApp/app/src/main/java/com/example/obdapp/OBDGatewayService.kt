@@ -556,7 +556,12 @@ class OBDGatewayService : Service(), LocationListener {
                             obdConnection?.run(initSP0)
                             delay(500)
                         }
-                        updateNotification("OBD Connected")
+                        val matchedVehicle = VehiclePrefs.findVehicleByMac(this@OBDGatewayService, selectedMac)
+                        if (matchedVehicle != null && matchedVehicle.id != VehiclePrefs.getActiveVehicleId(this@OBDGatewayService)) {
+                            VehiclePrefs.setActiveVehicle(this@OBDGatewayService, matchedVehicle.id)
+                        }
+                        val activeName = VehiclePrefs.getActiveVehicle(this@OBDGatewayService).name
+                        updateNotification("OBD Connected ($activeName)")
                         reconnectDelay = 5000L
                     } catch (e: Exception) {
                         e.printStackTrace()

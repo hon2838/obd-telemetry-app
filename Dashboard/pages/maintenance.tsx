@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import { API_HOST } from '../api';
+import { useVehicle } from '../context/VehicleContext';
 import {
-  Wrench, CheckCircle, AlertTriangle, AlertOctagon, PlusCircle, Trash2, ArrowLeft, Calendar, Gauge, FileText
+  Wrench, CheckCircle, AlertTriangle, AlertOctagon, PlusCircle, Trash2, ArrowLeft, Calendar, Gauge, FileText, Car
 } from 'lucide-react';
 
 interface MaintenanceItem {
   id: string;
+  vehicleId?: string;
   name: string;
   intervalKm: number | null;
   intervalDays: number | null;
@@ -48,6 +50,7 @@ const PRESETS = [
 ];
 
 export default function MaintenanceDashboard() {
+  const { activeVehicleId, buildUrl } = useVehicle();
   const [items, setItems] = useState<MaintenanceItem[]>([]);
   const [status, setStatus] = useState<MaintenanceStatus>({
     okCount: 0,
@@ -70,23 +73,23 @@ export default function MaintenanceDashboard() {
 
   const fetchData = async () => {
     try {
-      const itemsRes = await fetch(`${API_HOST}/api/maintenance`);
+      const itemsRes = await fetch(buildUrl('/api/maintenance'));
       const itemsData = await itemsRes.json();
-      setItems(itemsData);
+      setItems(Array.isArray(itemsData) ? itemsData : []);
 
-      const statusRes = await fetch(`${API_HOST}/api/maintenance/status`);
+      const statusRes = await fetch(buildUrl('/api/maintenance/status'));
       const statusData = await statusRes.json();
-      setStatus(statusData);
+      setStatus(statusData || { okCount: 0, dueSoonCount: 0, overdueCount: 0, nextUpcoming: null });
 
       // Extract current odo from first item's computed field
-      if (itemsData.length > 0) {
+      if (Array.isArray(itemsData) && itemsData.length > 0) {
         setCurrentOdoVal(itemsData[0].currentOdometer);
       } else {
         // Fallback: fetch fuel logs to get current odo
-        const logsRes = await fetch(`${API_HOST}/api/fuel-logs`);
+        const logsRes = await fetch(buildUrl('/api/fuel-logs'));
         if (logsRes.ok) {
           const logsData = await logsRes.json();
-          if (logsData.length > 0) {
+          if (Array.isArray(logsData) && logsData.length > 0) {
             setCurrentOdoVal(logsData[0].odometer);
           }
         }
@@ -100,7 +103,7 @@ export default function MaintenanceDashboard() {
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeVehicleId, buildUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,7 +126,8 @@ export default function MaintenanceDashboard() {
           intervalDays: intervalDays ? parseInt(intervalDays) : null,
           lastServiceOdo: lastServiceOdo ? parseFloat(lastServiceOdo) : null,
           lastServiceDate: lastServiceDate ? new Date(lastServiceDate).getTime() : null,
-          notes
+          notes,
+          vehicleId: activeVehicleId !== 'all' ? activeVehicleId : 'default'
         })
       });
 

@@ -2,10 +2,9 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
-import {
-  Activity, Map, Thermometer, Battery, Flame, Navigation, AlertCircle, Clock
-} from 'lucide-react';
+import { Activity, Map, Thermometer, Battery, Flame, Navigation, AlertCircle, Clock, Car } from 'lucide-react';
 import { API_HOST } from '../api';
+import { useVehicle } from '../context/VehicleContext';
 
 // A record older than this means the vehicle is not currently reporting
 const STALE_THRESHOLD_MS = 90 * 1000;
@@ -163,6 +162,7 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
   );
 };
 export default function TelemetryDashboard() {
+  const { activeVehicleId, activeVehicle, buildUrl } = useVehicle();
   const [data, setData] = useState<TelemetryData[]>([]);
   const [activeTab, setActiveTab] = useState<'engine' | 'temperatures' | 'fuel_load'>('engine');
   const [connectionOk, setConnectionOk] = useState(true);
@@ -173,9 +173,10 @@ export default function TelemetryDashboard() {
     timeLabel: new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   });
 
-  // Poll for Live data: full history once on mount, then lightweight latest-record updates
+  // Poll for Live data: full history once on mount / vehicle change, then lightweight latest-record updates
   useEffect(() => {
     let useLatestEndpoint = true;
+    setData([]);
 
     const mergeRecord = (record: TelemetryData) => {
       setData(prev => {
@@ -188,7 +189,7 @@ export default function TelemetryDashboard() {
     };
 
     const fetchFullHistory = async () => {
-      const response = await fetch(`${API_HOST}/api/telemetry/history`);
+      const response = await fetch(buildUrl('/api/telemetry/history'));
       if (response.ok) {
         const result = await response.json();
         setData(result.map((item: TelemetryData) => withTimeLabel(item)));
@@ -200,10 +201,9 @@ export default function TelemetryDashboard() {
         if (useLatestEndpoint) {
           let response: Response;
           try {
-            response = await fetch(`${API_HOST}/api/telemetry/latest`);
+            response = await fetch(buildUrl('/api/telemetry/latest'));
           } catch {
-            // Older backend (404 without CORS headers reaches us as a network error):
-            // fall back to full-history polling before declaring the server offline.
+            // Older backend fallback
             useLatestEndpoint = false;
             await fetchFullHistory();
             setConnectionOk(true);
@@ -234,7 +234,7 @@ export default function TelemetryDashboard() {
     });
     const interval = setInterval(fetchUpdate, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeVehicleId, buildUrl]);
 
   // Tick once per second so "last seen" ages up without a refetch
   useEffect(() => {

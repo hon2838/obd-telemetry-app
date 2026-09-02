@@ -5,7 +5,7 @@
 # + timestamp + SERVICE_VERSION) into the images, which the
 # /healthz endpoint then surfaces.
 
-SERVICE_VERSION ?= 1.1.0
+SERVICE_VERSION ?= 1.2.0
 BUILD_COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 

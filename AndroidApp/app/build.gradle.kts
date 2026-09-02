@@ -16,8 +16,8 @@ android {
         // versionCode is <= what's already on the device.
         // versionName is the human-readable label the user
         // sees in the app's About screen.
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     buildTypes {

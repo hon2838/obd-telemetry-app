@@ -1,18 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import { API_HOST } from '../api';
+import { useVehicle } from '../context/VehicleContext';
 import {
-  Zap, Trophy, Clock, ArrowLeft, TrendingUp, Gauge, Calendar, Activity
+  Zap, Trophy, Clock, ArrowLeft, TrendingUp, Gauge, Calendar, Activity, Car
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 
 interface PerformanceRecords {
-  best0to100: { time: number; timestamp: number; driveId: number | null } | null;
-  topSpeed: { speed: number; timestamp: number; driveId: number | null } | null;
-  highestRpm: { rpm: number; timestamp: number; driveId: number | null } | null;
-  longestDrive: { durationMin: number; driveId: number; date: string } | null;
+  best0to100: { time: number; timestamp: number; driveId: string | number | null } | null;
+  topSpeed: { speed: number; timestamp: number; driveId: string | number | null } | null;
+  highestRpm: { rpm: number; timestamp: number; driveId: string | number | null } | null;
+  longestDrive: { durationMin: number; driveId: string | number; date: string } | null;
   totalDrivingTime: number;
   totalDrives: number;
 }
@@ -21,7 +22,7 @@ interface AccelerationRun {
   id: string;
   timestamp: number;
   accelTime: number;
-  driveId: number | null;
+  driveId: string | number | null;
   maxSpeedReached: number;
 }
 
@@ -33,6 +34,7 @@ const formatDuration = (mins: number): string => {
 };
 
 export default function PerformanceDashboard() {
+  const { activeVehicleId, buildUrl } = useVehicle();
   const [records, setRecords] = useState<PerformanceRecords>({
     best0to100: null,
     topSpeed: null,
@@ -45,13 +47,20 @@ export default function PerformanceDashboard() {
 
   const fetchData = async () => {
     try {
-      const recordsRes = await fetch(`${API_HOST}/api/performance/records`);
+      const recordsRes = await fetch(buildUrl('/api/performance/records'));
       const recordsData = await recordsRes.json();
-      setRecords(recordsData);
+      setRecords(recordsData || {
+        best0to100: null,
+        topSpeed: null,
+        highestRpm: null,
+        longestDrive: null,
+        totalDrivingTime: 0,
+        totalDrives: 0
+      });
 
-      const runsRes = await fetch(`${API_HOST}/api/performance/runs`);
+      const runsRes = await fetch(buildUrl('/api/performance/runs'));
       const runsData = await runsRes.json();
-      setRuns(runsData);
+      setRuns(Array.isArray(runsData) ? runsData : []);
     } catch (err) {
       console.error('Error fetching performance data:', err);
     }
@@ -61,7 +70,7 @@ export default function PerformanceDashboard() {
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeVehicleId, buildUrl]);
 
   // Format line chart data
   const chartData = [...runs]

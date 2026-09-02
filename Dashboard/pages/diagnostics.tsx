@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import Head from 'next/head';
 import { API_HOST } from '../api';
+import { useVehicle } from '../context/VehicleContext';
 import {
-  AlertTriangle, CheckCircle, RefreshCw, Trash2, ArrowLeft, Terminal, ShieldAlert, AlertCircle, Clock
+  AlertTriangle, CheckCircle, RefreshCw, Trash2, ArrowLeft, Terminal, ShieldAlert, AlertCircle, Clock, Car
 } from 'lucide-react';
 
 interface DtcDetails {
@@ -29,6 +30,7 @@ interface DiagnosticsData {
 }
 
 export default function DiagnosticsDashboard() {
+  const { activeVehicleId, buildUrl } = useVehicle();
   const [data, setData] = useState<DiagnosticsData>({
     latest: {
       latestDtc: { code: "", timestamp: null },
@@ -70,13 +72,13 @@ export default function DiagnosticsDashboard() {
 
   const fetchData = async () => {
     try {
-      const res = await fetch(`${API_HOST}/api/telemetry/dtc`);
+      const res = await fetch(buildUrl('/api/telemetry/dtc'));
       if (res.ok) {
         const d = await res.json();
-        setData(d);
+        setData(d || { latest: { latestDtc: { code: "", timestamp: null }, latestClearStatus: { success: null, timestamp: null } }, history: [] });
 
         // Parse and resolve details for currently active code string
-        const currentCodeStr = d.latest.latestDtc?.code || "";
+        const currentCodeStr = d.latest?.latestDtc?.code || "";
         if (currentCodeStr && currentCodeStr !== "No trouble codes found" && currentCodeStr !== "No DTCs") {
           // Parse codes
           const codes = currentCodeStr
@@ -103,18 +105,23 @@ export default function DiagnosticsDashboard() {
     // Poll diagnostics status every 3 seconds
     const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeVehicleId, buildUrl]);
 
   const queueCommand = async (command: 'read_dtc' | 'clear_dtc') => {
     setError('');
     setCommandLoading(command);
     try {
+      const payload: any = { command };
+      if (activeVehicleId && activeVehicleId !== 'all') {
+        payload.vehicleId = activeVehicleId;
+      }
+
       const res = await fetch(`${API_HOST}/api/commands`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ command })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         // Show command was queued. It will poll and update when app returns result
