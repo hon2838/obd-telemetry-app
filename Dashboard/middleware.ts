@@ -40,7 +40,7 @@ export async function middleware(req: NextRequest) {
   return new NextResponse('Authentication required', {
     status: 401,
     headers: {
-      'WWW-Authenticate': 'Basic realm="Secure OBD Dashboard — Sign in with your username and password (e.g. admin / admin12345)"',
+      'WWW-Authenticate': 'Basic realm="Secure OBD Dashboard - Sign in with username and password"',
     },
   });
 }
