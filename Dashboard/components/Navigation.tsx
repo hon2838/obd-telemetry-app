@@ -3,11 +3,13 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { Activity, Clock, Fuel, Navigation as NavIcon, AlertCircle, Wrench, Car, ChevronDown, Check, Plus, Shield, Radio } from 'lucide-react';
 import { useVehicle } from '../context/VehicleContext';
+import { API_HOST } from '../api';
 
 export default function Navigation() {
   const router = useRouter();
   const { vehicles, activeVehicleId, selectVehicle } = useVehicle();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const navItems = [
@@ -21,6 +23,22 @@ export default function Navigation() {
     { name: 'Pair Car (QR/PIN)', href: '/pair', icon: Radio },
     { name: 'Account & Security', href: '/account', icon: Shield },
   ];
+
+  // Check account security status
+  useEffect(() => {
+    let isMounted = true;
+    async function checkAccountStatus() {
+      try {
+        const res = await fetch(`${API_HOST}/api/auth/me`);
+        if (res.ok && isMounted) {
+          const data = await res.json();
+          setMustChangePassword(!!data.mustChangePassword);
+        }
+      } catch (_e) {}
+    }
+    checkAccountStatus();
+    return () => { isMounted = false; };
+  }, [router.pathname]);
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -45,6 +63,44 @@ export default function Navigation() {
         </h2>
         <p>Vehicle telemetry & fleet hub</p>
       </div>
+
+      {mustChangePassword && (
+        <div style={{
+          margin: '0 0.5rem 0.75rem 0.5rem',
+          padding: '0.65rem 0.75rem',
+          borderRadius: 'var(--radius-md)',
+          background: 'rgba(255, 149, 0, 0.15)',
+          border: '1px solid rgba(255, 149, 0, 0.4)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.35rem'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#FFA500', fontSize: '0.8rem', fontWeight: 600 }}>
+            <AlertCircle size={14} />
+            <span>Default Password Active</span>
+          </div>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.3 }}>
+            Your account requires changing the temporary password.
+          </span>
+          <Link
+            href="/account"
+            style={{
+              marginTop: '0.2rem',
+              display: 'inline-block',
+              textAlign: 'center',
+              padding: '0.35rem 0.5rem',
+              background: '#FFA500',
+              color: '#000',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.725rem',
+              fontWeight: 700,
+              textDecoration: 'none'
+            }}
+          >
+            Change Password Now →
+          </Link>
+        </div>
+      )}
 
       {/* Vehicle Switcher Pill */}
       <div className="vehicle-switcher-container" ref={dropdownRef} style={{ position: 'relative', padding: '0 0.5rem 1rem 0.5rem' }}>

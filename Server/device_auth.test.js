@@ -3,9 +3,19 @@ const fs = require('fs');
 
 process.env.OBD_API_KEY = 'a'.repeat(64);
 
-const { fastify } = require('./server');
+const { fastify, usersStore, hashPassword } = require('./server');
 
 describe('User Accounts & Device Pairing Authentication', () => {
+  beforeAll(() => {
+    const admin = usersStore.find(u => u.username === 'admin');
+    if (admin) {
+      const { salt, hash } = hashPassword('admin12345');
+      admin.passwordSalt = salt;
+      admin.passwordHash = hash;
+      admin.mustChangePassword = true;
+    }
+  });
+
   afterAll(async () => {
     await fastify.close();
   });
