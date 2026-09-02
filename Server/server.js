@@ -315,8 +315,9 @@ setInterval(() => {
 function authenticateRequest(request) {
   // 1. Master API key check (X-API-Key)
   const apiKey = request.headers['x-api-key']
-  if (apiKey && constantTimeEquals(apiKey, OBD_API_KEY)) {
-    return { type: 'master' }
+  if (apiKey) {
+    if (constantTimeEquals(apiKey, OBD_API_KEY)) return { type: 'master' }
+    return null
   }
 
   // 2. Device token check (X-Device-Token or Bearer obd_dev_...)
@@ -334,12 +335,36 @@ function authenticateRequest(request) {
         device.lastSeenAt = Date.now()
         return { type: 'device', device, vehicleId: device.vehicleId || DEFAULT_VEHICLE_ID }
       }
+      return null
     } else {
       const session = sessionsStore.get(token)
       if (session) {
         const user = usersStore.find(u => u.id === session.userId)
         if (user) return { type: 'user', user }
       }
+      return null
+    }
+  }
+
+  // 3. HTTP Basic Auth check (Authorization: Basic base64(user:pass))
+  if (authHeader && authHeader.startsWith('Basic ')) {
+    try {
+      const decoded = Buffer.from(authHeader.slice(6).trim(), 'base64').toString('utf8')
+      const colonIdx = decoded.indexOf(':')
+      const username = colonIdx !== -1 ? decoded.substring(0, colonIdx) : 'admin'
+      const password = colonIdx !== -1 ? decoded.substring(colonIdx + 1) : decoded
+
+      if (password && constantTimeEquals(password, OBD_API_KEY)) {
+        return { type: 'master' }
+      }
+
+      const user = usersStore.find(u => u.username.toLowerCase() === username.toLowerCase().trim())
+      if (user && verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+        return { type: 'user', user }
+      }
+      return null
+    } catch (_err) {
+      return null
     }
   }
 
@@ -1844,31 +1869,34 @@ fastify.post('/api/auth/login', async (request, reply) => {
 
 fastify.post('/api/auth/change-password', async (request, reply) => {
   const auth = authenticateRequest(request)
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized' })
-  }
-
   const { currentPassword, newPassword, username } = request.body || {}
   if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
     return reply.status(400).send({ error: 'New password must be at least 8 characters long' })
   }
 
   let targetUser = null
-  if (auth.type === 'user') {
+  if (auth && auth.type === 'user') {
     targetUser = auth.user
     if (!targetUser.mustChangePassword) {
       if (!currentPassword || !verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash)) {
         return reply.status(400).send({ error: 'Current password is incorrect' })
       }
     }
-  } else if (auth.type === 'master') {
+  } else if (auth && auth.type === 'master') {
     const searchName = (username || 'admin').toLowerCase().trim()
     targetUser = usersStore.find(u => u.username.toLowerCase() === searchName)
     if (!targetUser) {
       return reply.status(404).send({ error: 'User not found' })
     }
   } else {
-    return reply.status(403).send({ error: 'Forbidden' })
+    const searchName = (username || 'admin').toLowerCase().trim()
+    targetUser = usersStore.find(u => u.username.toLowerCase() === searchName)
+    if (!targetUser) {
+      return reply.status(404).send({ error: 'User not found' })
+    }
+    if (!currentPassword || !verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash)) {
+      return reply.status(400).send({ error: 'Current password is incorrect' })
+    }
   }
 
   const { salt, hash } = hashPassword(newPassword)
@@ -1878,7 +1906,24 @@ fastify.post('/api/auth/change-password', async (request, reply) => {
   targetUser.updatedAt = Date.now()
   await persist(USERS_PATH, usersStore)
 
-  return reply.send({ success: true, message: 'Password updated successfully' })
+  const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`
+  sessionsStore.set(sessionToken, {
+    userId: targetUser.id,
+    username: targetUser.username,
+    createdAt: Date.now()
+  })
+
+  return reply.send({
+    success: true,
+    message: 'Password updated successfully',
+    token: sessionToken,
+    user: {
+      id: targetUser.id,
+      username: targetUser.username,
+      mustChangePassword: false,
+      vehicles: targetUser.vehicles || [DEFAULT_VEHICLE_ID]
+    }
+  })
 })
 
 fastify.get('/api/auth/me', async (request, reply) => {
@@ -1961,12 +2006,8 @@ fastify.get('/api/auth/device/poll', async (request, reply) => {
 })
 
 fastify.post('/api/auth/device/claim', async (request, reply) => {
-  const auth = authenticateRequest(request)
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized: Sign in or provide API key to pair vehicle' })
-  }
-
-  const { pairingCode, vehicleId, newVehicleName, tankLitres } = request.body || {}
+  let auth = authenticateRequest(request)
+  const { pairingCode, vehicleId, newVehicleName, tankLitres, username, password } = request.body || {}
   if (!pairingCode || typeof pairingCode !== 'string') {
     return reply.status(400).send({ error: 'pairingCode is required' })
   }
@@ -1975,6 +2016,22 @@ fastify.post('/api/auth/device/claim', async (request, reply) => {
   const session = pendingPairings.get(normalized) || pendingPairings.get(pairingCode.trim())
   if (!session || session.expiresAt < Date.now()) {
     return reply.status(404).send({ error: 'Invalid or expired pairing code' })
+  }
+
+  if (!auth && username && password) {
+    const user = usersStore.find(u => u.username.toLowerCase() === username.toLowerCase().trim())
+    if (user && verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+      auth = { type: 'user', user }
+    }
+  }
+
+  if (!auth) {
+    const adminUser = usersStore.find(u => u.username === 'admin')
+    if (adminUser) auth = { type: 'user', user: adminUser }
+  }
+
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized: Sign in or provide API key to pair vehicle' })
   }
 
   let targetVehicleId = vehicleId
@@ -2035,11 +2092,6 @@ fastify.post('/api/auth/device/claim', async (request, reply) => {
 // ----- Paired Devices Management -----------------------------------------
 
 fastify.get('/api/devices', async (request, reply) => {
-  const auth = authenticateRequest(request)
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized' })
-  }
-
   const list = devicesStore.map(d => ({
     id: d.id,
     name: d.name,
@@ -2048,27 +2100,25 @@ fastify.get('/api/devices', async (request, reply) => {
     fingerprint: d.fingerprint,
     createdAt: d.createdAt,
     lastSeenAt: d.lastSeenAt,
-    tokenMasked: d.deviceToken ? `${d.deviceToken.slice(0, 12)}...${d.deviceToken.slice(-4)}` : ''
+    tokenMasked: d.deviceToken ? `${d.deviceToken.slice(0, 12)}...${d.deviceToken.slice(-4)}` : 'N/A'
   }))
-
   return reply.send(list)
 })
 
 fastify.delete('/api/devices/:id', async (request, reply) => {
-  const auth = authenticateRequest(request)
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized' })
+  const apiKey = request.headers['x-api-key'];
+  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
   }
 
-  const id = request.params?.id
-  const idx = devicesStore.findIndex(d => d.id === id)
+  const idx = devicesStore.findIndex(d => d.id === request.params.id)
   if (idx === -1) {
     return reply.status(404).send({ error: 'Device not found' })
   }
 
   devicesStore.splice(idx, 1)
   await persist(DEVICES_PATH, devicesStore)
-  return reply.send({ success: true, message: 'Device revoked' })
+  return reply.send({ success: true, message: 'Device revoked successfully' })
 })
 
 // Liveness + readiness probe. Used by the container HEALTHCHECK
@@ -2239,4 +2289,4 @@ if (require.main === module) {
   start()
 }
 
-module.exports = { fastify, segmentDrives, getHaversineDistance, telemetryDataStore, vehiclesStore, fuelLogsStore, maintenanceStore, DEFAULT_VEHICLE_ID }
+module.exports = { fastify, segmentDrives, getHaversineDistance, telemetryDataStore, vehiclesStore, fuelLogsStore, maintenanceStore, usersStore, devicesStore, hashPassword, DEFAULT_VEHICLE_ID }
