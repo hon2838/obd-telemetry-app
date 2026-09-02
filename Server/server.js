@@ -40,6 +40,8 @@ const FUEL_PATH = path.join(DB_DIR, 'fuel_logs.json')
 const DTC_HIST_PATH = path.join(DB_DIR, 'dtc_history.json')
 const MAINT_PATH = path.join(DB_DIR, 'maintenance.json')
 const VEHICLES_PATH = path.join(DB_DIR, 'vehicles.json')
+const USERS_PATH = path.join(DB_DIR, 'users.json')
+const DEVICES_PATH = path.join(DB_DIR, 'devices.json')
 
 // Multi-vehicle support. Every record in every store carries a
 // `vehicleId`; the reserved id 'default' owns all pre-existing data so a
@@ -238,6 +240,112 @@ function filterByVehicle(records, vehicleId) {
   return records.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === vehicleId)
 }
 
+// ----- User Accounts & Device Pairing System -----------------------------
+
+let usersStore = []
+if (fs.existsSync(USERS_PATH)) {
+  try {
+    const loaded = JSON.parse(fs.readFileSync(USERS_PATH, 'utf8'))
+    if (Array.isArray(loaded)) usersStore = loaded
+  } catch (err) {
+    fastify.log.error('Error reading users file, backing up and starting fresh:', err)
+    fs.renameSync(USERS_PATH, `${USERS_PATH}.bak.${Date.now()}`)
+  }
+}
+
+let devicesStore = []
+if (fs.existsSync(DEVICES_PATH)) {
+  try {
+    const loaded = JSON.parse(fs.readFileSync(DEVICES_PATH, 'utf8'))
+    if (Array.isArray(loaded)) devicesStore = loaded
+  } catch (err) {
+    fastify.log.error('Error reading devices file, backing up and starting fresh:', err)
+    fs.renameSync(DEVICES_PATH, `${DEVICES_PATH}.bak.${Date.now()}`)
+  }
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex')
+  return { salt, hash }
+}
+
+function verifyPassword(password, salt, hash) {
+  if (!password || !salt || !hash) return false
+  const testHash = crypto.scryptSync(password, salt, 64).toString('hex')
+  return constantTimeEquals(testHash, hash)
+}
+
+function ensureDefaultAdminUser() {
+  if (usersStore.length === 0) {
+    const { salt, hash } = hashPassword('admin12345')
+    usersStore.push({
+      id: 'usr-admin',
+      username: 'admin',
+      passwordSalt: salt,
+      passwordHash: hash,
+      mustChangePassword: true,
+      vehicles: [DEFAULT_VEHICLE_ID],
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    })
+    persist(USERS_PATH, usersStore)
+  }
+}
+ensureDefaultAdminUser()
+
+const sessionsStore = new Map()
+const pendingPairings = new Map()
+
+// Clean up expired pairings every minute
+setInterval(() => {
+  const now = Date.now()
+  for (const [code, session] of pendingPairings.entries()) {
+    if (session.expiresAt && session.expiresAt < now) {
+      if (session.pollToken) pendingPairings.delete(session.pollToken)
+      pendingPairings.delete(code)
+    }
+  }
+}, 60000).unref()
+
+// Authenticates incoming requests. Returns:
+//   { type: 'master' }
+//   { type: 'user', user }
+//   { type: 'device', device, vehicleId }
+//   null (unauthorized)
+function authenticateRequest(request) {
+  // 1. Master API key check (X-API-Key)
+  const apiKey = request.headers['x-api-key']
+  if (apiKey && constantTimeEquals(apiKey, OBD_API_KEY)) {
+    return { type: 'master' }
+  }
+
+  // 2. Device token check (X-Device-Token or Bearer obd_dev_...)
+  const devTokenHeader = request.headers['x-device-token']
+  const authHeader = request.headers['authorization']
+  let token = devTokenHeader
+  if (!token && authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim()
+  }
+
+  if (token) {
+    if (token.startsWith('obd_dev_')) {
+      const device = devicesStore.find(d => d.deviceToken === token)
+      if (device) {
+        device.lastSeenAt = Date.now()
+        return { type: 'device', device, vehicleId: device.vehicleId || DEFAULT_VEHICLE_ID }
+      }
+    } else {
+      const session = sessionsStore.get(token)
+      if (session) {
+        const user = usersStore.find(u => u.id === session.userId)
+        if (user) return { type: 'user', user }
+      }
+    }
+  }
+
+  return null
+}
+
 // Initialize command queue from disk (if present) so a
 // container restart doesn't drop pending DTC commands.
 // Entries are { command, vehicleId } so a queued command only
@@ -341,13 +449,9 @@ fastify.post('/api/telemetry/batch', {
   }
 }, async (request, reply) => {
   try {
-    const apiKey = request.headers['x-api-key'];
-    // Constant-time comparison to prevent timing attacks that
-    // could leak the expected key one byte at a time. The key
-    // is read from process.env.OBD_API_KEY at boot (see top of
-    // file); this branch never falls back to a literal.
-    if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
-      return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+    const auth = authenticateRequest(request);
+    if (!auth) {
+      return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Device Token' });
     }
 
     const payload = request.body;
@@ -443,9 +547,9 @@ fastify.post('/api/commands', {
     },
   },
 }, async (request, reply) => {
-  const apiKey = request.headers['x-api-key'];
-  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  const auth = authenticateRequest(request);
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
   }
   const { command, vehicleId } = request.body || {};
   if (!command || (command !== 'read_dtc' && command !== 'clear_dtc')) {
@@ -1565,9 +1669,9 @@ function isValidVehicleName(name) {
 }
 
 fastify.post('/api/vehicles', async (request, reply) => {
-  const apiKey = request.headers['x-api-key'];
-  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  const auth = authenticateRequest(request);
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
   }
 
   const { name, vehicleId, tankLitres } = request.body || {};
@@ -1607,9 +1711,9 @@ fastify.post('/api/vehicles', async (request, reply) => {
 })
 
 fastify.put('/api/vehicles/:id', async (request, reply) => {
-  const apiKey = request.headers['x-api-key'];
-  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  const auth = authenticateRequest(request);
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
   }
 
   const vehicle = vehiclesStore.find(v => v.id === request.params.id);
@@ -1637,9 +1741,9 @@ fastify.put('/api/vehicles/:id', async (request, reply) => {
 })
 
 fastify.delete('/api/vehicles/:id', async (request, reply) => {
-  const apiKey = request.headers['x-api-key'];
-  if (!constantTimeEquals(apiKey || '', OBD_API_KEY)) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
+  const auth = authenticateRequest(request);
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
   }
 
   const id = request.params.id;
@@ -1705,6 +1809,266 @@ fastify.delete('/api/vehicles/:id', async (request, reply) => {
   if (idx !== -1) vehiclesStore.splice(idx, 1);
   await persist(VEHICLES_PATH, vehiclesStore);
   return reply.send({ success: true, message: reassign ? 'Vehicle deleted; records reassigned to default.' : 'Vehicle deleted.' });
+})
+
+// ----- User Authentication & Account Management -------------------------
+
+fastify.post('/api/auth/login', async (request, reply) => {
+  const { username, password } = request.body || {}
+  if (!username || typeof username !== 'string' || !password || typeof password !== 'string') {
+    return reply.status(400).send({ error: 'Username and password are required' })
+  }
+
+  const user = usersStore.find(u => u.username.toLowerCase() === username.toLowerCase().trim())
+  if (!user || !verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+    return reply.status(401).send({ error: 'Invalid username or password' })
+  }
+
+  const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`
+  sessionsStore.set(sessionToken, {
+    userId: user.id,
+    username: user.username,
+    createdAt: Date.now()
+  })
+
+  return reply.send({
+    token: sessionToken,
+    user: {
+      id: user.id,
+      username: user.username,
+      mustChangePassword: !!user.mustChangePassword,
+      vehicles: user.vehicles || [DEFAULT_VEHICLE_ID]
+    }
+  })
+})
+
+fastify.post('/api/auth/change-password', async (request, reply) => {
+  const auth = authenticateRequest(request)
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized' })
+  }
+
+  const { currentPassword, newPassword, username } = request.body || {}
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+    return reply.status(400).send({ error: 'New password must be at least 8 characters long' })
+  }
+
+  let targetUser = null
+  if (auth.type === 'user') {
+    targetUser = auth.user
+    if (!targetUser.mustChangePassword) {
+      if (!currentPassword || !verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash)) {
+        return reply.status(400).send({ error: 'Current password is incorrect' })
+      }
+    }
+  } else if (auth.type === 'master') {
+    const searchName = (username || 'admin').toLowerCase().trim()
+    targetUser = usersStore.find(u => u.username.toLowerCase() === searchName)
+    if (!targetUser) {
+      return reply.status(404).send({ error: 'User not found' })
+    }
+  } else {
+    return reply.status(403).send({ error: 'Forbidden' })
+  }
+
+  const { salt, hash } = hashPassword(newPassword)
+  targetUser.passwordSalt = salt
+  targetUser.passwordHash = hash
+  targetUser.mustChangePassword = false
+  targetUser.updatedAt = Date.now()
+  await persist(USERS_PATH, usersStore)
+
+  return reply.send({ success: true, message: 'Password updated successfully' })
+})
+
+fastify.get('/api/auth/me', async (request, reply) => {
+  const auth = authenticateRequest(request)
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized' })
+  }
+
+  if (auth.type === 'user') {
+    const userDevices = devicesStore.filter(d => d.userId === auth.user.id)
+    return reply.send({
+      id: auth.user.id,
+      username: auth.user.username,
+      mustChangePassword: !!auth.user.mustChangePassword,
+      vehicles: auth.user.vehicles || [DEFAULT_VEHICLE_ID],
+      deviceCount: userDevices.length
+    })
+  }
+
+  return reply.send({
+    id: 'master',
+    username: 'master-admin',
+    mustChangePassword: false,
+    vehicles: vehiclesStore.map(v => v.id),
+    deviceCount: devicesStore.length
+  })
+})
+
+// ----- Device Pairing (QR & PIN flow) ------------------------------------
+
+fastify.post('/api/auth/device/initiate', async (request, reply) => {
+  const fingerprint = request.body?.fingerprint || {}
+  const pin = Math.floor(100000 + Math.random() * 900000).toString()
+  const pairingCode = `${pin.slice(0, 3)}-${pin.slice(3)}`
+  const pollToken = `poll_${crypto.randomBytes(16).toString('hex')}`
+
+  const session = {
+    code: pairingCode,
+    normalizedCode: pin,
+    pollToken,
+    fingerprint,
+    status: 'pending',
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes
+  }
+
+  pendingPairings.set(pairingCode, session)
+  pendingPairings.set(pin, session)
+  pendingPairings.set(pollToken, session)
+
+  return reply.send({
+    pairingCode,
+    pollToken,
+    qrUrl: `https://obd.hon2838.name.my/pair?code=${pairingCode}`,
+    expiresInSeconds: 600
+  })
+})
+
+fastify.get('/api/auth/device/poll', async (request, reply) => {
+  const token = request.query?.token
+  if (!token) {
+    return reply.status(400).send({ error: 'token query parameter is required' })
+  }
+
+  const session = pendingPairings.get(token)
+  if (!session || session.expiresAt < Date.now()) {
+    return reply.send({ status: 'expired' })
+  }
+
+  if (session.status === 'approved') {
+    return reply.send({
+      status: 'approved',
+      deviceToken: session.deviceToken,
+      vehicleId: session.vehicleId,
+      vehicleName: session.vehicleName
+    })
+  }
+
+  return reply.send({ status: 'pending' })
+})
+
+fastify.post('/api/auth/device/claim', async (request, reply) => {
+  const auth = authenticateRequest(request)
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized: Sign in or provide API key to pair vehicle' })
+  }
+
+  const { pairingCode, vehicleId, newVehicleName, tankLitres } = request.body || {}
+  if (!pairingCode || typeof pairingCode !== 'string') {
+    return reply.status(400).send({ error: 'pairingCode is required' })
+  }
+
+  const normalized = pairingCode.replace(/[^0-9]/g, '')
+  const session = pendingPairings.get(normalized) || pendingPairings.get(pairingCode.trim())
+  if (!session || session.expiresAt < Date.now()) {
+    return reply.status(404).send({ error: 'Invalid or expired pairing code' })
+  }
+
+  let targetVehicleId = vehicleId
+  if (newVehicleName && typeof newVehicleName === 'string' && newVehicleName.trim().length > 0) {
+    targetVehicleId = 'veh-' + crypto.randomBytes(4).toString('hex')
+    const newVeh = {
+      id: targetVehicleId,
+      name: newVehicleName.trim(),
+      tankLitres: typeof tankLitres === 'number' && tankLitres > 0 ? tankLitres : 40,
+      createdAt: Date.now()
+    }
+    vehiclesStore.push(newVeh)
+    await persist(VEHICLES_PATH, vehiclesStore)
+  }
+
+  if (!targetVehicleId || !vehicleExists(targetVehicleId)) {
+    targetVehicleId = DEFAULT_VEHICLE_ID
+  }
+
+  const deviceToken = `obd_dev_${crypto.randomBytes(24).toString('hex')}`
+  const device = {
+    id: `dev-${crypto.randomBytes(4).toString('hex')}`,
+    name: session.fingerprint?.deviceModel || 'Car Head Unit',
+    deviceToken,
+    vehicleId: targetVehicleId,
+    userId: auth.type === 'user' ? auth.user.id : 'usr-admin',
+    fingerprint: session.fingerprint,
+    createdAt: Date.now(),
+    lastSeenAt: Date.now()
+  }
+
+  devicesStore.push(device)
+  await persist(DEVICES_PATH, devicesStore)
+
+  if (auth.type === 'user') {
+    if (!auth.user.vehicles) auth.user.vehicles = []
+    if (!auth.user.vehicles.includes(targetVehicleId)) {
+      auth.user.vehicles.push(targetVehicleId)
+      await persist(USERS_PATH, usersStore)
+    }
+  }
+
+  const vehName = vehiclesStore.find(v => v.id === targetVehicleId)?.name || 'Default Vehicle'
+  session.status = 'approved'
+  session.deviceToken = deviceToken
+  session.vehicleId = targetVehicleId
+  session.vehicleName = vehName
+
+  return reply.send({
+    success: true,
+    deviceId: device.id,
+    vehicleId: targetVehicleId,
+    vehicleName: vehName,
+    deviceToken
+  })
+})
+
+// ----- Paired Devices Management -----------------------------------------
+
+fastify.get('/api/devices', async (request, reply) => {
+  const auth = authenticateRequest(request)
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized' })
+  }
+
+  const list = devicesStore.map(d => ({
+    id: d.id,
+    name: d.name,
+    vehicleId: d.vehicleId,
+    vehicleName: vehiclesStore.find(v => v.id === d.vehicleId)?.name || 'Unknown',
+    fingerprint: d.fingerprint,
+    createdAt: d.createdAt,
+    lastSeenAt: d.lastSeenAt,
+    tokenMasked: d.deviceToken ? `${d.deviceToken.slice(0, 12)}...${d.deviceToken.slice(-4)}` : ''
+  }))
+
+  return reply.send(list)
+})
+
+fastify.delete('/api/devices/:id', async (request, reply) => {
+  const auth = authenticateRequest(request)
+  if (!auth) {
+    return reply.status(401).send({ error: 'Unauthorized' })
+  }
+
+  const id = request.params?.id
+  const idx = devicesStore.findIndex(d => d.id === id)
+  if (idx === -1) {
+    return reply.status(404).send({ error: 'Device not found' })
+  }
+
+  devicesStore.splice(idx, 1)
+  await persist(DEVICES_PATH, devicesStore)
+  return reply.send({ success: true, message: 'Device revoked' })
 })
 
 // Liveness + readiness probe. Used by the container HEALTHCHECK

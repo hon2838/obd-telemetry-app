@@ -77,7 +77,7 @@ class TelemetrySyncWorker(
             connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("X-API-Key", getApiKey(applicationContext))
+            applyAuthHeader(connection, applicationContext)
             connection.doOutput = true
             connection.connectTimeout = 5000
             
