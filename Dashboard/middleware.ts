@@ -1,49 +1,51 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// Set DASHBOARD_PASSWORD at deploy time. We do NOT provide a
-// fallback default: if it's missing, the dashboard renders 503
-// on every page rather than silently accepting an unauthenticated
-// request. A previous fallback ('mathew1974') was the textbook
-// "default credentials" footgun and was removed.
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
-if (!DASHBOARD_PASSWORD || DASHBOARD_PASSWORD.length < 12) {
-  // Throw at module load so the build fails fast in CI. (In
-  // production, the page simply 503s; we don't want a misconfigured
-  // deploy to be silently "open by default".)
-  throw new Error(
-    'DASHBOARD_PASSWORD env var is missing or < 12 chars. ' +
-    'Set it in your deploy config (see deployment_guide.md).'
-  );
-}
 
-export function middleware(req: NextRequest) {
+export async function middleware(req: NextRequest) {
   const basicAuth = req.headers.get('authorization');
   const url = req.nextUrl;
 
+  // 1. Check HTTP Basic Auth (supports both DASHBOARD_PASSWORD and User Account login like admin / admin12345)
   if (basicAuth) {
-    const authValue = basicAuth.split(' ')[1];
-    const [user, pwd] = atob(authValue).split(':');
+    try {
+      const authValue = basicAuth.split(' ')[1];
+      const decoded = atob(authValue);
+      const colonIdx = decoded.indexOf(':');
+      const user = colonIdx !== -1 ? decoded.substring(0, colonIdx) : 'admin';
+      const pwd = colonIdx !== -1 ? decoded.substring(colonIdx + 1) : decoded;
 
-    // Allow any username with the dashboard password.
-    if (pwd === DASHBOARD_PASSWORD) {
-      return NextResponse.next();
+      // Check legacy DASHBOARD_PASSWORD if set
+      if (DASHBOARD_PASSWORD && pwd === DASHBOARD_PASSWORD) {
+        return NextResponse.next();
+      }
+
+      // Check User Account authentication against backend server
+      const apiHost = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://server:3000';
+      const loginRes = await fetch(`${apiHost}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user || 'admin', password: pwd }),
+      });
+
+      if (loginRes.ok) {
+        return NextResponse.next();
+      }
+    } catch (_err) {
+      // Fallback
     }
   }
 
   return new NextResponse('Authentication required', {
     status: 401,
     headers: {
-      'WWW-Authenticate': 'Basic realm="Secure Dashboard"',
+      'WWW-Authenticate': 'Basic realm="Secure OBD Dashboard — Sign in with your username and password (e.g. admin / admin12345)"',
     },
   });
 }
 
-// Protect all routes except static files and the unauthenticated
-// /healthz probe endpoint. The healthz route lives at
-// /pages/api/healthz.ts (or wherever the app's catch-all page is)
-// and is used by the container HEALTHCHECK and external uptime
-// monitors.
+// Protect all routes except static files, healthz probe, and QR code pairing
 export const config = {
-  matcher: '/((?!_next/static|_next/image|favicon.ico|healthz).*)',
+  matcher: '/((?!_next/static|_next/image|favicon.ico|healthz|pair).*)',
 };
