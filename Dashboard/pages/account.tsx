@@ -2,9 +2,8 @@ import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { API_HOST } from '../api';
-import Navigation from '../components/Navigation';
 import {
-  Shield, KeyRound, Smartphone, Trash2, CheckCircle2, AlertCircle, RefreshCw, Radio, Lock, ArrowLeft
+  Shield, KeyRound, Smartphone, Trash2, CheckCircle2, AlertCircle, RefreshCw, Radio, Lock, Car, Plus
 } from 'lucide-react';
 
 interface PairedDevice {
@@ -12,7 +11,7 @@ interface PairedDevice {
   name: string;
   vehicleId: string;
   vehicleName: string;
-  fingerprint: {
+  fingerprint?: {
     vin?: string;
     btMac?: string;
     androidId?: string;
@@ -31,26 +30,39 @@ export default function AccountSecurityPage() {
   const [pwdSuccess, setPwdSuccess] = useState<string | null>(null);
   const [pwdError, setPwdError] = useState<string | null>(null);
 
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [username, setUsername] = useState('admin');
+
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(true);
 
-  const fetchDevices = async () => {
+  const fetchProfileAndDevices = async () => {
     try {
       setDevicesLoading(true);
-      const res = await fetch(`${API_HOST}/api/devices`);
-      if (res.ok) {
-        const data = await res.json();
-        setDevices(Array.isArray(data) ? data : []);
+      const [meRes, devRes] = await Promise.all([
+        fetch(`${API_HOST}/api/auth/me`).catch(() => null),
+        fetch(`${API_HOST}/api/devices`).catch(() => null),
+      ]);
+
+      if (meRes && meRes.ok) {
+        const meData = await meRes.json();
+        setMustChangePassword(!!meData.mustChangePassword);
+        if (meData.username) setUsername(meData.username);
+      }
+
+      if (devRes && devRes.ok) {
+        const devData = await devRes.json();
+        setDevices(Array.isArray(devData) ? devData : []);
       }
     } catch (err) {
-      console.error('Error loading devices:', err);
+      console.error('Error loading account data:', err);
     } finally {
       setDevicesLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchDevices();
+    fetchProfileAndDevices();
   }, []);
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -74,9 +86,9 @@ export default function AccountSecurityPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          username,
           currentPassword,
           newPassword,
-          username: 'admin',
         }),
       });
 
@@ -85,7 +97,8 @@ export default function AccountSecurityPage() {
         throw new Error(data.error || 'Failed to update password');
       }
 
-      setPwdSuccess('Password changed successfully! Default password is now deactivated.');
+      setPwdSuccess('Password changed successfully! Default setup password deactivated.');
+      setMustChangePassword(false);
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
@@ -114,76 +127,152 @@ export default function AccountSecurityPage() {
   };
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 antialiased font-sans overflow-hidden">
+    <>
       <Head>
-        <title>Account & Security — OBD Telemetry</title>
+        <title>Account & Security | OBD Telemetry</title>
       </Head>
 
-      <Navigation />
-
-      <main className="flex-1 flex flex-col h-full overflow-y-auto">
-        <header className="px-8 py-6 border-b border-slate-800/80 bg-slate-900/40 backdrop-blur-md flex items-center justify-between sticky top-0 z-10">
-          <div className="flex items-center space-x-3">
-            <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-xl text-blue-400">
-              <Shield className="w-6 h-6" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-                Account & Device Security
-              </h1>
-              <p className="text-xs text-slate-400">Manage account password, paired cars, and access tokens</p>
-            </div>
+      <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '1.25rem 1rem' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <Shield color="var(--accent-cyan)" size={28} />
+              Account & Device Security
+            </h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
+              Manage administrative credentials, security policy, and authorized car head units.
+            </p>
           </div>
+
           <Link
             href="/pair"
-            className="flex items-center space-x-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg shadow-cyan-500/20 transition duration-200"
+            className="glass-panel"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.75rem 1.25rem',
+              borderRadius: 'var(--radius-md)',
+              background: 'linear-gradient(135deg, rgba(94, 215, 208, 0.2), rgba(141, 156, 255, 0.2))',
+              border: '1px solid var(--border-glow)',
+              color: 'var(--text-primary)',
+              fontWeight: 600,
+              textDecoration: 'none',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+            }}
           >
-            <Radio className="w-4 h-4 animate-pulse" />
-            <span>+ Pair New Car</span>
+            <Radio size={18} color="var(--accent-cyan)" />
+            <span>Pair Car Head Unit (QR/PIN)</span>
           </Link>
-        </header>
+        </div>
 
-        <div className="p-8 max-w-5xl space-y-8">
-          {/* Password Change Card */}
-          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl">
-            <div className="flex items-center space-x-3 mb-6">
-              <KeyRound className="w-5 h-5 text-cyan-400" />
+        {/* Security Status Banners */}
+        {mustChangePassword && (
+          <div className="glass-panel" style={{
+            padding: '1.25rem',
+            borderRadius: 'var(--radius-md)',
+            background: 'rgba(245, 158, 11, 0.12)',
+            border: '1px solid rgba(245, 158, 11, 0.4)',
+            marginBottom: '1.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem',
+            flexWrap: 'wrap'
+          }}>
+            <div style={{ padding: '0.5rem', background: 'rgba(245, 158, 11, 0.2)', borderRadius: '50%', color: 'var(--accent-amber)' }}>
+              <AlertCircle size={24} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--accent-amber)', margin: 0 }}>
+                Initial Default Password Active
+              </h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '0.2rem' }}>
+                Your account is currently using the initial setup password (<code style={{ color: '#fff' }}>admin12345</code>). Please change it below to protect your vehicle telemetry and gateway control.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Main Grid: Change Password & Devices */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '1.5rem' }}>
+          {/* Card: Change Password */}
+          <div className="glass-panel" style={{ padding: '1.75rem', borderRadius: 'var(--radius-lg)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              <div style={{ padding: '0.5rem', background: 'rgba(94, 215, 208, 0.12)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-cyan)' }}>
+                <KeyRound size={20} />
+              </div>
               <div>
-                <h2 className="text-base font-semibold text-white">Change Account Password</h2>
-                <p className="text-xs text-slate-400">Update from the initial setup password to your personal secure password</p>
+                <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+                  Change Password
+                </h2>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
+                  Update your account credentials
+                </p>
               </div>
             </div>
 
             {pwdError && (
-              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center space-x-3 text-red-400 text-xs">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <div style={{
+                padding: '0.75rem 1rem',
+                borderRadius: 'var(--radius-sm)',
+                background: 'rgba(239, 68, 68, 0.15)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#ff8080',
+                fontSize: '0.85rem',
+                marginBottom: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}>
+                <AlertCircle size={16} />
                 <span>{pwdError}</span>
               </div>
             )}
 
             {pwdSuccess && (
-              <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center space-x-3 text-emerald-400 text-xs">
-                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              <div style={{
+                padding: '0.75rem 1rem',
+                borderRadius: 'var(--radius-sm)',
+                background: 'rgba(16, 185, 129, 0.15)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                color: 'var(--accent-green)',
+                fontSize: '0.85rem',
+                marginBottom: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}>
+                <CheckCircle2 size={16} />
                 <span>{pwdSuccess}</span>
               </div>
             )}
 
-            <form onSubmit={handleChangePassword} className="space-y-4 max-w-md">
+            <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Current Password (or initial setup password)
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                  Current / Setup Password
                 </label>
                 <input
                   type="password"
                   placeholder="e.g. admin12345"
                   value={currentPassword}
                   onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded-xl px-3 py-2 text-sm text-slate-200 outline-none"
+                  style={{
+                    width: '100%',
+                    padding: '0.65rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--surface-inset)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.9rem',
+                    outline: 'none',
+                  }}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
                   New Password (min 8 characters)
                 </label>
                 <input
@@ -192,82 +281,187 @@ export default function AccountSecurityPage() {
                   placeholder="Enter new strong password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded-xl px-3 py-2 text-sm text-slate-200 outline-none"
+                  style={{
+                    width: '100%',
+                    padding: '0.65rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--surface-inset)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.9rem',
+                    outline: 'none',
+                  }}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
                   Confirm New Password
                 </label>
                 <input
                   type="password"
                   required
-                  placeholder="Re-type new password"
+                  placeholder="Re-enter new password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded-xl px-3 py-2 text-sm text-slate-200 outline-none"
+                  style={{
+                    width: '100%',
+                    padding: '0.65rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--surface-inset)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.9rem',
+                    outline: 'none',
+                  }}
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={pwdLoading || !newPassword}
-                className="bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold py-2.5 px-5 rounded-xl transition duration-200 disabled:opacity-50"
+                style={{
+                  marginTop: '0.5rem',
+                  padding: '0.75rem',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'linear-gradient(135deg, var(--accent-cyan), #3b82f6)',
+                  color: '#000',
+                  fontWeight: 700,
+                  fontSize: '0.9rem',
+                  border: 'none',
+                  cursor: 'pointer',
+                  opacity: pwdLoading || !newPassword ? 0.6 : 1,
+                  transition: 'opacity 0.2s',
+                }}
               >
                 {pwdLoading ? 'Updating Password...' : 'Save New Password'}
               </button>
             </form>
           </div>
 
-          {/* Paired Head Units & Devices Card */}
-          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center space-x-3">
-                <Smartphone className="w-5 h-5 text-blue-400" />
+          {/* Card: Paired Devices */}
+          <div className="glass-panel" style={{ padding: '1.75rem', borderRadius: 'var(--radius-lg)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ padding: '0.5rem', background: 'rgba(141, 156, 255, 0.12)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-blue)' }}>
+                  <Smartphone size={20} />
+                </div>
                 <div>
-                  <h2 className="text-base font-semibold text-white">Paired Car Head Units & Devices</h2>
-                  <p className="text-xs text-slate-400">Authorized hardware running telemetry gateway</p>
+                  <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+                    Paired Car Head Units
+                  </h2>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
+                    Authorized gateway devices syncing vehicle telemetry
+                  </p>
                 </div>
               </div>
+
               <button
-                onClick={fetchDevices}
-                className="p-2 text-slate-400 hover:text-white bg-slate-800/60 rounded-lg transition"
+                type="button"
+                onClick={fetchProfileAndDevices}
+                style={{
+                  background: 'var(--surface-inset)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--text-secondary)',
+                  padding: '0.4rem',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer'
+                }}
+                title="Refresh paired devices"
               >
-                <RefreshCw className={`w-4 h-4 ${devicesLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw size={15} className={devicesLoading ? 'animate-spin' : ''} />
               </button>
             </div>
 
             {devices.length === 0 ? (
-              <div className="text-center py-8 border border-dashed border-slate-800 rounded-xl text-slate-500 text-sm">
-                No car head units paired via QR code yet. Use the "+ Pair New Car" button above.
+              <div style={{
+                textAlign: 'center',
+                padding: '2.5rem 1rem',
+                border: '1px dashed var(--border)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--text-muted)',
+                fontSize: '0.875rem'
+              }}>
+                <Radio size={32} style={{ margin: '0 auto 0.75rem auto', opacity: 0.4 }} />
+                <p>No car head units paired yet.</p>
+                <p style={{ fontSize: '0.775rem', marginTop: '0.25rem' }}>
+                  Open the OBD App on your Android head unit and scan the pairing QR code.
+                </p>
+                <Link
+                  href="/pair"
+                  style={{
+                    display: 'inline-block',
+                    marginTop: '1rem',
+                    padding: '0.5rem 1rem',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--surface-inset)',
+                    border: '1px solid var(--border-glow)',
+                    color: 'var(--accent-cyan)',
+                    fontSize: '0.8rem',
+                    textDecoration: 'none',
+                    fontWeight: 600
+                  }}
+                >
+                  Go to QR / PIN Pairing Page →
+                </Link>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 {devices.map((d) => (
                   <div
                     key={d.id}
-                    className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl flex items-center justify-between gap-4"
+                    style={{
+                      padding: '1rem',
+                      borderRadius: 'var(--radius-md)',
+                      background: 'var(--surface-inset)',
+                      border: '1px solid var(--border)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '1rem'
+                    }}
                   >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-sm text-white">{d.name}</span>
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                    <div style={{ overflow: 'hidden' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>
+                          {d.name || 'Car Head Unit'}
+                        </span>
+                        <span style={{
+                          fontSize: '0.7rem',
+                          padding: '0.15rem 0.45rem',
+                          borderRadius: 'var(--radius-sm)',
+                          background: 'rgba(94, 215, 208, 0.15)',
+                          color: 'var(--accent-cyan)',
+                          border: '1px solid rgba(94, 215, 208, 0.3)',
+                          fontWeight: 500
+                        }}>
                           {d.vehicleName} ({d.vehicleId})
                         </span>
                       </div>
-                      <div className="text-xs text-slate-400 mt-1 flex gap-4">
-                        <span>Device ID: <code className="font-mono text-slate-300">{d.id}</code></span>
-                        <span>Token: <code className="font-mono text-slate-300">{d.tokenMasked}</code></span>
-                        <span>Last Seen: {new Date(d.lastSeenAt).toLocaleString()}</span>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.35rem', display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+                        <span>Device ID: <code style={{ color: 'var(--accent-khaki)' }}>{d.id}</code></span>
+                        <span>Token: <code style={{ color: 'var(--text-muted)' }}>{d.tokenMasked}</code></span>
+                        <span>Last Active: {new Date(d.lastSeenAt).toLocaleString()}</span>
                       </div>
                     </div>
+
                     <button
+                      type="button"
                       onClick={() => handleRevokeDevice(d.id)}
-                      className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition"
-                      title="Revoke access"
+                      style={{
+                        background: 'rgba(239, 68, 68, 0.15)',
+                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                        color: 'var(--accent-red)',
+                        padding: '0.5rem',
+                        borderRadius: 'var(--radius-sm)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                      title="Revoke and unlink device"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 size={16} />
                     </button>
                   </div>
                 ))}
@@ -275,7 +469,7 @@ export default function AccountSecurityPage() {
             )}
           </div>
         </div>
-      </main>
-    </div>
+      </div>
+    </>
   );
 }

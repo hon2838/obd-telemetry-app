@@ -22,14 +22,14 @@ export async function middleware(req: NextRequest) {
       }
 
       // Check User Account authentication against backend server
-      const apiHost = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://server:3000';
-      const loginRes = await fetch(`${apiHost}/api/auth/login`, {
+      const apiHost = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:3000';
+      const loginRes = await fetch(`${apiHost.replace(/\/$/, '')}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: user || 'admin', password: pwd }),
-      });
+      }).catch(() => null);
 
-      if (loginRes.ok) {
+      if (loginRes && loginRes.ok) {
         return NextResponse.next();
       }
     } catch (_err) {
