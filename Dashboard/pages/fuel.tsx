@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import { API_HOST } from '../api';
+import { useVehicle } from '../context/VehicleContext';
 import {
-  Fuel, Gauge, Clock, ArrowLeft, Trash2, PlusCircle, ActivitySquare, TrendingUp
+  Fuel, Gauge, Clock, ArrowLeft, Trash2, PlusCircle, ActivitySquare, TrendingUp, Car
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area
@@ -10,6 +11,7 @@ import {
 
 interface FuelLog {
   id: string | number;
+  vehicleId?: string;
   timestamp: number;
   litres: number;
   odometer: number;
@@ -27,6 +29,7 @@ interface FuelStats {
 }
 
 export default function FuelTracker() {
+  const { activeVehicleId, buildUrl } = useVehicle();
   const [logs, setLogs] = useState<FuelLog[]>([]);
   const [stats, setStats] = useState<FuelStats>({
     averageKmPerLitre: 0,
@@ -46,11 +49,11 @@ export default function FuelTracker() {
   const fetchData = async () => {
     try {
       // Fetch Logs
-      const logsRes = await fetch(`${API_HOST}/api/fuel-logs`);
+      const logsRes = await fetch(buildUrl('/api/fuel-logs'));
       const logsData = await logsRes.json();
       
       // Calculate economy for each log on the fly (sorted by odo ascending first)
-      const sortedAsc = [...logsData].sort((a: FuelLog, b: FuelLog) => a.odometer - b.odometer);
+      const sortedAsc = [...(Array.isArray(logsData) ? logsData : [])].sort((a: FuelLog, b: FuelLog) => a.odometer - b.odometer);
       const computedLogs = sortedAsc.map((log: FuelLog, index: number) => {
         if (index === 0) {
           return { ...log, economy: null };
@@ -67,9 +70,9 @@ export default function FuelTracker() {
       setLogs(sortedDesc);
 
       // Fetch Stats
-      const statsRes = await fetch(`${API_HOST}/api/fuel-stats`);
+      const statsRes = await fetch(buildUrl('/api/fuel-stats'));
       const statsData = await statsRes.json();
-      setStats(statsData);
+      setStats(statsData || { averageKmPerLitre: 0, bestKmPerLitre: 0, worstKmPerLitre: 0, totalLitres: 0, totalDistance: 0, logCount: 0 });
     } catch (err) {
       console.error('Error fetching fuel data:', err);
     }
@@ -80,7 +83,7 @@ export default function FuelTracker() {
     // Poll stats/logs every 10 seconds to keep in sync with Android uploads
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeVehicleId, buildUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,7 +122,8 @@ export default function FuelTracker() {
           timestamp: Date.now(),
           litres,
           odometer,
-          source: 'web'
+          source: 'web',
+          vehicleId: activeVehicleId !== 'all' ? activeVehicleId : 'default'
         })
       });
 

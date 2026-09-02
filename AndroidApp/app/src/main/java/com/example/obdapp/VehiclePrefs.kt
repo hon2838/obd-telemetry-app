@@ -135,4 +135,11 @@ object VehiclePrefs {
         if (mac.isNullOrEmpty()) editor.remove(KEY_LEGACY_MAC) else editor.putString(KEY_LEGACY_MAC, mac)
         editor.apply()
     }
+
+    // Auto-detection helper: find which vehicle profile is associated with a given Bluetooth MAC
+    fun findVehicleByMac(context: Context, mac: String): Vehicle? {
+        if (mac.isEmpty()) return null
+        val upper = mac.uppercase()
+        return getVehicles(context).firstOrNull { it.mac?.uppercase() == upper }
+    }
 }
