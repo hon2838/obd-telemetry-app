@@ -66,6 +66,9 @@ dependencies {
   // Kotlin OBD API
   implementation("com.github.eltonvs:kotlin-obd-api:1.4.1")
 
+  // QR Code generator
+  implementation("com.google.zxing:core:3.5.3")
+
   // Testing
   testImplementation("junit:junit:4.13.2")
   androidTestImplementation("androidx.test.ext:junit:1.1.5")

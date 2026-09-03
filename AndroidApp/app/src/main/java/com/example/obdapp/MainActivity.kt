@@ -197,8 +197,12 @@ class MainActivity : AppCompatActivity() {
             }
             saveApiBaseUrl(this, entered)
             if (keyEntered.isNotEmpty()) saveApiKey(this, keyEntered)
+            updateDeviceStatusUi()
             Toast.makeText(this, "API settings saved", Toast.LENGTH_SHORT).show()
         }
+
+        findViewById<Button?>(R.id.btnPairDeviceCard)?.setOnClickListener { showPairingDialog() }
+        updateDeviceStatusUi()
 
         setupBluetoothSpinner()
 
@@ -344,6 +348,58 @@ class MainActivity : AppCompatActivity() {
         btnPairDevice?.setOnClickListener { showPairingDialog() }
     }
 
+    private fun updateDeviceStatusUi() {
+        val tvDeviceTokenStatus = findViewById<TextView?>(R.id.tvDeviceTokenStatus)
+        val btnPairDeviceCard = findViewById<Button?>(R.id.btnPairDeviceCard)
+        val token = getDeviceToken(this)
+        val key = getApiKey(this)
+        when {
+            !token.isNullOrEmpty() -> {
+                val preview = if (token.length > 14) "${token.take(12)}..." else token
+                tvDeviceTokenStatus?.text = "Device Authorization: ✓ Paired ($preview)"
+                tvDeviceTokenStatus?.setTextColor(getColor(R.color.accent_green))
+                btnPairDeviceCard?.text = "Re-pair Head Unit via PIN / QR"
+            }
+            key.isNotEmpty() -> {
+                tvDeviceTokenStatus?.text = "Device Authorization: Legacy API Key"
+                tvDeviceTokenStatus?.setTextColor(getColor(R.color.accent_amber))
+                btnPairDeviceCard?.text = "Pair Head Unit via PIN / QR"
+            }
+            else -> {
+                tvDeviceTokenStatus?.text = "Device Authorization: Not Paired"
+                tvDeviceTokenStatus?.setTextColor(getColor(R.color.accent_red))
+                btnPairDeviceCard?.text = "Pair Head Unit via PIN / QR"
+            }
+        }
+    }
+
+    private fun generateQrBitmap(contents: String, sizePx: Int = 360): android.graphics.Bitmap? {
+        return try {
+            val hints = mapOf(com.google.zxing.EncodeHintType.MARGIN to 1)
+            val bitMatrix = com.google.zxing.qrcode.QRCodeWriter().encode(
+                contents,
+                com.google.zxing.BarcodeFormat.QR_CODE,
+                sizePx,
+                sizePx,
+                hints
+            )
+            val w = bitMatrix.width
+            val h = bitMatrix.height
+            val pixels = IntArray(w * h)
+            for (y in 0 until h) {
+                val offset = y * w
+                for (x in 0 until w) {
+                    pixels[offset + x] = if (bitMatrix.get(x, y)) -0x1000000 else -0x1
+                }
+            }
+            val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.RGB_565)
+            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+            bitmap
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private var pairingJob: kotlinx.coroutines.Job? = null
 
     private fun showPairingDialog() {
@@ -365,11 +421,19 @@ class MainActivity : AppCompatActivity() {
             textSize = 28f
             setTextColor(getColor(R.color.text_primary))
             setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
-            setPadding(0, 24, 0, 16)
+            setPadding(0, 20, 0, 8)
             gravity = android.view.Gravity.CENTER_HORIZONTAL
         }
+        val qrImageView = android.widget.ImageView(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(340, 340).apply {
+                gravity = android.view.Gravity.CENTER_HORIZONTAL
+                topMargin = 12
+                bottomMargin = 12
+            }
+            visibility = android.view.View.GONE
+        }
         val descView = TextView(this).apply {
-            text = "Scan QR code or visit https://obd.hon2838.name.my/pair on your phone and enter the PIN above."
+            text = "Scan the QR code or visit https://obd.hon2838.name.my/pair and enter the PIN above to link this car."
             textSize = 12f
             setTextColor(getColor(R.color.text_muted))
             gravity = android.view.Gravity.CENTER_HORIZONTAL
@@ -383,6 +447,7 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(titleView)
         layout.addView(pinView)
+        layout.addView(qrImageView)
         layout.addView(descView)
         layout.addView(statusView)
 
@@ -413,10 +478,16 @@ class MainActivity : AppCompatActivity() {
                     val resp = org.json.JSONObject(conn.inputStream.bufferedReader().readText())
                     val code = resp.getString("pairingCode")
                     val pollToken = resp.getString("pollToken")
+                    val qrUrl = resp.optString("qrUrl", "https://obd.hon2838.name.my/pair?code=$code")
+                    val qrBitmap = generateQrBitmap(qrUrl, 340)
 
                     withContext(Dispatchers.Main) {
                         pinView.text = code
-                        statusView.text = "Waiting for phone approval..."
+                        if (qrBitmap != null) {
+                            qrImageView.setImageBitmap(qrBitmap)
+                            qrImageView.visibility = android.view.View.VISIBLE
+                        }
+                        statusView.text = "Waiting for phone approval on dashboard..."
                     }
 
                     var approved = false
@@ -435,10 +506,17 @@ class MainActivity : AppCompatActivity() {
                                     val vName = pollResp.optString("vehicleName", "Default Vehicle")
 
                                     saveDeviceToken(this@MainActivity, token)
+                                    val existing = VehiclePrefs.getVehicles(this@MainActivity).find { it.id == vId }
+                                    if (existing == null) {
+                                        VehiclePrefs.addVehicle(this@MainActivity, vName, null, vId)
+                                    } else if (existing.name != vName) {
+                                        VehiclePrefs.updateVehicle(this@MainActivity, vId, name = vName)
+                                    }
                                     VehiclePrefs.setActiveVehicle(this@MainActivity, vId)
 
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(this@MainActivity, "Successfully paired to $vName!", Toast.LENGTH_LONG).show()
+                                        updateDeviceStatusUi()
                                         setupVehicleGarage()
                                         dialog.dismiss()
                                         if (!isServiceRunning(OBDGatewayService::class.java)) {

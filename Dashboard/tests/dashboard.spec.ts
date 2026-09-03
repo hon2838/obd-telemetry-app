@@ -1,6 +1,11 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('OBD Dashboard Tests', () => {
+  test.use({
+    extraHTTPHeaders: {
+      'Authorization': 'Basic ' + Buffer.from('admin:mathew1974').toString('base64'),
+    },
+  });
   test('Trips Explorer page renders correctly', async ({ page }) => {
     await page.goto('http://localhost:3001/trips');
     await expect(page.locator('h1')).toBeVisible();

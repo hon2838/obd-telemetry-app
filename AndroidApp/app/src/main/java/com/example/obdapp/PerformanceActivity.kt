@@ -54,6 +54,7 @@ class PerformanceActivity : AppCompatActivity() {
     private fun httpGet(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 8000
+        applyAuthHeader(conn, this)
         return conn.inputStream.bufferedReader().readText()
     }
 

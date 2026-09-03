@@ -41,6 +41,7 @@ class TripsActivity : AppCompatActivity() {
             try {
                 val conn = URL("$base/api/drives?vehicle=$vid").openConnection() as HttpURLConnection
                 conn.connectTimeout = 8000
+                applyAuthHeader(conn, this@TripsActivity)
                 val arr = org.json.JSONArray(conn.inputStream.bufferedReader().readText())
 
                 val drives = (0 until arr.length()).map { arr.getJSONObject(it) }
