@@ -64,6 +64,7 @@ class MaintenanceActivity : AppCompatActivity() {
     private fun httpGet(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 8000
+        applyAuthHeader(conn, this)
         val code = conn.responseCode
         return if (code in 200..299) conn.inputStream.bufferedReader().readText() else ""
     }
@@ -99,6 +100,7 @@ class MaintenanceActivity : AppCompatActivity() {
                 val conn = URL("$base/api/maintenance").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
+                applyAuthHeader(conn, this@MaintenanceActivity)
                 conn.doOutput = true
                 conn.connectTimeout = 8000
                 conn.outputStream.use { it.write(obj.toString().toByteArray()) }
@@ -282,6 +284,7 @@ class MaintenanceActivity : AppCompatActivity() {
                 val conn = URL("$base/api/maintenance/$id").openConnection() as HttpURLConnection
                 conn.requestMethod = "PUT"
                 conn.setRequestProperty("Content-Type", "application/json")
+                applyAuthHeader(conn, this@MaintenanceActivity)
                 conn.doOutput = true
                 conn.connectTimeout = 8000
                 val body = org.json.JSONObject().apply {
@@ -322,6 +325,7 @@ class MaintenanceActivity : AppCompatActivity() {
                 val conn = URL("$base/api/maintenance/$id").openConnection() as HttpURLConnection
                 conn.requestMethod = "DELETE"
                 conn.connectTimeout = 8000
+                applyAuthHeader(conn, this@MaintenanceActivity)
                 val code = conn.responseCode
                 withContext(Dispatchers.Main) {
                     if (code in 200..299) {

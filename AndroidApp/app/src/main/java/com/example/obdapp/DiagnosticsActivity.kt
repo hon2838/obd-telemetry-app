@@ -52,7 +52,7 @@ class DiagnosticsActivity : AppCompatActivity() {
                 val conn = URL("$base/api/commands").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-API-Key", getApiKey(this@DiagnosticsActivity))
+                applyAuthHeader(conn, this@DiagnosticsActivity)
                 conn.doOutput = true
                 conn.connectTimeout = 5000
                 val body = org.json.JSONObject().apply {
@@ -90,6 +90,7 @@ class DiagnosticsActivity : AppCompatActivity() {
                 val vid = VehiclePrefs.getActiveVehicleId(this@DiagnosticsActivity)
                 val conn = URL("$base/api/telemetry/dtc?vehicle=$vid").openConnection() as HttpURLConnection
                 conn.connectTimeout = 5000
+                applyAuthHeader(conn, this@DiagnosticsActivity)
                 val body = conn.inputStream.bufferedReader().readText()
                 val json = org.json.JSONObject(body)
                 val latest = json.optJSONObject("latest") ?: org.json.JSONObject()
@@ -122,6 +123,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             val conn = URL("$base/api/dtc/lookup").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
+            applyAuthHeader(conn, this@DiagnosticsActivity)
             conn.doOutput = true
             conn.connectTimeout = 5000
             conn.outputStream.use {

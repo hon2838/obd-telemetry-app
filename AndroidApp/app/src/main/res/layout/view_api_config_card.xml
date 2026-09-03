@@ -71,5 +71,31 @@
             android:textSize="13sp"
             android:textStyle="bold"
             android:background="@drawable/spinner_bg" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="14dp"
+            android:layout_marginBottom="12dp"
+            android:background="@color/surface_stroke" />
+
+        <TextView
+            android:id="@+id/tvDeviceTokenStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Device Authorization: Not Paired"
+            android:textColor="@color/text_muted"
+            android:textSize="12sp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btnPairDeviceCard"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:text="Pair Head Unit via PIN / QR"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:background="@drawable/btn_diag_read_bg" />
     </LinearLayout>
 </merge>
