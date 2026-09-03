@@ -225,7 +225,7 @@ export default function MaintenanceDashboard() {
 
       {/* Status Cards */}
       <div style={styles.statsRow}>
-        <div className="glass-panel-static" style={{ ...styles.statsCard, borderLeft: '4px solid var(--accent-green)' }}>
+        <div className="glass-panel-static" style={styles.statsCard}>
           <div style={styles.statsCardHeader}>
             <span style={styles.statsCardTitle}>Schedules OK</span>
             <CheckCircle size={20} style={{ color: 'var(--accent-green)' }} />
@@ -234,7 +234,7 @@ export default function MaintenanceDashboard() {
           <span style={styles.statsCardSubtext}>Maintenance intervals healthy</span>
         </div>
 
-        <div className="glass-panel-static" style={{ ...styles.statsCard, borderLeft: '4px solid var(--accent-amber)' }}>
+        <div className="glass-panel-static" style={styles.statsCard}>
           <div style={styles.statsCardHeader}>
             <span style={styles.statsCardTitle}>Due Soon</span>
             <AlertTriangle size={20} style={{ color: 'var(--accent-amber)' }} />
@@ -243,7 +243,7 @@ export default function MaintenanceDashboard() {
           <span style={styles.statsCardSubtext}>Within 10% of replacement schedule</span>
         </div>
 
-        <div className="glass-panel-static" style={{ ...styles.statsCard, borderLeft: '4px solid var(--accent-red)' }}>
+        <div className="glass-panel-static" style={styles.statsCard}>
           <div style={styles.statsCardHeader}>
             <span style={styles.statsCardTitle}>Overdue Items</span>
             <AlertOctagon size={20} style={{ color: 'var(--accent-red)' }} />
@@ -365,7 +365,7 @@ export default function MaintenanceDashboard() {
                 const pct = getProgressPercentage(item);
                 const color = getProgressColor(item.status);
                 return (
-                  <div key={item.id} className="glass-panel-static" style={{ ...styles.itemCard, borderLeft: `4px solid ${color}` }}>
+                  <div key={item.id} className="glass-panel-static" style={styles.itemCard}>
                     <div style={styles.itemHeader}>
                       <div>
                         <h3 style={styles.itemName}>{item.name}</h3>
