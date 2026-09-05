@@ -99,9 +99,16 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
         attributionControl: false
       }).setView([latitude, longitude], 15);
 
-      // Dark theme tiles
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        maxZoom: 20
+      // Dark theme tiles (ESRI World Dark Gray Base + Reference Labels)
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19,
+        maxNativeZoom: 16,
+        attribution: 'Tiles &copy; Esri'
+      }).addTo(mapInstanceRef.current);
+
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19,
+        maxNativeZoom: 16
       }).addTo(mapInstanceRef.current);
 
       // Marker

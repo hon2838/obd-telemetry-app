@@ -43,14 +43,18 @@ The repository is divided into three main components:
 
 ### Backend Server
 1. Navigate to the `Server` directory.
-2. Run `npm install`.
-3. Run `node server.js` (The server runs on port 3000 by default).
+2. Set `OBD_API_KEY` to a random value of at least 32 characters and optionally set `OBD_DATA_DIR`.
+3. Run `npm ci`.
+4. Run `npm start` (the server listens on port 3000).
+5. On a fresh data store, sign in as `admin` using `OBD_INITIAL_ADMIN_PASSWORD`. If it was omitted, read the generated temporary password from `.initial_admin_secret` in the data directory and change it immediately.
 
 ### Web Dashboard
 1. Navigate to the `Dashboard` directory.
-2. Run `npm install`.
+2. Run `npm ci`.
 3. Run `npm run dev` to start the development server.
 4. Access the dashboard via your browser.
+
+For production releases, follow [deployment_guide.md](deployment_guide.md). Build and test images locally, then transfer the finished images to the production host.
 
 ## Tech Stack
 

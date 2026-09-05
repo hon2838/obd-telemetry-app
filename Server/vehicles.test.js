@@ -5,13 +5,12 @@
 //
 // Runs against a temp data dir (OBD_DATA_DIR) so the real
 // Server/data store files are never polluted by test ingest.
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
 const TEST_API_KEY = 'a'.repeat(64);
-const TEST_DATA_DIR = path.join(__dirname, '__test_data_vehicles__');
-fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-test-vehicles-'));
 process.env.OBD_API_KEY = TEST_API_KEY;
 process.env.OBD_DATA_DIR = TEST_DATA_DIR;
 
@@ -46,7 +45,7 @@ describe('Multi-vehicle support', () => {
 
   describe('vehicle registry', () => {
     it('boot ensures the default vehicle exists', async () => {
-      const res = await fastify.inject({ method: 'GET', url: '/api/vehicles' });
+      const res = await fastify.inject({ method: 'GET', url: '/api/vehicles', headers: AUTH });
       expect(res.statusCode).toBe(200);
       const vehicles = res.json();
       expect(vehicles.some(v => v.id === DEFAULT_VEHICLE_ID)).toBe(true);
@@ -203,18 +202,18 @@ describe('Multi-vehicle support', () => {
       });
       expect(res.statusCode).toBe(201);
 
-      const scoped = await fastify.inject({ method: 'GET', url: '/api/telemetry/history?vehicle=scope-car&limit=10' });
+      const scoped = await fastify.inject({ method: 'GET', url: '/api/telemetry/history?vehicle=scope-car&limit=10', headers: AUTH });
       expect(scoped.statusCode).toBe(200);
       expect(scoped.json().length).toBe(1);
 
       // Empty (but 200) for a different registered vehicle
-      const other = await fastify.inject({ method: 'GET', url: '/api/telemetry/history?vehicle=axia&limit=10' });
+      const other = await fastify.inject({ method: 'GET', url: '/api/telemetry/history?vehicle=axia&limit=10', headers: AUTH });
       expect(other.statusCode).toBe(200);
       expect(other.json().length).toBe(0);
     });
 
     it('rejects reads with an unknown vehicle param', async () => {
-      const res = await fastify.inject({ method: 'GET', url: '/api/telemetry/latest?vehicle=nope' });
+      const res = await fastify.inject({ method: 'GET', url: '/api/telemetry/latest?vehicle=nope', headers: AUTH });
       expect(res.statusCode).toBe(400);
     });
   });
@@ -277,7 +276,7 @@ describe('Multi-vehicle support', () => {
       expect(denied.statusCode).toBe(409);
 
       // Data is untouched after the refused delete
-      const logs = await fastify.inject({ method: 'GET', url: '/api/fuel-logs?vehicle=doomed' });
+      const logs = await fastify.inject({ method: 'GET', url: '/api/fuel-logs?vehicle=doomed', headers: AUTH });
       expect(logs.json().length).toBe(1);
     });
 
@@ -288,11 +287,11 @@ describe('Multi-vehicle support', () => {
       expect(res.statusCode).toBe(200);
 
       // The deleted vehicle is gone from the registry...
-      const registry = await fastify.inject({ method: 'GET', url: '/api/vehicles' });
+      const registry = await fastify.inject({ method: 'GET', url: '/api/vehicles', headers: AUTH });
       expect(registry.json().some(v => v.id === 'doomed')).toBe(false);
 
       // ...and its records now live under the default vehicle
-      const defaultScope = await fastify.inject({ method: 'GET', url: `/api/fuel-logs?vehicle=${DEFAULT_VEHICLE_ID}` });
+      const defaultScope = await fastify.inject({ method: 'GET', url: `/api/fuel-logs?vehicle=${DEFAULT_VEHICLE_ID}`, headers: AUTH });
       expect(defaultScope.json().some(l => l.odometer === 50000)).toBe(true);
     });
 
@@ -312,7 +311,7 @@ describe('Multi-vehicle support', () => {
           { litres: 20, odometer: 100400, vehicleId: 'stats-car' },
         ],
       });
-      const stats = await fastify.inject({ method: 'GET', url: '/api/fuel-stats?vehicle=stats-car' });
+      const stats = await fastify.inject({ method: 'GET', url: '/api/fuel-stats?vehicle=stats-car', headers: AUTH });
       expect(stats.statusCode).toBe(200);
       expect(stats.json().totalDistance).toBe(400);
       expect(stats.json().logCount).toBe(2);
@@ -324,11 +323,11 @@ describe('Multi-vehicle support', () => {
         method: 'POST', url: '/api/maintenance', headers: AUTH,
         payload: { name: 'Oil', intervalKm: 5000, vehicleId: 'maint-car' },
       });
-      const status = await fastify.inject({ method: 'GET', url: '/api/maintenance/status?vehicle=maint-car' });
+      const status = await fastify.inject({ method: 'GET', url: '/api/maintenance/status?vehicle=maint-car', headers: AUTH });
       expect(status.statusCode).toBe(200);
       expect(status.json().okCount).toBe(1);
 
-      const defaultStatus = await fastify.inject({ method: 'GET', url: '/api/maintenance/status' });
+      const defaultStatus = await fastify.inject({ method: 'GET', url: '/api/maintenance/status', headers: AUTH });
       // The default vehicle has no maintenance items of its own
       expect(defaultStatus.json().okCount).toBe(0);
     });

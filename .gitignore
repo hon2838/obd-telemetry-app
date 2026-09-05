@@ -29,6 +29,8 @@ Server/install.sh
 *.db
 *.json
 !package.json
+!Server/package-lock.json
+!Dashboard/package-lock.json
 !tsconfig.json
 !manifest.json
 !project.json
