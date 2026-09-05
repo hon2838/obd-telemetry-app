@@ -9,6 +9,12 @@
 // One file so afterAll only closes fastify once at the end
 // (otherwise the second describe can't inject after the
 // first has closed it).
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+
+const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-test-apk-'));
+process.env.OBD_DATA_DIR = TEST_DATA_DIR;
 const TEST_API_KEY = 'a'.repeat(64);
 process.env.OBD_API_KEY = TEST_API_KEY;
 const { fastify } = require('./server');
@@ -55,4 +61,5 @@ describe('GET /api/agent/latest.apk', () => {
 
 afterAll(async () => {
   await fastify.close();
+  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });

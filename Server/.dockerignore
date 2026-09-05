@@ -1,0 +1,11 @@
+node_modules
+data
+*.bak*
+.git
+.gitignore
+*.test.js
+coverage
+npm-debug.log*
+.env
+.env.*
+!.env.example

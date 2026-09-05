@@ -1,6 +1,9 @@
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
+const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-test-auth-'));
+process.env.OBD_DATA_DIR = TEST_DATA_DIR;
 process.env.OBD_API_KEY = 'a'.repeat(64);
 
 const { fastify, usersStore, hashPassword } = require('./server');
@@ -18,6 +21,7 @@ describe('User Accounts & Device Pairing Authentication', () => {
 
   afterAll(async () => {
     await fastify.close();
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
   });
 
   let adminSessionToken = '';

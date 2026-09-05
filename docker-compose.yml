@@ -9,7 +9,7 @@ services:
       # (dev / unknown) are used. The resulting image
       # reports them in /healthz and `docker inspect`.
       args:
-        - SERVICE_VERSION=${SERVICE_VERSION:-1.1.0}
+        - SERVICE_VERSION=${SERVICE_VERSION:-1.2.0}
         - BUILD_COMMIT=${BUILD_COMMIT:-unknown}
         - BUILD_TIME=${BUILD_TIME:-unknown}
     image: obd-telemetry-server:${BUILD_COMMIT:-latest}
@@ -20,6 +20,8 @@ services:
       # refuses to start if OBD_API_KEY is missing or
       # < 32 chars. Set in .env at the repo root.
       - OBD_API_KEY=${OBD_API_KEY}
+      - OBD_INITIAL_ADMIN_PASSWORD=${OBD_INITIAL_ADMIN_PASSWORD:-}
+      - OBD_TRUST_PROXY=${OBD_TRUST_PROXY:-false}
       - NODE_ENV=production
     volumes:
       - server-data:/app/data
@@ -40,14 +42,16 @@ services:
       context: ./Dashboard
       args:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-        - SERVICE_VERSION=${SERVICE_VERSION:-1.1.0}
+        - SERVICE_VERSION=${SERVICE_VERSION:-1.2.0}
         - BUILD_COMMIT=${BUILD_COMMIT:-unknown}
         - BUILD_TIME=${BUILD_TIME:-unknown}
     image: obd-telemetry-dashboard:${BUILD_COMMIT:-latest}
     ports:
       - "3003:3001"
     environment:
-      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      # Server-side dashboard requests use the private Compose network.
+      # NEXT_PUBLIC_API_URL remains the browser-facing public URL.
+      - INTERNAL_API_URL=http://server:3000
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
       - NODE_ENV=production
     depends_on:
@@ -56,7 +60,7 @@ services:
     healthcheck:
       # /healthz returns 200 with {"status":"ok",...} when the
       # Next.js process is alive. The page is excluded from
-      # auth in middleware.ts, so we don't need to send
+      # auth in proxy.ts, so we don't need to send
       # credentials to probe it. Use 127.0.0.1 (not localhost)
       # to skip the IPv6/IPv4 DNS resolver issue on Alpine.
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/healthz | grep -q '\"status\":\"ok\"' || exit 1"]

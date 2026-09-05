@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
@@ -450,7 +451,7 @@ class OBDGatewayService : Service(), LocationListener {
 
     private fun uploadDtcResult(dtcRaw: String) {
         val serverUrl = getApiBaseUrl(this)
-        val dtcUrl = "$serverUrl/api/dtc"
+        val dtcUrl = "$serverUrl/api/telemetry/dtc"
         serviceScope.launch {
             try {
                 val url = URL(dtcUrl)
@@ -480,7 +481,7 @@ class OBDGatewayService : Service(), LocationListener {
 
     private fun uploadDtcClearStatus(success: Boolean) {
         val serverUrl = getApiBaseUrl(this)
-        val dtcUrl = "$serverUrl/api/dtc/clear"
+        val dtcUrl = "$serverUrl/api/telemetry/dtc/clear"
         serviceScope.launch {
             try {
                 val url = URL(dtcUrl)
@@ -813,8 +814,12 @@ class OBDGatewayService : Service(), LocationListener {
         return try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
-            val value = getMethod.invoke(null, "sys.qf.is.acc.on") as String
-            value.equals("true", ignoreCase = true)
+            val value = getMethod.invoke(null, "sys.qf.is.acc.on") as? String
+            if (value.isNullOrEmpty()) {
+                true // Non-QF head unit or standard Android: default to ACC ON!
+            } else {
+                value.equals("true", ignoreCase = true)
+            }
         } catch (e: Exception) {
             true // Fallback to true if we can't read the property
         }
@@ -824,8 +829,8 @@ class OBDGatewayService : Service(), LocationListener {
         return try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
-            val rawValue = getMethod.invoke(null, "sys.qf.update_battery_power") as String
-            rawValue.toFloatOrNull()?.div(10f)
+            val rawValue = getMethod.invoke(null, "sys.qf.update_battery_power") as? String
+            rawValue?.takeIf { it.isNotEmpty() }?.toFloatOrNull()?.div(10f)
         } catch (e: Exception) {
             null
         }
@@ -835,8 +840,8 @@ class OBDGatewayService : Service(), LocationListener {
         return try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
-            val value = getMethod.invoke(null, "sys.qf.vehicle.headlight_state") as String
-            value.equals("true", ignoreCase = true)
+            val value = getMethod.invoke(null, "sys.qf.vehicle.headlight_state") as? String
+            if (value.isNullOrEmpty()) null else value.equals("true", ignoreCase = true)
         } catch (e: Exception) {
             null
         }
@@ -846,8 +851,8 @@ class OBDGatewayService : Service(), LocationListener {
         return try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
-            val value = getMethod.invoke(null, "persist.sys.main_volume") as String
-            value.toIntOrNull()
+            val value = getMethod.invoke(null, "persist.sys.main_volume") as? String
+            value?.toIntOrNull()
         } catch (e: Exception) {
             null
         }
@@ -855,10 +860,12 @@ class OBDGatewayService : Service(), LocationListener {
 
     private fun getWifiSsid(): String? {
         return try {
-            val systemPropertiesClass = Class.forName("android.os.SystemProperties")
-            val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
-            val value = getMethod.invoke(null, "persist.sys.last.wifi.ssid") as String
-            if (value.isEmpty()) null else value
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val info = wifiManager?.connectionInfo
+            val ssid = info?.ssid
+            if (ssid != null && ssid != "<unknown ssid>" && ssid != "0x") {
+                ssid.replace("\"", "")
+            } else null
         } catch (e: Exception) {
             null
         }
@@ -868,8 +875,8 @@ class OBDGatewayService : Service(), LocationListener {
         return try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
-            val value = getMethod.invoke(null, "sys.qf.bt.is.connect") as String
-            value.equals("true", ignoreCase = true)
+            val value = getMethod.invoke(null, "sys.qf.bt.is.connect") as? String
+            if (value.isNullOrEmpty()) null else value.equals("true", ignoreCase = true)
         } catch (e: Exception) {
             null
         }

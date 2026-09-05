@@ -32,3 +32,7 @@ plugins {
 
 rootProject.name = "OBDApp"
 include(":app")
+
+if (providers.gradleProperty("includeAdbwire").orNull == "true" || System.getenv("OBD_INCLUDE_ADBWIRE") == "true") {
+    include(":adbwire")
+}

@@ -1,169 +1,122 @@
-# OBD2 Telemetry Server & Dashboard: Deployment Guide
+# OBD Telemetry deployment guide
 
-This guide outlines how to build, deploy, and manage the OBD2 Telemetry backend server and Next.js monitoring dashboard on a remote Linux server using **Docker Compose**.
+Build and validate release artifacts on the development workstation. The production host only loads the finished images and starts them with Docker Compose.
 
----
+## Services and ports
 
-## 1. Architecture Overview
+- Fastify API: container and host port `3000`.
+- Next.js dashboard: container port `3001`, host port `3003`.
+- Persistent data: Compose volume `server-data`, mounted at `/app/data` in the API container.
+- Dashboard-to-API traffic: `http://server:3000` on the private Compose network.
 
-The system consists of two primary Dockerized services orchestrating together:
+The Android service continues collecting OBD and GPS readings into Room while internet access is unavailable. It uploads pending rows after connectivity returns and keeps them locally when a request fails.
 
-```mermaid
-graph TD
-    subgraph Client Devices
-        Android[Android Head Unit App]
-        Browser[User Web Browser]
-    end
+## Configure the release
 
-    subgraph Docker Container Environment
-        Dashboard[Next.js Dashboard container<br/>Port 3001]
-        Server[Fastify API Server container<br/>Port 3000]
-        Volume[(Persistent Volume<br/>server-data)]
-    end
-
-    Android -- Syncs telemetry/fuel batches --> Server
-    Browser -- Views dashboard UI --> Dashboard
-    Browser -- Queries REST endpoints --> Server
-    Server -- Persists telemetry & fuel_logs.json --> Volume
-```
-
-*   **Fastify API Server (Port 3000)**: Ingests raw telemetry and fuel logs from the mobile head unit, performs statistics calculations, and serves REST routes.
-*   **Next.js Dashboard (Port 3001)**: Renders the frontend time-series charts, Leaflet GPS maps, and refueling analytics tables.
-*   **Volume (`server-data`)**: Persists local flat JSON records (`fuel_logs.json`) and database files, ensuring data survives container updates.
-
----
-
-## 2. Prerequisites
-
-Ensure your host server has the following installed:
-1.  **Docker** (v20.10+)
-2.  **Docker Compose** (v2.0+)
-3.  **Git** (for cloning the repository)
-
-Verify with:
-```bash
-docker --version
-docker compose version
-```
-
----
-
-## 3. Deployment Steps
-
-### Step 1: Clone the Repository
-On your server, clone your private GitHub repository. You will need a **GitHub Personal Access Token (PAT)** or SSH keys configured:
-```bash
-git clone https://github.com/hon2838/obd-telemetry-app.git
-cd obd-telemetry-app
-```
-
-### Step 2: Configure Environment Variables
-Create a `.env` file in the root directory to customize the public URL of the Fastify API so the browser knows where to request charts:
+Copy `.env.example` to `.env` on the workstation and production host. Keep `.env` outside version control and Docker build contexts.
 
 ```env
-# The public domain or IP of the host server running the API on port 3000
-NEXT_PUBLIC_API_URL=http://your-server-ip:3000
+OBD_API_KEY=<at-least-32-random-characters>
+OBD_INITIAL_ADMIN_PASSWORD=
+OBD_TRUST_PROXY=false
+NEXT_PUBLIC_API_URL=https://obd-api.example.com
+SERVICE_VERSION=1.2.0
+BUILD_COMMIT=<git-short-sha>
+BUILD_TIME=<utc-timestamp>
 ```
-> [!NOTE]
-> If you do not specify `NEXT_PUBLIC_API_URL`, the dashboard will automatically fallback to the user's browser domain name on port `3000` (e.g. `http://<domain-accessed>:3000`), which is ideal for zero-config LAN deployments.
 
-### Step 3: Run Docker Compose
-Start the services in detached mode (background):
+`OBD_API_KEY` is required. The Android client and authorized operators use this shared key. If `OBD_INITIAL_ADMIN_PASSWORD` is empty, the server generates a temporary admin password in `/app/data/.initial_admin_secret` with mode `0600`. Change it at the first login; the server then removes that temporary secret file.
+
+Leave `OBD_TRUST_PROXY=false` unless a trusted proxy sanitizes forwarding headers. When required, set it to `true` or a comma-separated Fastify-compatible list of trusted proxy addresses or CIDRs.
+
+## Validate and build locally
+
+From the repository root:
+
 ```bash
-docker compose up -d --build
+cd Server
+npm ci
+npm test -- --runInBand
+npm audit --omit=dev
+
+cd ../Dashboard
+npm ci
+npm run lint
+npm run build
+npm audit
+
+cd ../AndroidApp
+./gradlew :app:assembleDebug --no-daemon
+
+cd ..
+make build
 ```
-This command will:
-1.  Compile the lightweight Node Alpine images for both projects.
-2.  Generate the static Next.js pages optimized for production.
-3.  Configure persistent storage binding for logs.
-4.  Bind ports `3000` and `3001` to the host machine.
 
-### Step 4: Verify Containers are Healthy
-Check the status of the containers:
+Use `make build-all` when the server image must include a newly built APK and its integrity metadata. The `adbwire` module stays outside the normal Android build. It is debug-only and requires the explicit `-PincludeAdbwire=true` opt-in.
+
+Record the build identity printed by `make version`. Do not rebuild the images on the production host.
+
+## Transfer and start
+
+Transfer images through the private registry used by the deployment, or save and load them explicitly. This example uses files:
+
 ```bash
+podman save -o obd-server.tar obd-telemetry-server:${BUILD_COMMIT}
+podman save -o obd-dashboard.tar obd-telemetry-dashboard:${BUILD_COMMIT}
+```
+
+On the production host:
+
+```bash
+docker load -i obd-server.tar
+docker load -i obd-dashboard.tar
+docker compose up -d --no-build
 docker compose ps
 ```
 
-You should see both containers running:
-```text
-NAME                         IMAGE                        COMMAND                  SERVICE             CREATED             STATUS              PORTS
-obd-telemetry-app-dashboard  obd-telemetry-app-dashboard  "docker-entrypoint.s…"   dashboard           10 seconds ago      Up 9 seconds        0.0.0.0:3001->3001/tcp
-obd-telemetry-app-server     obd-telemetry-app-server     "docker-entrypoint.s…"   server              10 seconds ago      Up 9 seconds        0.0.0.0:3000->3000/tcp
+The production `.env` must set `BUILD_COMMIT` to the tag that was loaded. Both health checks should become healthy. Verify the API identity with:
+
+```bash
+curl --fail http://127.0.0.1:3000/healthz
+curl --fail http://127.0.0.1:3003/healthz
 ```
 
----
+## Reverse proxy or Cloudflare Tunnel
 
-## 4. Cloudflare Tunnel Setup (Recommended for Production)
-
-To securely expose the dashboard and API without port-forwarding, configure a **Cloudflare Tunnel (`cloudflared`)** with two separate subdomains.
-
-### 1. Configure DNS and .env
-Decide on your subdomains (e.g. `obd.yourdomain.com` for Dashboard, and `obd-api.yourdomain.com` for API).
-Before building your Docker containers, set the API URL in your `.env` file:
-```env
-NEXT_PUBLIC_API_URL=https://obd-api.yourdomain.com
-```
-
-### 2. Configure Cloudflared Ingress
-If using a local `config.yml` (e.g., `/etc/cloudflared/config.yml`), set up your ingress rules to point the two subdomains to the respective ports:
+Route the public API hostname to `http://127.0.0.1:3000` and the dashboard hostname to `http://127.0.0.1:3003`.
 
 ```yaml
-tunnel: <YOUR-TUNNEL-UUID>
-credentials-file: /root/.cloudflared/<YOUR-TUNNEL-UUID>.json
-
 ingress:
-  - hostname: obd-api.yourdomain.com
-    service: http://localhost:3000
-  - hostname: obd.yourdomain.com
-    service: http://localhost:3001
+  - hostname: obd-api.example.com
+    service: http://127.0.0.1:3000
+  - hostname: obd.example.com
+    service: http://127.0.0.1:3003
   - service: http_status:404
 ```
-*Note: If your dashboard is bound to port 3003 instead due to port conflicts, change `localhost:3001` to `localhost:3003` above.*
 
-Restart your cloudflared service:
+Set `NEXT_PUBLIC_API_URL` before the dashboard image is built because Next.js embeds the browser-facing API origin in the production bundle.
+
+## Android pairing and sync
+
+Configure the Android app with the API base URL, pair the head unit to a vehicle, and retain the issued device credential. The canonical telemetry endpoint is `/api/telemetry/batch`; DTC endpoints are `/api/telemetry/dtc` and `/api/telemetry/dtc/clear`.
+
+Validate the following on actual hardware before promoting an APK:
+
+1. OBD and GPS records continue increasing in Room with internet disabled.
+2. Pending counts remain present after failed or unauthorized uploads.
+3. The backlog uploads after internet access returns.
+4. Records are marked synced only after an HTTP 2xx response.
+5. Read and clear DTC commands target the paired vehicle.
+
+## Operations and backup
+
+View service logs with `docker compose logs -f server dashboard`. Back up the named volume before upgrades or account-store migrations. A portable backup command is:
+
 ```bash
-sudo systemctl restart cloudflared
+docker run --rm \
+  -v obd-telemetry-app_server-data:/data:ro \
+  -v "$PWD/backups:/backup" \
+  alpine tar -czf "/backup/obd-data-$(date +%F-%H%M%S).tar.gz" -C /data .
 ```
 
-### 3. Route DNS
-Route both subdomains to your tunnel:
-```bash
-cloudflared tunnel route dns <YOUR-TUNNEL-UUID> obd.yourdomain.com
-cloudflared tunnel route dns <YOUR-TUNNEL-UUID> obd-api.yourdomain.com
-```
-
----
-
-## 5. Mobile App Setup (Client Connection)
-
-Once the server is running publicly:
-1.  Open the **OBD Telemetry App** on the Android Head Unit.
-2.  Locate the **Custom Endpoint URL** input under **API SERVER CONFIG**.
-3.  Enter the URL of your server's endpoint:
-    *   **Direct IP deployment**: `http://<your-server-ip>:3000/api/telemetry/batch`
-    *   **SSL Reverse Proxy deployment**: `https://obd.yourdomain.com/api/telemetry/batch`
-4.  Tap **START SERVICE** to start synchronization.
-
----
-
-## 6. Logs & Maintenance
-
-### Check Container Logs
-View live service logs:
-```bash
-# All services
-docker compose logs -f
-
-# API Server only
-docker compose logs -f server
-```
-
-### Backup Data
-All data ingested is stored inside a Docker volume. To find the path on the host system:
-```bash
-docker volume inspect obd-telemetry-app_server-data
-```
-This is typically located under `/var/lib/docker/volumes/obd-telemetry-app_server-data/_data`. You can set up a daily cronjob to compress and back up this directory:
-```bash
-tar -czf /backups/obd-data-$(date +%F).tar.gz /var/lib/docker/volumes/obd-telemetry-app_server-data/_data
-```
+Keep the backup and the release images until the new containers have passed health, authentication, pairing, ingestion, dashboard, and offline catch-up checks.

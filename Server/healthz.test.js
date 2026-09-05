@@ -1,5 +1,9 @@
-// /healthz test. Lives in its own file so it doesn't share
-// the afterAll that closes fastify for the rest of the suite.
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+
+const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-test-healthz-'));
+process.env.OBD_DATA_DIR = TEST_DATA_DIR;
 const TEST_API_KEY = 'a'.repeat(64);
 process.env.OBD_API_KEY = TEST_API_KEY;
 const { fastify } = require('./server');
@@ -7,6 +11,7 @@ const { fastify } = require('./server');
 describe('GET /healthz', () => {
   afterAll(async () => {
     await fastify.close();
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
   });
 
   it('returns 200 with build identity and store sizes', async () => {

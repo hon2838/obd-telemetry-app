@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ ENV OBD_BUILD_TIME=${BUILD_TIME}
 
 COPY package*.json ./
 
-RUN npm install --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 
 COPY . .
 

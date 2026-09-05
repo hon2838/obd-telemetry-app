@@ -1,0 +1,12 @@
+node_modules
+.next
+out
+.git
+.gitignore
+*.test.ts*
+playwright-report
+test-results
+npm-debug.log*
+.env
+.env.*
+!.env.example

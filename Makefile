@@ -40,7 +40,7 @@ version:
 apk:
 	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
 	  ANDROID_SDK_ROOT=$${ANDROID_SDK_ROOT:-$$ANDROID_HOME} \
-	  ./gradlew assembleDebug --no-daemon
+	  ./gradlew :app:assembleDebug --no-daemon
 
 # Copy the freshly-built APK into Server/agent/ and write a
 # version.json sidecar with the version code/name + SHA-256.

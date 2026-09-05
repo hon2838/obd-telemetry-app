@@ -1,8 +1,20 @@
-const fastify = require('fastify')({ logger: true })
+const trustProxySetting = (() => {
+  const value = process.env.OBD_TRUST_PROXY?.trim()
+  if (!value || value === 'false') return false
+  if (value === 'true') return true
+  return value.split(',').map(entry => entry.trim()).filter(Boolean)
+})()
+
+const fastify = require('fastify')({
+  logger: process.env.NODE_ENV === 'test' ? false : true,
+  trustProxy: trustProxySetting
+})
 const cors = require('@fastify/cors')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
+const util = require('util')
+const { installAuthorization, canAccessVehicle, vehicleScope, isAdmin } = require('./authorization')
 
 // Read the expected API key from the environment at module load.
 // We deliberately do NOT provide a default: shipping a literal
@@ -42,6 +54,7 @@ const MAINT_PATH = path.join(DB_DIR, 'maintenance.json')
 const VEHICLES_PATH = path.join(DB_DIR, 'vehicles.json')
 const USERS_PATH = path.join(DB_DIR, 'users.json')
 const DEVICES_PATH = path.join(DB_DIR, 'devices.json')
+const INITIAL_ADMIN_SECRET_PATH = path.join(DB_DIR, '.initial_admin_secret')
 
 // Multi-vehicle support. Every record in every store carries a
 // `vehicleId`; the reserved id 'default' owns all pre-existing data so a
@@ -193,6 +206,20 @@ function persist(path, data) {
   return next;
 }
 
+function persistStartupMigration(path, data) {
+  const backupPath = fs.existsSync(path) ? `${path}.bak.${Date.now()}` : null
+  const tmpPath = `${path}.tmp.${process.pid}.${Date.now()}`
+
+  if (backupPath) fs.copyFileSync(path, backupPath)
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 })
+    fs.renameSync(tmpPath, path)
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath) } catch (_) {}
+    throw err
+  }
+}
+
 // ----- Vehicle registry helpers ------------------------------------------
 
 const saveVehicles = () => persist(VEHICLES_PATH, vehiclesStore)
@@ -240,6 +267,15 @@ function filterByVehicle(records, vehicleId) {
   return records.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === vehicleId)
 }
 
+function filterRecordsByScope(records, auth, requestedVehicleId) {
+  if (requestedVehicleId) {
+    return filterByVehicle(records, requestedVehicleId)
+  }
+  const scope = vehicleScope(auth)
+  if (scope === null) return records
+  return records.filter(r => scope.includes(r.vehicleId || DEFAULT_VEHICLE_ID))
+}
+
 // ----- User Accounts & Device Pairing System -----------------------------
 
 let usersStore = []
@@ -264,23 +300,70 @@ if (fs.existsSync(DEVICES_PATH)) {
   }
 }
 
+const scryptAsync = util.promisify(crypto.scrypt)
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex')
   return { salt, hash }
 }
 
-function verifyPassword(password, salt, hash) {
+const hashPasswordSync = hashPassword
+
+async function hashPasswordAsync(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = await scryptAsync(password, salt, 64)
+  return { salt, hash: hash.toString('hex') }
+}
+
+async function verifyPassword(password, salt, hash) {
   if (!password || !salt || !hash) return false
-  const testHash = crypto.scryptSync(password, salt, 64).toString('hex')
-  return constantTimeEquals(testHash, hash)
+  try {
+    const buf = await scryptAsync(password, salt, 64)
+    return constantTimeEquals(buf.toString('hex'), hash)
+  } catch {
+    return false
+  }
+}
+
+function verifyPasswordSync(password, salt, hash) {
+  if (!password || !salt || !hash) return false
+  try {
+    const testHash = crypto.scryptSync(password, salt, 64).toString('hex')
+    return constantTimeEquals(testHash, hash)
+  } catch {
+    return false
+  }
+}
+
+function getBootstrapAdminPassword() {
+  const configuredPassword = process.env.OBD_INITIAL_ADMIN_PASSWORD
+  if (configuredPassword !== undefined && configuredPassword !== '') {
+    if (configuredPassword.length < 8) {
+      throw new Error('OBD_INITIAL_ADMIN_PASSWORD must be at least 8 characters when set')
+    }
+    return configuredPassword
+  }
+
+  if (fs.existsSync(INITIAL_ADMIN_SECRET_PATH)) {
+    const savedPassword = fs.readFileSync(INITIAL_ADMIN_SECRET_PATH, 'utf8').trim()
+    if (savedPassword.length < 8) {
+      throw new Error(`${INITIAL_ADMIN_SECRET_PATH} is invalid; expected at least 8 characters`)
+    }
+    fs.chmodSync(INITIAL_ADMIN_SECRET_PATH, 0o600)
+    return savedPassword
+  }
+
+  const generatedPassword = crypto.randomBytes(16).toString('hex')
+  fs.writeFileSync(INITIAL_ADMIN_SECRET_PATH, generatedPassword, { mode: 0o600, flag: 'wx' })
+  return generatedPassword
 }
 
 function ensureDefaultAdminUser() {
   if (usersStore.length === 0) {
-    const { salt, hash } = hashPassword('admin12345')
+    const { salt, hash } = hashPasswordSync(getBootstrapAdminPassword())
     usersStore.push({
       id: 'usr-admin',
       username: 'admin',
+      role: 'admin',
       passwordSalt: salt,
       passwordHash: hash,
       mustChangePassword: true,
@@ -288,31 +371,108 @@ function ensureDefaultAdminUser() {
       createdAt: Date.now(),
       updatedAt: Date.now()
     })
-    persist(USERS_PATH, usersStore)
+    persistStartupMigration(USERS_PATH, usersStore)
+    return
+  }
+
+  // Backward-compatible migration for existing stores
+  let mutated = false
+  let rotatedKnownDefault = false
+  for (const user of usersStore) {
+    if (!user.role) {
+      user.role = (user.username === 'admin' || user.id === 'usr-admin') ? 'admin' : 'user'
+      mutated = true
+    }
+    if (verifyPasswordSync('admin12345', user.passwordSalt, user.passwordHash)) {
+      const replacement = hashPasswordSync(getBootstrapAdminPassword())
+      user.passwordSalt = replacement.salt
+      user.passwordHash = replacement.hash
+      user.mustChangePassword = true
+      user.updatedAt = Date.now()
+      rotatedKnownDefault = true
+      mutated = true
+    }
+  }
+  if (mutated) {
+    persistStartupMigration(USERS_PATH, usersStore)
+  }
+  if (rotatedKnownDefault) {
+    fastify.log.warn(`Rotated a known legacy admin password. Retrieve the temporary password from ${INITIAL_ADMIN_SECRET_PATH} or OBD_INITIAL_ADMIN_PASSWORD.`)
   }
 }
 ensureDefaultAdminUser()
 
-const sessionsStore = new Map()
-const pendingPairings = new Map()
-
-// Clean up expired pairings every minute
-setInterval(() => {
-  const now = Date.now()
-  for (const [code, session] of pendingPairings.entries()) {
-    if (session.expiresAt && session.expiresAt < now) {
-      if (session.pollToken) pendingPairings.delete(session.pollToken)
-      pendingPairings.delete(code)
+function migrateDeviceTokensAtRest() {
+  let mutated = false
+  for (const device of devicesStore) {
+    if (device.deviceToken && !device.tokenHash) {
+      if (!mutated && fs.existsSync(DEVICES_PATH)) {
+        try {
+          fs.copyFileSync(DEVICES_PATH, `${DEVICES_PATH}.bak.${Date.now()}`)
+        } catch (err) {
+          fastify.log.warn(`Failed to back up ${DEVICES_PATH}: ${err}`)
+        }
+      }
+      device.tokenHash = crypto.createHash('sha256').update(device.deviceToken).digest('hex')
+      device.tokenPrefix = device.deviceToken.slice(0, 12)
+      device.tokenSuffix = device.deviceToken.slice(-4)
+      delete device.deviceToken
+      mutated = true
     }
   }
-}, 60000).unref()
+  if (mutated) {
+    persist(DEVICES_PATH, devicesStore)
+  }
+}
+migrateDeviceTokensAtRest()
 
-// Authenticates incoming requests. Returns:
+const sessionsStore = new Map()
+const pendingPairingsByToken = new Map()
+const pendingPairingsByCode = new Map()
+
+// Clean up expired pairings every minute
+function cleanExpiredPairings() {
+  const now = Date.now()
+  for (const [code, session] of pendingPairingsByCode.entries()) {
+    if (session.expiresAt && session.expiresAt < now) {
+      pendingPairingsByCode.delete(code)
+      if (session.pollToken) pendingPairingsByToken.delete(session.pollToken)
+    }
+  }
+  for (const [token, session] of pendingPairingsByToken.entries()) {
+    if (session.expiresAt && session.expiresAt < now) {
+      pendingPairingsByToken.delete(token)
+      if (session.code) pendingPairingsByCode.delete(session.code)
+      if (session.normalizedCode) pendingPairingsByCode.delete(session.normalizedCode)
+    }
+  }
+}
+setInterval(cleanExpiredPairings, 60000).unref()
+
+// Clean up expired sessions every minute; cap store size to 1000
+function cleanExpiredSessions() {
+  const now = Date.now()
+  for (const [token, session] of sessionsStore.entries()) {
+    if (session.expiresAt && session.expiresAt < now) {
+      sessionsStore.delete(token)
+    }
+  }
+  if (sessionsStore.size > 1000) {
+    const sorted = [...sessionsStore.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)
+    const toRemove = sorted.slice(0, sorted.length - 1000)
+    for (const [token] of toRemove) {
+      sessionsStore.delete(token)
+    }
+  }
+}
+setInterval(cleanExpiredSessions, 60000).unref()
+
+// Authenticates incoming requests asynchronously. Returns:
 //   { type: 'master' }
 //   { type: 'user', user }
 //   { type: 'device', device, vehicleId }
 //   null (unauthorized)
-function authenticateRequest(request) {
+async function authenticateRequest(request) {
   // 1. Master API key check (X-API-Key)
   const apiKey = request.headers['x-api-key']
   if (apiKey) {
@@ -329,8 +489,12 @@ function authenticateRequest(request) {
   }
 
   if (token) {
-    if (token.startsWith('obd_dev_')) {
-      const device = devicesStore.find(d => d.deviceToken === token)
+    if (devTokenHeader || token.startsWith('obd_dev_')) {
+      const incomingHash = crypto.createHash('sha256').update(token).digest('hex')
+      const device = devicesStore.find(d =>
+        (d.tokenHash && constantTimeEquals(d.tokenHash, incomingHash)) ||
+        (d.deviceToken && constantTimeEquals(d.deviceToken, token))
+      )
       if (device) {
         device.lastSeenAt = Date.now()
         return { type: 'device', device, vehicleId: device.vehicleId || DEFAULT_VEHICLE_ID }
@@ -338,7 +502,8 @@ function authenticateRequest(request) {
       return null
     } else {
       const session = sessionsStore.get(token)
-      if (session) {
+      if (session && session.expiresAt && session.expiresAt > Date.now()) {
+        if (session.type === 'master') return { type: 'master' }
         const user = usersStore.find(u => u.id === session.userId)
         if (user) return { type: 'user', user }
       }
@@ -359,7 +524,7 @@ function authenticateRequest(request) {
       }
 
       const user = usersStore.find(u => u.username.toLowerCase() === username.toLowerCase().trim())
-      if (user && verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+      if (user && (await verifyPassword(password, user.passwordSalt, user.passwordHash))) {
         return { type: 'user', user }
       }
       return null
@@ -411,191 +576,8 @@ const saveFuelLogs = () => persist(FUEL_PATH, fuelLogsStore);
 // Helper to save maintenance to disk
 const saveMaintenance = () => persist(MAINT_PATH, maintenanceStore);
 
-const helmet = require('@fastify/helmet')
-const rateLimit = require('@fastify/rate-limit')
 
-// 1. Helmet headers
-fastify.register(helmet)
-
-// 2. Global Rate Limiter
-fastify.register(rateLimit, {
-  max: 200, // global limit: 200 reqs per 15 min
-  timeWindow: '15 minutes'
-})
-
-// 3. Strict CORS
-fastify.register(cors, {
-  origin: ['https://obd.hon2838.name.my', 'http://localhost:3001', 'http://localhost:3003']
-})
-
-// Schema for telemetry items
-const telemetryRecordSchema = {
-  type: 'object',
-  required: ['timestamp'],
-  properties: {
-    timestamp: { type: 'number' },
-    vehicleId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
-    rpm: { type: ['number', 'null'] },
-    speed: { type: ['number', 'null'] },
-    coolantTemp: { type: ['number', 'null'] },
-    latitude: { type: 'number' },
-    longitude: { type: 'number' },
-    altitude: { type: 'number' },
-    gpsSpeed: { type: 'number' },
-    engineLoad: { type: ['number', 'null'] },
-    throttlePos: { type: ['number', 'null'] },
-    fuelLevel: { type: ['number', 'null'] },
-    ambientTemp: { type: ['number', 'null'] },
-    voltage: { type: ['number', 'null'] },
-    accelTime: { type: ['number', 'null'] },
-    alertCoolant: { type: 'boolean' },
-    alertVoltage: { type: 'boolean' },
-    accOn: { type: ['boolean', 'null'] },
-    headlightOn: { type: ['boolean', 'null'] },
-    volume: { type: ['number', 'null'] },
-    wifiSsid: { type: ['string', 'null'] },
-    btConnected: { type: ['boolean', 'null'] }
-  }
-}
-
-// Batch POST endpoint to ingest JSON arrays and return commands
-fastify.post('/api/telemetry/batch', {
-  config: {
-    rateLimit: {
-      max: 2000, // higher limit for high-frequency polling
-      timeWindow: '15 minutes'
-    }
-  },
-  schema: {
-    body: {
-      type: 'array',
-      items: telemetryRecordSchema
-    }
-  }
-}, async (request, reply) => {
-  try {
-    const auth = authenticateRequest(request);
-    if (!auth) {
-      return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Device Token' });
-    }
-
-    const payload = request.body;
-
-    // Reject batches that reference an unknown vehicle rather than
-    // silently re-homing them into the default vehicle — a typo'd
-    // vehicleId would otherwise split one car's history in two.
-    for (const record of payload) {
-      if (record.vehicleId !== undefined && !vehicleExists(record.vehicleId)) {
-        return reply.status(400).send({ error: `Unknown vehicleId: ${record.vehicleId}` });
-      }
-    }
-
-    payload.forEach(record => {
-      telemetryDataStore.push({
-        timestamp: record.timestamp,
-        vehicleId: record.vehicleId || DEFAULT_VEHICLE_ID,
-        rpm: record.rpm,
-        speed: record.speed,
-        coolantTemp: record.coolantTemp,
-        latitude: record.latitude,
-        longitude: record.longitude,
-        altitude: record.altitude,
-        gpsSpeed: record.gpsSpeed,
-        engineLoad: record.engineLoad,
-        throttlePos: record.throttlePos,
-        fuelLevel: record.fuelLevel,
-        ambientTemp: record.ambientTemp,
-        voltage: record.voltage,
-        accelTime: record.accelTime,
-        alertCoolant: record.alertCoolant,
-        alertVoltage: record.alertVoltage,
-        accOn: record.accOn,
-        headlightOn: record.headlightOn,
-        volume: record.volume,
-        wifiSsid: record.wifiSsid,
-        btConnected: record.btConnected,
-        receivedAt: Date.now()
-      });
-    });
-
-    saveToDisk();
-
-    // Pull queued commands for the vehicle(s) in this batch and
-    // clear only those. Persist the remaining queue so a crash
-    // between this filter and the response doesn't leave a
-    // phantom command (which would get re-sent to the next head
-    // unit that syncs) — and so other vehicles' commands survive.
-    const batchVehicles = new Set(payload.map(r => r.vehicleId || DEFAULT_VEHICLE_ID));
-    const commandsToSend = pendingCommands.filter(c => batchVehicles.has(c.vehicleId));
-    pendingCommands = pendingCommands.filter(c => !batchVehicles.has(c.vehicleId));
-    persist(COMMANDS_QUEUE_PATH, pendingCommands);
-    // Wire format stays plain strings (legacy head units parse
-    // commands[i] as a string); vehicle routing already happened
-    // via batchVehicles, so the id adds nothing for the client.
-    const commandStrings = commandsToSend.map(c => (typeof c === 'string') ? c : c.command);
-
-    return reply.status(201).send({ 
-      success: true, 
-      message: `Ingested ${payload.length} records successfully.`,
-      commands: commandStrings
-    });
-
-  } catch (err) {
-    request.log.error(err)
-    return reply.status(500).send({ error: 'Internal Server Error' })
-  }
-})
-
-// Queue diagnostic command from Dashboard
-//
-// Security: this endpoint used to accept any POST and queue
-// a `read_dtc` or `clear_dtc` against the head unit. Since
-// the endpoint is reachable from the public dashboard (and
-// therefore from anyone who can reach obd-api.hon2838.name.my),
-// the previous version was a remote-attack surface: an attacker
-// could repeatedly trigger `clear_dtc` and silently wipe any
-// stored diagnostic codes. We now require the X-API-Key
-// header (same secret the agent uses for telemetry) and a
-// per-IP rate limit via @fastify/rate-limit.
-//
-// Queue: a container restart used to drop pending commands.
-// They now persist to commands_queue.json (see persist() above)
-// so a SIGKILL mid-flight doesn't lose queued work. The cap
-// of 10 prevents an attacker (or a buggy loop) from filling
-// the disk.
-const MAX_PENDING_COMMANDS = 10;
-fastify.post('/api/commands', {
-  config: {
-    rateLimit: {
-      max: 30,
-      timeWindow: '1 minute',
-    },
-  },
-}, async (request, reply) => {
-  const auth = authenticateRequest(request);
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
-  }
-  const { command, vehicleId } = request.body || {};
-  if (!command || (command !== 'read_dtc' && command !== 'clear_dtc')) {
-    return reply.status(400).send({ error: 'Invalid command. Must be read_dtc or clear_dtc' });
-  }
-  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
-    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
-  }
-  if (pendingCommands.length >= MAX_PENDING_COMMANDS) {
-    return reply.status(429).send({
-      error: 'Command queue is full. The head unit will drain it on next sync; retry shortly.',
-      queue_size: pendingCommands.length,
-    });
-  }
-  pendingCommands.push({ command, vehicleId: vehicleId || DEFAULT_VEHICLE_ID });
-  // Persist the queue so a restart doesn't drop this command.
-  // We await so the response reflects the on-disk state.
-  await persist(COMMANDS_QUEUE_PATH, pendingCommands);
-  return reply.send({ success: true, message: `Command ${command} queued.`, queue_size: pendingCommands.length });
-})
-
+// === Module Helpers & Business Logic ===
 const DTC_DATABASE = {
   // P0xxx codes (Powertrain)
   "P0001": { description: "Fuel Volume Regulator Control Circuit Open", severity: "severe", system: "Fuel" },
@@ -658,15 +640,15 @@ function getDtcInfo(code) {
   if (DTC_DATABASE[normalized]) {
     return { code: normalized, ...DTC_DATABASE[normalized] };
   }
-  
+
   const first = normalized.charAt(0);
   const second = normalized.charAt(1);
   const third = normalized.charAt(2);
-  
+
   let system = "Unknown";
   let description = `OBD-II Diagnostic Trouble Code ${normalized}`;
   let severity = "moderate";
-  
+
   if (first === 'P') {
     system = "Powertrain (Engine/Transmission)";
     if (second === '0') {
@@ -708,7 +690,7 @@ function getDtcInfo(code) {
     description = `Network Communication error (${normalized})`;
     severity = "severe";
   }
-  
+
   return {
     code: normalized,
     description,
@@ -723,13 +705,524 @@ function getRecordSpeed(record) {
     : (record.gpsSpeed || 0);
 }
 
-// Endpoint to ingest DTC reads
-fastify.post('/api/telemetry/dtc', async (request, reply) => {
+
+// Haversine formula to calculate distance in km between two GPS coordinates
+function getHaversineDistance(lat1, lon1, lat2, lon2) {
+  if (lat1 === 0 && lon1 === 0 && lat2 === 0 && lon2 === 0) return 0;
+  if (lat1 === lat2 && lon1 === lon2) return 0;
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Internal function to segment telemetry data into drive objects with summary stats
+// Split one chronologically-sorted record list into raw drive
+// segments using a 5-minute inactivity gap. Returns segments
+// without id/summary — segmentDrives() owns identity assignment.
+function segmentRecordsByGap(sorted) {
+  const drives = [];
+  let currentDrive = null;
+  const GAP_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes inactivity starts a new drive
+
+  for (const record of sorted) {
+    const recordFuel = (record.fuelLevel !== null && record.fuelLevel !== undefined) ? record.fuelLevel : null;
+    const recordRpm = record.rpm || 0;
+    const recordSpeed = getRecordSpeed(record);
+
+    if (!currentDrive) {
+      currentDrive = {
+        startTime: record.timestamp,
+        endTime: record.timestamp,
+        maxRpm: recordRpm,
+        maxSpeed: recordSpeed,
+        startLevel: recordFuel,
+        endLevel: recordFuel,
+        recordCount: 1,
+        points: [record]
+      };
+    } else if (record.timestamp - currentDrive.endTime > GAP_THRESHOLD_MS) {
+      drives.push(currentDrive);
+      currentDrive = {
+        startTime: record.timestamp,
+        endTime: record.timestamp,
+        maxRpm: recordRpm,
+        maxSpeed: recordSpeed,
+        startLevel: recordFuel,
+        endLevel: recordFuel,
+        recordCount: 1,
+        points: [record]
+      };
+    } else {
+      currentDrive.endTime = record.timestamp;
+      currentDrive.maxRpm = Math.max(currentDrive.maxRpm, recordRpm);
+      currentDrive.maxSpeed = Math.max(currentDrive.maxSpeed, recordSpeed);
+      if (recordFuel !== null) {
+        if (currentDrive.startLevel === null) {
+          currentDrive.startLevel = recordFuel;
+        }
+        currentDrive.endLevel = recordFuel;
+      }
+      currentDrive.recordCount++;
+      currentDrive.points.push(record);
+    }
+  }
+  if (currentDrive) {
+    drives.push(currentDrive);
+  }
+
+  return drives;
+}
+
+function segmentDrives(vehicleFilter = null) {
+  let source;
+  if (Array.isArray(vehicleFilter)) {
+    source = telemetryDataStore.filter(r => vehicleFilter.includes(r.vehicleId || DEFAULT_VEHICLE_ID));
+  } else if (typeof vehicleFilter === 'string') {
+    source = filterByVehicle(telemetryDataStore, vehicleFilter);
+  } else {
+    source = telemetryDataStore;
+  }
+  if (source.length === 0) {
+    return [];
+  }
+
+  // Group by vehicle BEFORE the gap segmentation so two cars
+  // reporting over the same time window never merge into one drive.
+  const byVehicle = new Map();
+  for (const record of source) {
+    const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
+    if (!byVehicle.has(vid)) byVehicle.set(vid, []);
+    byVehicle.get(vid).push(record);
+  }
+
+  const drives = [];
+  for (const [vid, records] of byVehicle) {
+    const sorted = [...records].sort((a, b) => a.timestamp - b.timestamp);
+    segmentRecordsByGap(sorted).forEach((seg, i) => {
+      drives.push({ ...seg, id: `${vid}-${i + 1}`, vehicleId: vid });
+    });
+  }
+  drives.sort((a, b) => a.startTime - b.startTime);
+
+  return drives.map(drive => {
+    let score = 100;
+    let harshAccelCount = 0;
+    let harshBrakeCount = 0;
+    let highRpmCount = 0;
+
+    if (drive.points.length > 1) {
+      for (let i = 1; i < drive.points.length; i++) {
+        const p1 = drive.points[i - 1];
+        const p2 = drive.points[i];
+
+        // Calculate time diff in seconds
+        const dt = (p2.timestamp - p1.timestamp) / 1000;
+        if (dt > 0 && dt < 10) { // Only compare points reasonably close
+          // Calculate speed diff in km/h
+          const dv = getRecordSpeed(p2) - getRecordSpeed(p1);
+          const accel = dv / dt; // km/h per second
+
+          if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
+            harshAccelCount++;
+            score -= 1;
+          } else if (accel < -12) { // Harsh braking (< -12 km/h per second)
+            harshBrakeCount++;
+            score -= 1.5; // Penalize braking slightly more
+          }
+        }
+
+        if ((p2.rpm || 0) > 4000) {
+          highRpmCount++;
+        }
+      }
+      // Penalize for excessive high RPM duration
+      if (highRpmCount > 10) {
+        score -= (highRpmCount * 0.1);
+      }
+    }
+
+    const finalScore = Math.max(0, Math.min(100, Math.round(score)));
+
+    const durationMin = Math.round((drive.endTime - drive.startTime) / 60000);
+    const startStr = new Date(drive.startTime).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    // 1. Calculate GPS distance
+    let distanceKm = 0;
+    let prevPoint = null;
+    for (const p of drive.points) {
+      if (p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0) {
+        if (prevPoint) {
+          distanceKm += getHaversineDistance(prevPoint.latitude, prevPoint.longitude, p.latitude, p.longitude);
+        }
+        prevPoint = p;
+      }
+    }
+
+    // 2. Average Speed
+    const speeds = drive.points.map(getRecordSpeed);
+    const avgSpeed = speeds.length > 0 ? (speeds.reduce((a, b) => a + b, 0) / speeds.length) : 0;
+
+    // 3. Start/End locations
+    const validGps = drive.points.filter(p => p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0);
+    const startLocation = validGps.length > 0 ? { lat: validGps[0].latitude, lon: validGps[0].longitude } : null;
+    const endLocation = validGps.length > 0 ? { lat: validGps[validGps.length - 1].latitude, lon: validGps[validGps.length - 1].longitude } : null;
+
+    // 4. Fuel used and fuel efficiency. Tank size is a per-vehicle
+    // property (set on the vehicle in the registry); cars without one
+    // fall back to the original default so existing stats don't shift.
+    let fuelUsedPercent = 0;
+    if (drive.startLevel !== null && drive.endLevel !== null) {
+      fuelUsedPercent = Math.max(0, drive.startLevel - drive.endLevel);
+    }
+    const vehicle = vehiclesStore.find(v => v.id === drive.vehicleId);
+    const tankLitres = (vehicle && Number(vehicle.tankLitres) > 0) ? Number(vehicle.tankLitres) : 36;
+    const fuelUsedLitres = (fuelUsedPercent / 100) * tankLitres;
+    const fuelEfficiencyKmL = (fuelUsedLitres > 0 && distanceKm > 0) ? (distanceKm / fuelUsedLitres) : null;
+
+    return {
+      id: drive.id,
+      vehicleId: drive.vehicleId,
+      startTime: drive.startTime,
+      endTime: drive.endTime,
+      label: `Drive #${drive.id} - ${startStr} (${durationMin} min, ${drive.recordCount} pts)`,
+      summary: {
+        durationMin,
+        maxRpm: drive.maxRpm,
+        maxSpeed: drive.maxSpeed,
+        fuelUsedPercent: parseFloat(fuelUsedPercent.toFixed(1)),
+        pointCount: drive.recordCount,
+        distanceKm: parseFloat(distanceKm.toFixed(2)),
+        avgSpeed: parseFloat(avgSpeed.toFixed(1)),
+        startLocation,
+        endLocation,
+        fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+        driverScore: finalScore,
+        harshEvents: { accel: harshAccelCount, brake: harshBrakeCount }
+      }
+    };
+  });
+}
+
+
+function getMaintenanceItems(vehicleId = null, auth = null) {
+  const scopedLogs = filterRecordsByScope(fuelLogsStore, auth, vehicleId);
+  const sortedLogs = [...scopedLogs].sort((a, b) => b.odometer - a.odometer);
+  const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
+
+  return filterRecordsByScope(maintenanceStore, auth, vehicleId).map(item => {
+    const kmSinceService = item.lastServiceOdo !== null && item.lastServiceOdo !== undefined
+      ? Math.max(0, currentOdometer - item.lastServiceOdo)
+      : 0;
+
+    const daysSinceService = item.lastServiceDate !== null && item.lastServiceDate !== undefined
+      ? Math.max(0, (Date.now() - item.lastServiceDate) / (1000 * 60 * 60 * 24))
+      : 0;
+
+    let kmUntilDue = null;
+    if (item.intervalKm) {
+      kmUntilDue = item.intervalKm - kmSinceService;
+    }
+
+    let daysUntilDue = null;
+    if (item.intervalDays) {
+      daysUntilDue = item.intervalDays - daysSinceService;
+    }
+
+    let status = 'ok';
+    if ((kmUntilDue !== null && kmUntilDue <= 0) || (daysUntilDue !== null && daysUntilDue <= 0)) {
+      status = 'overdue';
+    } else if ((kmUntilDue !== null && kmUntilDue <= item.intervalKm * 0.1) || (daysUntilDue !== null && daysUntilDue <= item.intervalDays * 0.1)) {
+      status = 'due_soon';
+    }
+
+    return {
+      ...item,
+      currentOdometer: parseFloat(currentOdometer.toFixed(1)),
+      kmSinceService: parseFloat(kmSinceService.toFixed(1)),
+      daysSinceService: Math.round(daysSinceService),
+      kmUntilDue: kmUntilDue !== null ? parseFloat(kmUntilDue.toFixed(1)) : null,
+      daysUntilDue: daysUntilDue !== null ? Math.round(daysUntilDue) : null,
+      status
+    };
+  });
+}
+
+function getMaintenanceStatus(items = getMaintenanceItems()) {
+  let okCount = 0;
+  let dueSoonCount = 0;
+  let overdueCount = 0;
+  let nextUpcoming = null;
+  let minKmRemaining = Infinity;
+
+  items.forEach(item => {
+    if (item.status === 'overdue') overdueCount++;
+    else if (item.status === 'due_soon') dueSoonCount++;
+    else okCount++;
+
+    if (item.kmUntilDue !== null && item.kmUntilDue > 0 && item.kmUntilDue < minKmRemaining) {
+      minKmRemaining = item.kmUntilDue;
+      nextUpcoming = {
+        name: item.name,
+        kmRemaining: item.kmUntilDue,
+        daysRemaining: item.daysUntilDue
+      };
+    }
+  });
+
+  return { okCount, dueSoonCount, overdueCount, nextUpcoming };
+}
+
+
+function isValidVehicleName(name) {
+  return typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 64
+}
+
+
+const APK_DOWNLOAD_PATH = process.env.APK_PATH || path.join(__dirname, 'agent', 'app-debug.apk');
+const APK_VERSION_FILE = process.env.APK_VERSION_PATH || path.join(__dirname, 'agent', 'version.json');
+
+function _readApkVersion() {
+  // Returns {versionCode, versionName, size_bytes, sha256} or
+  // null if the APK isn't baked into this image. The build
+  // pipeline writes version.json; if absent (developer build
+  // that didn't run `make apk-and-server`), we synthesize a
+  // placeholder so the route returns something useful rather
+  // than 503.
+  if (fs.existsSync(APK_VERSION_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(APK_VERSION_FILE, 'utf8'));
+    } catch (err) {
+      fastify.log.warn(`Failed to parse ${APK_VERSION_FILE}: ${err}`);
+    }
+  }
+  if (fs.existsSync(APK_DOWNLOAD_PATH)) {
+    const stat = fs.statSync(APK_DOWNLOAD_PATH);
+    return {
+      versionCode: 0,
+      versionName: 'unknown',
+      size_bytes: stat.size,
+      sha256: '',
+      note: 'version.json not found; using placeholder values from filesystem stat',
+    };
+  }
+  return null;
+}
+
+
+const INSTALL_SCRIPT_PATH = process.env.OBD_INSTALL_SCRIPT
+  || (fs.existsSync('/app/install.sh')
+      ? '/app/install.sh'
+      : path.join(__dirname, '..', 'static', 'install.sh'));
+
+
+const helmet = require('@fastify/helmet')
+const rateLimit = require('@fastify/rate-limit')
+
+// 1. Helmet headers
+fastify.register(helmet)
+
+// 2. Global Rate Limiter
+fastify.register(rateLimit, {
+  global: true,
+  max: 5000, // global limit: 5000 reqs per 15 min allows dashboard 3s polling across multiple endpoints
+  timeWindow: '15 minutes'
+})
+
+// 3. Strict CORS
+fastify.register(cors, {
+  origin: ['https://obd.hon2838.name.my', 'http://localhost:3001', 'http://localhost:3003']
+})
+
+const stores = {
+  getVehicle: (id) => vehiclesStore.find(v => v.id === id),
+  getDevice: (id) => devicesStore.find(d => d.id === id),
+  getFuelLog: (id) => fuelLogsStore.find(r => String(r.id) === String(id)),
+  getMaintenanceItem: (id) => maintenanceStore.find(r => String(r.id) === String(id)),
+  getDrive: (id) => segmentDrives(null).find(d => String(d.id) === String(id)),
+}
+installAuthorization(fastify, stores, authenticateRequest)
+
+fastify.register(async function apiRoutes(fastify) {
+
+// Schema for telemetry items
+const telemetryRecordSchema = {
+  type: 'object',
+  required: ['timestamp'],
+  properties: {
+    timestamp: { type: 'number' },
+    vehicleId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
+    rpm: { type: ['number', 'null'] },
+    speed: { type: ['number', 'null'] },
+    coolantTemp: { type: ['number', 'null'] },
+    latitude: { type: 'number' },
+    longitude: { type: 'number' },
+    altitude: { type: 'number' },
+    gpsSpeed: { type: 'number' },
+    engineLoad: { type: ['number', 'null'] },
+    throttlePos: { type: ['number', 'null'] },
+    fuelLevel: { type: ['number', 'null'] },
+    ambientTemp: { type: ['number', 'null'] },
+    voltage: { type: ['number', 'null'] },
+    accelTime: { type: ['number', 'null'] },
+    alertCoolant: { type: 'boolean' },
+    alertVoltage: { type: 'boolean' },
+    accOn: { type: ['boolean', 'null'] },
+    headlightOn: { type: ['boolean', 'null'] },
+    volume: { type: ['number', 'null'] },
+    wifiSsid: { type: ['string', 'null'] },
+    btConnected: { type: ['boolean', 'null'] }
+  }
+}
+
+// Batch POST endpoint to ingest JSON arrays and return commands
+fastify.post('/api/telemetry/batch', {
+  config: {
+    rateLimit: {
+      max: 2000, // higher limit for high-frequency polling
+      timeWindow: '15 minutes'
+    }
+  },
+  schema: {
+    body: {
+      type: 'array',
+      items: telemetryRecordSchema
+    }
+  }
+}, async (request, reply) => {
+  try {
+    const auth = request.auth;
+    const payload = request.body;
+
+    // Reject batches that reference an unknown vehicle rather than
+    // silently re-homing them into the default vehicle — a typo'd
+    // vehicleId would otherwise split one car's history in two.
+    for (const record of payload) {
+      if (record.vehicleId !== undefined && !vehicleExists(record.vehicleId)) {
+        return reply.status(400).send({ error: `Unknown vehicleId: ${record.vehicleId}` });
+      }
+    }
+
+    payload.forEach(record => {
+      telemetryDataStore.push({
+        timestamp: record.timestamp,
+        vehicleId: record.vehicleId || DEFAULT_VEHICLE_ID,
+        rpm: record.rpm,
+        speed: record.speed,
+        coolantTemp: record.coolantTemp,
+        latitude: record.latitude,
+        longitude: record.longitude,
+        altitude: record.altitude,
+        gpsSpeed: record.gpsSpeed,
+        engineLoad: record.engineLoad,
+        throttlePos: record.throttlePos,
+        fuelLevel: record.fuelLevel,
+        ambientTemp: record.ambientTemp,
+        voltage: record.voltage,
+        accelTime: record.accelTime,
+        alertCoolant: record.alertCoolant,
+        alertVoltage: record.alertVoltage,
+        accOn: record.accOn,
+        headlightOn: record.headlightOn,
+        volume: record.volume,
+        wifiSsid: record.wifiSsid,
+        btConnected: record.btConnected,
+        receivedAt: Date.now()
+      });
+    });
+
+    saveToDisk();
+
+    // Pull queued commands for the vehicle(s) in this batch and
+    // clear only those. Persist the remaining queue so a crash
+    // between this filter and the response doesn't leave a
+    // phantom command (which would get re-sent to the next head
+    // unit that syncs) — and so other vehicles' commands survive.
+    const batchVehicles = new Set(payload.map(r => r.vehicleId || DEFAULT_VEHICLE_ID));
+    const commandsToSend = pendingCommands.filter(c => batchVehicles.has(c.vehicleId));
+    pendingCommands = pendingCommands.filter(c => !batchVehicles.has(c.vehicleId));
+    persist(COMMANDS_QUEUE_PATH, pendingCommands);
+    // Wire format stays plain strings (legacy head units parse
+    // commands[i] as a string); vehicle routing already happened
+    // via batchVehicles, so the id adds nothing for the client.
+    const commandStrings = commandsToSend.map(c => (typeof c === 'string') ? c : c.command);
+
+    return reply.status(201).send({
+      success: true,
+      message: `Ingested ${payload.length} records successfully.`,
+      commands: commandStrings
+    });
+
+  } catch (err) {
+    request.log.error(err)
+    return reply.status(500).send({ error: 'Internal Server Error' })
+  }
+})
+
+// Queue diagnostic command from Dashboard
+//
+// Security: this endpoint used to accept any POST and queue
+// a `read_dtc` or `clear_dtc` against the head unit. Since
+// the endpoint is reachable from the public dashboard (and
+// therefore from anyone who can reach obd-api.hon2838.name.my),
+// the previous version was a remote-attack surface: an attacker
+// could repeatedly trigger `clear_dtc` and silently wipe any
+// stored diagnostic codes. We now require the X-API-Key
+// header (same secret the agent uses for telemetry) and a
+// per-IP rate limit via @fastify/rate-limit.
+//
+// Queue: a container restart used to drop pending commands.
+// They now persist to commands_queue.json (see persist() above)
+// so a SIGKILL mid-flight doesn't lose queued work. The cap
+// of 10 prevents an attacker (or a buggy loop) from filling
+// the disk.
+const MAX_PENDING_COMMANDS = 10;
+fastify.post('/api/commands', {
+  config: {
+    rateLimit: {
+      max: 30,
+      timeWindow: '15 minutes',
+    },
+  },
+}, async (request, reply) => {
+  const auth = request.auth;
+  const { command, vehicleId } = request.body || {};
+  if (!command || (command !== 'read_dtc' && command !== 'clear_dtc')) {
+    return reply.status(400).send({ error: 'Invalid command. Must be read_dtc or clear_dtc' });
+  }
+  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
+    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
+  }
+  if (pendingCommands.length >= MAX_PENDING_COMMANDS) {
+    return reply.status(429).send({
+      error: 'Command queue is full. The head unit will drain it on next sync; retry shortly.',
+      queue_size: pendingCommands.length,
+    });
+  }
+  pendingCommands.push({ command, vehicleId: vehicleId || DEFAULT_VEHICLE_ID });
+  // Persist the queue so a restart doesn't drop this command.
+  // We await so the response reflects the on-disk state.
+  await persist(COMMANDS_QUEUE_PATH, pendingCommands);
+  return reply.send({ success: true, message: `Command ${command} queued.`, queue_size: pendingCommands.length });
+})
+
+// Handler to ingest DTC reads
+const handleDtcPost = async (request, reply) => {
   const { dtc, timestamp, vehicleId } = request.body || {};
   if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
     return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
   }
-  const vid = vehicleId || DEFAULT_VEHICLE_ID;
+  const vid = request.auth?.type === 'device' ? request.auth.vehicleId : (vehicleId || DEFAULT_VEHICLE_ID);
   const time = timestamp || Date.now();
   const rawCodeStr = dtc || "No trouble codes found";
 
@@ -753,15 +1246,17 @@ fastify.post('/api/telemetry/dtc', async (request, reply) => {
   saveDtcHistory();
 
   return reply.send({ success: true });
-})
+};
+fastify.post('/api/telemetry/dtc', handleDtcPost);
+fastify.post('/api/dtc', handleDtcPost);
 
-// Endpoint to ingest DTC clears
-fastify.post('/api/telemetry/dtc/clear', async (request, reply) => {
+// Handler to ingest DTC clears
+const handleDtcClearPost = async (request, reply) => {
   const { success, timestamp, vehicleId } = request.body || {};
   if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
     return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
   }
-  const vid = vehicleId || DEFAULT_VEHICLE_ID;
+  const vid = request.auth?.type === 'device' ? request.auth.vehicleId : (vehicleId || DEFAULT_VEHICLE_ID);
   const time = timestamp || Date.now();
   const clearSuccess = success ?? false;
 
@@ -784,16 +1279,16 @@ fastify.post('/api/telemetry/dtc/clear', async (request, reply) => {
   saveDtcHistory();
 
   return reply.send({ success: true });
-})
+};
+fastify.post('/api/telemetry/dtc/clear', handleDtcClearPost);
+fastify.post('/api/dtc/clear', handleDtcClearPost);
 
-// Fetch diagnostics status. `?vehicle=` scopes to one vehicle; without
-// it the most recent DTC read across all vehicles is returned (the
-// pre-multicar single-latest behavior the dashboard expects).
-fastify.get('/api/telemetry/dtc', async (request, reply) => {
+// Fetch diagnostics status. `?vehicle=` scopes to one vehicle.
+const handleDtcGet = async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const history = filterByVehicle(dtcHistoryStore, vehicle);
+  const history = filterRecordsByScope(dtcHistoryStore, request.auth, vehicle);
 
   let latest;
   if (vehicle) {
@@ -802,7 +1297,12 @@ fastify.get('/api/telemetry/dtc', async (request, reply) => {
       latestClearStatus: { success: null, timestamp: null }
     };
   } else {
-    latest = Object.values(diagnosticsStore.byVehicle)
+    const scope = vehicleScope(request.auth);
+    const candidateEntries = Object.entries(diagnosticsStore.byVehicle)
+      .filter(([vid]) => scope === null || scope.includes(vid))
+      .map(([, diag]) => diag);
+
+    latest = candidateEntries
       .filter(d => (d.latestDtc && d.latestDtc.timestamp) || (d.latestClearStatus && d.latestClearStatus.timestamp))
       .sort((a, b) => (Math.max(b.latestDtc?.timestamp || 0, b.latestClearStatus?.timestamp || 0))
                      - Math.max(a.latestDtc?.timestamp || 0, a.latestClearStatus?.timestamp || 0))[0] || {
@@ -815,7 +1315,9 @@ fastify.get('/api/telemetry/dtc', async (request, reply) => {
     latest,
     history
   });
-})
+};
+fastify.get('/api/telemetry/dtc', handleDtcGet);
+fastify.get('/api/dtc', handleDtcGet);
 
 // Batch lookup DTC descriptions
 fastify.post('/api/dtc/lookup', async (request, reply) => {
@@ -838,8 +1340,8 @@ fastify.get('/api/performance/runs', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const drives = segmentDrives(vehicle);
-  const scopedStore = filterByVehicle(telemetryDataStore, vehicle);
+  const drives = segmentDrives(vehicle || vehicleScope(request.auth));
+  const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
   const sortedRuns = scopedStore
     .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0)
     .sort((a, b) => a.timestamp - b.timestamp);
@@ -870,8 +1372,8 @@ fastify.get('/api/performance/records', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const drives = segmentDrives(vehicle);
-  const scopedStore = filterByVehicle(telemetryDataStore, vehicle);
+  const drives = segmentDrives(vehicle || vehicleScope(request.auth));
+  const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
 
   const findDrive = (record) => {
     // Match on both time window and vehicle so concurrent drives from
@@ -884,7 +1386,7 @@ fastify.get('/api/performance/records', async (request, reply) => {
   // 1. Find all runs with non-null accelTime
   const runs = scopedStore
     .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0);
-  
+
   let bestRun = null;
   if (runs.length > 0) {
     const sortedRuns = [...runs].sort((a, b) => a.accelTime - b.accelTime);
@@ -977,7 +1479,7 @@ fastify.get('/api/drives/:id/export/csv', async (request, reply) => {
   );
 
   let csv = 'Timestamp,Time,RPM,Speed,CoolantTemp,Latitude,Longitude,Altitude,GPSSpeed,EngineLoad,ThrottlePos,FuelLevel,AmbientTemp,Voltage,AccelTime,AlertCoolant,AlertVoltage\n';
-  
+
   records.forEach(r => {
     const timeStr = new Date(r.timestamp).toISOString();
     csv += `${r.timestamp},${timeStr},${r.rpm ?? ''},${r.speed ?? ''},${r.coolantTemp ?? ''},${r.latitude},${r.longitude},${r.altitude},${r.gpsSpeed},${r.engineLoad ?? ''},${r.throttlePos ?? ''},${r.fuelLevel ?? ''},${r.ambientTemp ?? ''},${r.voltage ?? ''},${r.accelTime ?? ''},${r.alertCoolant ? 'true' : 'false'},${r.alertVoltage ? 'true' : 'false'}\n`;
@@ -1037,212 +1539,11 @@ fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
   return reply.send(gpx);
 })
 
-// Haversine formula to calculate distance in km between two GPS coordinates
-function getHaversineDistance(lat1, lon1, lat2, lon2) {
-  if (lat1 === 0 && lon1 === 0 && lat2 === 0 && lon2 === 0) return 0;
-  if (lat1 === lat2 && lon1 === lon2) return 0;
-  const R = 6371; // Earth's radius in km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-// Internal function to segment telemetry data into drive objects with summary stats
-// Split one chronologically-sorted record list into raw drive
-// segments using a 5-minute inactivity gap. Returns segments
-// without id/summary — segmentDrives() owns identity assignment.
-function segmentRecordsByGap(sorted) {
-  const drives = [];
-  let currentDrive = null;
-  const GAP_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes inactivity starts a new drive
-
-  for (const record of sorted) {
-    const recordFuel = (record.fuelLevel !== null && record.fuelLevel !== undefined) ? record.fuelLevel : null;
-    const recordRpm = record.rpm || 0;
-    const recordSpeed = getRecordSpeed(record);
-
-    if (!currentDrive) {
-      currentDrive = {
-        startTime: record.timestamp,
-        endTime: record.timestamp,
-        maxRpm: recordRpm,
-        maxSpeed: recordSpeed,
-        startLevel: recordFuel,
-        endLevel: recordFuel,
-        recordCount: 1,
-        points: [record]
-      };
-    } else if (record.timestamp - currentDrive.endTime > GAP_THRESHOLD_MS) {
-      drives.push(currentDrive);
-      currentDrive = {
-        startTime: record.timestamp,
-        endTime: record.timestamp,
-        maxRpm: recordRpm,
-        maxSpeed: recordSpeed,
-        startLevel: recordFuel,
-        endLevel: recordFuel,
-        recordCount: 1,
-        points: [record]
-      };
-    } else {
-      currentDrive.endTime = record.timestamp;
-      currentDrive.maxRpm = Math.max(currentDrive.maxRpm, recordRpm);
-      currentDrive.maxSpeed = Math.max(currentDrive.maxSpeed, recordSpeed);
-      if (recordFuel !== null) {
-        if (currentDrive.startLevel === null) {
-          currentDrive.startLevel = recordFuel;
-        }
-        currentDrive.endLevel = recordFuel;
-      }
-      currentDrive.recordCount++;
-      currentDrive.points.push(record);
-    }
-  }
-  if (currentDrive) {
-    drives.push(currentDrive);
-  }
-
-  return drives;
-}
-
-function segmentDrives(vehicleId = null) {
-  const source = filterByVehicle(telemetryDataStore, vehicleId);
-  if (source.length === 0) {
-    return [];
-  }
-
-  // Group by vehicle BEFORE the gap segmentation so two cars
-  // reporting over the same time window never merge into one drive.
-  const byVehicle = new Map();
-  for (const record of source) {
-    const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
-    if (!byVehicle.has(vid)) byVehicle.set(vid, []);
-    byVehicle.get(vid).push(record);
-  }
-
-  const drives = [];
-  for (const [vid, records] of byVehicle) {
-    const sorted = [...records].sort((a, b) => a.timestamp - b.timestamp);
-    segmentRecordsByGap(sorted).forEach((seg, i) => {
-      drives.push({ ...seg, id: `${vid}-${i + 1}`, vehicleId: vid });
-    });
-  }
-  drives.sort((a, b) => a.startTime - b.startTime);
-
-  return drives.map(drive => {
-    let score = 100;
-    let harshAccelCount = 0;
-    let harshBrakeCount = 0;
-    let highRpmCount = 0;
-    
-    if (drive.points.length > 1) {
-      for (let i = 1; i < drive.points.length; i++) {
-        const p1 = drive.points[i - 1];
-        const p2 = drive.points[i];
-        
-        // Calculate time diff in seconds
-        const dt = (p2.timestamp - p1.timestamp) / 1000;
-        if (dt > 0 && dt < 10) { // Only compare points reasonably close
-          // Calculate speed diff in km/h
-          const dv = getRecordSpeed(p2) - getRecordSpeed(p1);
-          const accel = dv / dt; // km/h per second
-          
-          if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
-            harshAccelCount++;
-            score -= 1;
-          } else if (accel < -12) { // Harsh braking (< -12 km/h per second)
-            harshBrakeCount++;
-            score -= 1.5; // Penalize braking slightly more
-          }
-        }
-        
-        if ((p2.rpm || 0) > 4000) {
-          highRpmCount++;
-        }
-      }
-      // Penalize for excessive high RPM duration
-      if (highRpmCount > 10) {
-        score -= (highRpmCount * 0.1);
-      }
-    }
-    
-    const finalScore = Math.max(0, Math.min(100, Math.round(score)));
-
-    const durationMin = Math.round((drive.endTime - drive.startTime) / 60000);
-    const startStr = new Date(drive.startTime).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    // 1. Calculate GPS distance
-    let distanceKm = 0;
-    let prevPoint = null;
-    for (const p of drive.points) {
-      if (p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0) {
-        if (prevPoint) {
-          distanceKm += getHaversineDistance(prevPoint.latitude, prevPoint.longitude, p.latitude, p.longitude);
-        }
-        prevPoint = p;
-      }
-    }
-
-    // 2. Average Speed
-    const speeds = drive.points.map(getRecordSpeed);
-    const avgSpeed = speeds.length > 0 ? (speeds.reduce((a, b) => a + b, 0) / speeds.length) : 0;
-
-    // 3. Start/End locations
-    const validGps = drive.points.filter(p => p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0);
-    const startLocation = validGps.length > 0 ? { lat: validGps[0].latitude, lon: validGps[0].longitude } : null;
-    const endLocation = validGps.length > 0 ? { lat: validGps[validGps.length - 1].latitude, lon: validGps[validGps.length - 1].longitude } : null;
-
-    // 4. Fuel used and fuel efficiency. Tank size is a per-vehicle
-    // property (set on the vehicle in the registry); cars without one
-    // fall back to the original default so existing stats don't shift.
-    let fuelUsedPercent = 0;
-    if (drive.startLevel !== null && drive.endLevel !== null) {
-      fuelUsedPercent = Math.max(0, drive.startLevel - drive.endLevel);
-    }
-    const vehicle = vehiclesStore.find(v => v.id === drive.vehicleId);
-    const tankLitres = (vehicle && Number(vehicle.tankLitres) > 0) ? Number(vehicle.tankLitres) : 36;
-    const fuelUsedLitres = (fuelUsedPercent / 100) * tankLitres;
-    const fuelEfficiencyKmL = (fuelUsedLitres > 0 && distanceKm > 0) ? (distanceKm / fuelUsedLitres) : null;
-
-    return {
-      id: drive.id,
-      vehicleId: drive.vehicleId,
-      startTime: drive.startTime,
-      endTime: drive.endTime,
-      label: `Drive #${drive.id} - ${startStr} (${durationMin} min, ${drive.recordCount} pts)`,
-      summary: {
-        durationMin,
-        maxRpm: drive.maxRpm,
-        maxSpeed: drive.maxSpeed,
-        fuelUsedPercent: parseFloat(fuelUsedPercent.toFixed(1)),
-        pointCount: drive.recordCount,
-        distanceKm: parseFloat(distanceKm.toFixed(2)),
-        avgSpeed: parseFloat(avgSpeed.toFixed(1)),
-        startLocation,
-        endLocation,
-        fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
-        driverScore: finalScore,
-        harshEvents: { accel: harshAccelCount, brake: harshBrakeCount }
-      }
-    };
-  });
-}
-
 // Endpoint to detect and segment drives
 fastify.get('/api/drives', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  const formattedDrives = segmentDrives(vehicle);
+  const formattedDrives = segmentDrives(vehicle || vehicleScope(request.auth));
   return reply.send([...formattedDrives].reverse()); // Newest drives first
 })
 
@@ -1250,7 +1551,7 @@ fastify.get('/api/drives', async (request, reply) => {
 fastify.get('/api/trips/leaderboard', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  const drives = segmentDrives(vehicle);
+  const drives = segmentDrives(vehicle || vehicleScope(request.auth));
   if (drives.length === 0) {
     return reply.send({
       best_efficiency: [],
@@ -1293,13 +1594,13 @@ fastify.get('/api/telemetry/history', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
+  let records = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
   if (start && end) {
     const startTime = parseInt(start);
     const endTime = parseInt(end);
-    const filtered = filterByVehicle(telemetryDataStore, vehicle).filter(record => record.timestamp >= startTime && record.timestamp <= endTime);
-    return reply.send(filtered);
+    records = records.filter(record => record.timestamp >= startTime && record.timestamp <= endTime);
+    return reply.send(records);
   }
-  let records = filterByVehicle(telemetryDataStore, vehicle);
   if (minutes !== undefined) {
     const minutesNum = parseInt(minutes);
     if (!isNaN(minutesNum) && minutesNum > 0) {
@@ -1321,7 +1622,7 @@ fastify.get('/api/telemetry/latest', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const records = filterByVehicle(telemetryDataStore, vehicle);
+  const records = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
   const latest = records[records.length - 1];
   return reply.send(latest !== undefined ? latest : null);
 })
@@ -1329,13 +1630,7 @@ fastify.get('/api/telemetry/latest', async (request, reply) => {
 // POST /api/fuel-logs - Add one or more fuel log entries
 fastify.post('/api/fuel-logs', async (request, reply) => {
   try {
-    const apiKey = request.headers['x-api-key'];
-    // Dashboard doesn't send API key currently, so we allow requests without it.
-    // However, if one IS provided, it must be correct.
-    if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
-      return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
-    }
-
+    const auth = request.auth;
     const payload = request.body;
     if (!payload) {
       return reply.status(400).send({ error: 'Missing request body' });
@@ -1363,11 +1658,11 @@ fastify.post('/api/fuel-logs', async (request, reply) => {
         // Always generate a unique server ID since Android app is write-only for logs
         // and its local auto-increment IDs will reset if app data is cleared
         id: `${Date.now()}-${index}-${Math.floor(Math.random() * 10000)}`,
-        vehicleId: item.vehicleId || DEFAULT_VEHICLE_ID,
+        vehicleId: item.vehicleId || (auth?.type === 'device' ? auth.vehicleId : DEFAULT_VEHICLE_ID),
         timestamp: parseInt(item.timestamp) || Date.now(),
         litres,
         odometer,
-        source: item.source || (apiKey ? 'app' : 'web')
+        source: item.source || (auth?.type === 'device' ? 'app' : 'web')
       });
       addedCount++;
     });
@@ -1387,7 +1682,7 @@ fastify.get('/api/fuel-logs', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const sortedLogs = [...filterByVehicle(fuelLogsStore, vehicle)].sort((a, b) => b.odometer - a.odometer);
+  const sortedLogs = [...filterRecordsByScope(fuelLogsStore, request.auth, vehicle)].sort((a, b) => b.odometer - a.odometer);
   return reply.send(sortedLogs);
 });
 
@@ -1397,7 +1692,7 @@ fastify.delete('/api/fuel-logs/:id', async (request, reply) => {
     const { id } = request.params;
     const idNum = parseInt(id);
     const initialLength = fuelLogsStore.length;
-    
+
     fuelLogsStore = fuelLogsStore.filter(log => log.id !== id && log.id !== idNum);
 
     if (fuelLogsStore.length === initialLength) {
@@ -1417,7 +1712,7 @@ fastify.get('/api/fuel-stats', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const scopedLogs = filterByVehicle(fuelLogsStore, vehicle);
+  const scopedLogs = filterRecordsByScope(fuelLogsStore, request.auth, vehicle);
   if (scopedLogs.length < 2) {
     return reply.send({
       averageKmPerLitre: 0,
@@ -1430,7 +1725,7 @@ fastify.get('/api/fuel-stats', async (request, reply) => {
   }
 
   const sorted = [...scopedLogs].sort((a, b) => a.odometer - b.odometer);
-  
+
   let totalLitresIntervals = 0;
   let totalDistanceIntervals = 0;
   const economies = [];
@@ -1471,89 +1766,17 @@ fastify.get('/api/fuel-stats', async (request, reply) => {
 // GET all maintenance items with status. `vehicleId` scopes both the
 // items list and the current-odometer baseline (highest fuel-log
 // odometer of that vehicle) to one car.
-function getMaintenanceItems(vehicleId = null) {
-  const scopedLogs = filterByVehicle(fuelLogsStore, vehicleId);
-  const sortedLogs = [...scopedLogs].sort((a, b) => b.odometer - a.odometer);
-  const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
-
-  return filterByVehicle(maintenanceStore, vehicleId).map(item => {
-    const kmSinceService = item.lastServiceOdo !== null && item.lastServiceOdo !== undefined
-      ? Math.max(0, currentOdometer - item.lastServiceOdo)
-      : 0;
-    
-    const daysSinceService = item.lastServiceDate !== null && item.lastServiceDate !== undefined
-      ? Math.max(0, (Date.now() - item.lastServiceDate) / (1000 * 60 * 60 * 24))
-      : 0;
-
-    let kmUntilDue = null;
-    if (item.intervalKm) {
-      kmUntilDue = item.intervalKm - kmSinceService;
-    }
-
-    let daysUntilDue = null;
-    if (item.intervalDays) {
-      daysUntilDue = item.intervalDays - daysSinceService;
-    }
-
-    let status = 'ok';
-    if ((kmUntilDue !== null && kmUntilDue <= 0) || (daysUntilDue !== null && daysUntilDue <= 0)) {
-      status = 'overdue';
-    } else if ((kmUntilDue !== null && kmUntilDue <= item.intervalKm * 0.1) || (daysUntilDue !== null && daysUntilDue <= item.intervalDays * 0.1)) {
-      status = 'due_soon';
-    }
-
-    return {
-      ...item,
-      currentOdometer: parseFloat(currentOdometer.toFixed(1)),
-      kmSinceService: parseFloat(kmSinceService.toFixed(1)),
-      daysSinceService: Math.round(daysSinceService),
-      kmUntilDue: kmUntilDue !== null ? parseFloat(kmUntilDue.toFixed(1)) : null,
-      daysUntilDue: daysUntilDue !== null ? Math.round(daysUntilDue) : null,
-      status
-    };
-  });
-}
-
-function getMaintenanceStatus(items = getMaintenanceItems()) {
-  let okCount = 0;
-  let dueSoonCount = 0;
-  let overdueCount = 0;
-  let nextUpcoming = null;
-  let minKmRemaining = Infinity;
-
-  items.forEach(item => {
-    if (item.status === 'overdue') overdueCount++;
-    else if (item.status === 'due_soon') dueSoonCount++;
-    else okCount++;
-
-    if (item.kmUntilDue !== null && item.kmUntilDue > 0 && item.kmUntilDue < minKmRemaining) {
-      minKmRemaining = item.kmUntilDue;
-      nextUpcoming = {
-        name: item.name,
-        kmRemaining: item.kmUntilDue,
-        daysRemaining: item.daysUntilDue
-      };
-    }
-  });
-
-  return { okCount, dueSoonCount, overdueCount, nextUpcoming };
-}
-
 fastify.get('/api/maintenance', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  const items = getMaintenanceItems(vehicle);
+  const items = getMaintenanceItems(vehicle, request.auth);
   return reply.send(items);
 })
 
 // POST a new maintenance item
 fastify.post('/api/maintenance', async (request, reply) => {
   try {
-    const apiKey = request.headers['x-api-key'];
-    if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
-      return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
-    }
-
+    const auth = request.auth;
     const payload = request.body || {};
     const itemsToAdd = Array.isArray(payload) ? payload : [payload];
     let addedCount = 0;
@@ -1571,7 +1794,7 @@ fastify.post('/api/maintenance', async (request, reply) => {
 
       // Current odometer baseline comes from the item's own vehicle so
       // a schedule created from car B never inherits car A's odometer.
-      const vid = item.vehicleId || DEFAULT_VEHICLE_ID;
+      const vid = item.vehicleId || (auth?.type === 'device' ? auth.vehicleId : DEFAULT_VEHICLE_ID);
       const vehicleLogs = filterByVehicle(fuelLogsStore, vid);
       const sortedLogs = [...vehicleLogs].sort((a, b) => b.odometer - a.odometer);
       const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
@@ -1666,7 +1889,7 @@ fastify.delete('/api/maintenance/:id', async (request, reply) => {
 fastify.get('/api/maintenance/status', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  return reply.send(getMaintenanceStatus(getMaintenanceItems(vehicle)));
+  return reply.send(getMaintenanceStatus(getMaintenanceItems(vehicle, request.auth)));
 });
 
 // ----- Vehicle registry CRUD ----------------------------------------------
@@ -1679,7 +1902,9 @@ fastify.get('/api/maintenance/status', async (request, reply) => {
 // records — this prevents accidental history loss.
 
 fastify.get('/api/vehicles', async (request, reply) => {
-  return reply.send(vehiclesStore.map(v => ({
+  const scope = vehicleScope(request.auth);
+  const scopedVehicles = scope === null ? vehiclesStore : vehiclesStore.filter(v => scope.includes(v.id));
+  return reply.send(scopedVehicles.map(v => ({
     ...v,
     recordCount: {
       telemetry: telemetryDataStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
@@ -1689,16 +1914,8 @@ fastify.get('/api/vehicles', async (request, reply) => {
   })));
 })
 
-function isValidVehicleName(name) {
-  return typeof name === 'string' && name.trim().length >= 1 && name.trim().length <= 64
-}
-
 fastify.post('/api/vehicles', async (request, reply) => {
-  const auth = authenticateRequest(request);
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
-  }
-
+  const auth = request.auth;
   const { name, vehicleId, tankLitres } = request.body || {};
   if (!isValidVehicleName(name)) {
     return reply.status(400).send({ error: 'Body must include a name (1-64 chars)' });
@@ -1732,15 +1949,19 @@ fastify.post('/api/vehicles', async (request, reply) => {
 
   vehiclesStore.push(vehicle);
   await persist(VEHICLES_PATH, vehiclesStore);
+
+  if (auth && auth.type === 'user' && auth.user) {
+    if (!Array.isArray(auth.user.vehicles)) auth.user.vehicles = [];
+    if (!auth.user.vehicles.includes(id)) {
+      auth.user.vehicles.push(id);
+      await persist(USERS_PATH, usersStore);
+    }
+  }
+
   return reply.status(201).send(vehicle);
 })
 
 fastify.put('/api/vehicles/:id', async (request, reply) => {
-  const auth = authenticateRequest(request);
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
-  }
-
   const vehicle = vehiclesStore.find(v => v.id === request.params.id);
   if (!vehicle) {
     return reply.status(404).send({ error: 'Vehicle not found' });
@@ -1766,11 +1987,6 @@ fastify.put('/api/vehicles/:id', async (request, reply) => {
 })
 
 fastify.delete('/api/vehicles/:id', async (request, reply) => {
-  const auth = authenticateRequest(request);
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key or Session' });
-  }
-
   const id = request.params.id;
   if (id === DEFAULT_VEHICLE_ID) {
     return reply.status(400).send({ error: 'The default vehicle cannot be deleted' });
@@ -1833,19 +2049,73 @@ fastify.delete('/api/vehicles/:id', async (request, reply) => {
   const idx = vehiclesStore.findIndex(v => v.id === id);
   if (idx !== -1) vehiclesStore.splice(idx, 1);
   await persist(VEHICLES_PATH, vehiclesStore);
+
+  // Delete all paired device tokens associated with this vehicle so stale tokens cannot access recycled IDs
+  let devicesMutated = false;
+  for (let i = devicesStore.length - 1; i >= 0; i--) {
+    if (devicesStore[i].vehicleId === id) {
+      devicesStore.splice(i, 1);
+      devicesMutated = true;
+    }
+  }
+  if (devicesMutated) {
+    await persist(DEVICES_PATH, devicesStore);
+  }
+
+  // Remove vehicle ID from any user's vehicle list
+  let usersChanged = false;
+  for (const user of usersStore) {
+    if (Array.isArray(user.vehicles) && user.vehicles.includes(id)) {
+      user.vehicles = user.vehicles.filter(v => v !== id);
+      usersChanged = true;
+    }
+  }
+  if (usersChanged) {
+    await persist(USERS_PATH, usersStore);
+  }
+
   return reply.send({ success: true, message: reassign ? 'Vehicle deleted; records reassigned to default.' : 'Vehicle deleted.' });
 })
 
 // ----- User Authentication & Account Management -------------------------
 
-fastify.post('/api/auth/login', async (request, reply) => {
+fastify.post('/api/auth/login', {
+  config: {
+    rateLimit: {
+      max: 15,
+      timeWindow: '1 minute'
+    }
+  }
+}, async (request, reply) => {
   const { username, password } = request.body || {}
   if (!username || typeof username !== 'string' || !password || typeof password !== 'string') {
     return reply.status(400).send({ error: 'Username and password are required' })
   }
 
+  // Master key login support
+  if (constantTimeEquals(password, OBD_API_KEY)) {
+    const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`
+    sessionsStore.set(sessionToken, {
+      userId: 'usr-admin',
+      username: 'admin',
+      type: 'master',
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000
+    })
+    return reply.send({
+      token: sessionToken,
+      user: {
+        id: 'usr-admin',
+        username: 'admin',
+        role: 'admin',
+        mustChangePassword: false,
+        vehicles: vehiclesStore.map(v => v.id)
+      }
+    })
+  }
+
   const user = usersStore.find(u => u.username.toLowerCase() === username.toLowerCase().trim())
-  if (!user || !verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+  if (!user || !(await verifyPassword(password, user.passwordSalt, user.passwordHash))) {
     return reply.status(401).send({ error: 'Invalid username or password' })
   }
 
@@ -1853,22 +2123,29 @@ fastify.post('/api/auth/login', async (request, reply) => {
   sessionsStore.set(sessionToken, {
     userId: user.id,
     username: user.username,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000
   })
+
+  const userRole = user.role || ((user.username === 'admin' || user.id === 'usr-admin') ? 'admin' : 'user')
+  const userVehicles = isAdmin({ type: 'user', user: { ...user, role: userRole } })
+    ? vehiclesStore.map(v => v.id)
+    : (user.vehicles || [DEFAULT_VEHICLE_ID])
 
   return reply.send({
     token: sessionToken,
     user: {
       id: user.id,
       username: user.username,
+      role: userRole,
       mustChangePassword: !!user.mustChangePassword,
-      vehicles: user.vehicles || [DEFAULT_VEHICLE_ID]
+      vehicles: userVehicles
     }
   })
 })
 
 fastify.post('/api/auth/change-password', async (request, reply) => {
-  const auth = authenticateRequest(request)
+  const auth = request.auth || (await authenticateRequest(request))
   const { currentPassword, newPassword, username } = request.body || {}
   if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
     return reply.status(400).send({ error: 'New password must be at least 8 characters long' })
@@ -1878,7 +2155,7 @@ fastify.post('/api/auth/change-password', async (request, reply) => {
   if (auth && auth.type === 'user') {
     targetUser = auth.user
     if (!targetUser.mustChangePassword) {
-      if (!currentPassword || !verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash)) {
+      if (!currentPassword || !(await verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash))) {
         return reply.status(400).send({ error: 'Current password is incorrect' })
       }
     }
@@ -1894,23 +2171,39 @@ fastify.post('/api/auth/change-password', async (request, reply) => {
     if (!targetUser) {
       return reply.status(404).send({ error: 'User not found' })
     }
-    if (!currentPassword || !verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash)) {
+    if (!currentPassword || !(await verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash))) {
       return reply.status(400).send({ error: 'Current password is incorrect' })
     }
   }
 
-  const { salt, hash } = hashPassword(newPassword)
+  const { salt, hash } = await hashPasswordAsync(newPassword)
   targetUser.passwordSalt = salt
   targetUser.passwordHash = hash
   targetUser.mustChangePassword = false
   targetUser.updatedAt = Date.now()
   await persist(USERS_PATH, usersStore)
 
+  if (targetUser.id === 'usr-admin' && fs.existsSync(INITIAL_ADMIN_SECRET_PATH)) {
+    try {
+      fs.unlinkSync(INITIAL_ADMIN_SECRET_PATH)
+    } catch (err) {
+      request.log.warn(`Password changed, but the temporary admin secret could not be removed: ${err}`)
+    }
+  }
+
+  // Invalidate all older sessions for this user
+  for (const [token, sess] of sessionsStore.entries()) {
+    if (sess.userId === targetUser.id) {
+      sessionsStore.delete(token)
+    }
+  }
+
   const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`
   sessionsStore.set(sessionToken, {
     userId: targetUser.id,
     username: targetUser.username,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000
   })
 
   return reply.send({
@@ -1920,32 +2213,64 @@ fastify.post('/api/auth/change-password', async (request, reply) => {
     user: {
       id: targetUser.id,
       username: targetUser.username,
+      role: targetUser.role || (targetUser.username === 'admin' ? 'admin' : 'user'),
       mustChangePassword: false,
       vehicles: targetUser.vehicles || [DEFAULT_VEHICLE_ID]
     }
   })
 })
 
+fastify.post('/api/auth/logout', async (request, reply) => {
+  const authHeader = request.headers['authorization']
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim()
+    sessionsStore.delete(token)
+  }
+  const devToken = request.headers['x-device-token']
+  if (devToken) {
+    sessionsStore.delete(devToken)
+  }
+  return reply.send({ success: true, message: 'Logged out successfully' })
+})
+
 fastify.get('/api/auth/me', async (request, reply) => {
-  const auth = authenticateRequest(request)
+  const auth = request.auth || (await authenticateRequest(request))
   if (!auth) {
     return reply.status(401).send({ error: 'Unauthorized' })
   }
 
   if (auth.type === 'user') {
-    const userDevices = devicesStore.filter(d => d.userId === auth.user.id)
+    const userRole = auth.user.role || ((auth.user.username === 'admin' || auth.user.id === 'usr-admin') ? 'admin' : 'user')
+    const userVehicles = isAdmin({ type: 'user', user: { ...auth.user, role: userRole } })
+      ? vehiclesStore.map(v => v.id)
+      : (auth.user.vehicles || [DEFAULT_VEHICLE_ID])
+    const userDevices = devicesStore.filter(d => d.userId === auth.user.id || userVehicles.includes(d.vehicleId))
     return reply.send({
       id: auth.user.id,
       username: auth.user.username,
+      role: userRole,
       mustChangePassword: !!auth.user.mustChangePassword,
-      vehicles: auth.user.vehicles || [DEFAULT_VEHICLE_ID],
+      vehicles: userVehicles,
       deviceCount: userDevices.length
+    })
+  }
+
+  if (auth.type === 'device') {
+    return reply.send({
+      id: auth.device.id,
+      name: auth.device.name,
+      role: 'device',
+      vehicleId: auth.vehicleId,
+      mustChangePassword: false,
+      vehicles: [auth.vehicleId],
+      deviceCount: 1
     })
   }
 
   return reply.send({
     id: 'master',
     username: 'master-admin',
+    role: 'admin',
     mustChangePassword: false,
     vehicles: vehiclesStore.map(v => v.id),
     deviceCount: devicesStore.length
@@ -1954,25 +2279,40 @@ fastify.get('/api/auth/me', async (request, reply) => {
 
 // ----- Device Pairing (QR & PIN flow) ------------------------------------
 
-fastify.post('/api/auth/device/initiate', async (request, reply) => {
-  const fingerprint = request.body?.fingerprint || {}
-  const pin = Math.floor(100000 + Math.random() * 900000).toString()
+fastify.post('/api/auth/device/initiate', {
+  config: {
+    rateLimit: {
+      max: 10,
+      timeWindow: '10 minutes'
+    }
+  }
+}, async (request, reply) => {
+  cleanExpiredPairings()
+  if (pendingPairingsByToken.size >= 50) {
+    return reply.status(429).send({ error: 'Too many pending pairings. Please wait and try again.' })
+  }
+
+  let pin
+  do {
+    pin = crypto.randomInt(100000, 1000000).toString()
+  } while (pendingPairingsByCode.has(pin))
+
   const pairingCode = `${pin.slice(0, 3)}-${pin.slice(3)}`
-  const pollToken = `poll_${crypto.randomBytes(16).toString('hex')}`
+  const pollToken = `poll_${crypto.randomBytes(24).toString('hex')}`
 
   const session = {
     code: pairingCode,
     normalizedCode: pin,
     pollToken,
-    fingerprint,
+    fingerprint: request.body?.fingerprint || {},
     status: 'pending',
     createdAt: Date.now(),
     expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes
   }
 
-  pendingPairings.set(pairingCode, session)
-  pendingPairings.set(pin, session)
-  pendingPairings.set(pollToken, session)
+  pendingPairingsByCode.set(pairingCode, session)
+  pendingPairingsByCode.set(pin, session)
+  pendingPairingsByToken.set(pollToken, session)
 
   return reply.send({
     pairingCode,
@@ -1982,18 +2322,27 @@ fastify.post('/api/auth/device/initiate', async (request, reply) => {
   })
 })
 
-fastify.get('/api/auth/device/poll', async (request, reply) => {
+fastify.get('/api/auth/device/poll', {
+  config: {
+    rateLimit: {
+      max: 500,
+      timeWindow: '15 minutes'
+    }
+  }
+}, async (request, reply) => {
   const token = request.query?.token
-  if (!token) {
+  if (!token || typeof token !== 'string') {
     return reply.status(400).send({ error: 'token query parameter is required' })
   }
 
-  const session = pendingPairings.get(token)
+  // Reject if passing a PIN or code — poll only accepts unguessable pollToken!
+  const session = pendingPairingsByToken.get(token)
   if (!session || session.expiresAt < Date.now()) {
-    return reply.send({ status: 'expired' })
+    return reply.status(404).send({ error: 'Invalid or expired poll token', status: 'expired' })
   }
 
   if (session.status === 'approved') {
+    pendingPairingsByToken.delete(token)
     return reply.send({
       status: 'approved',
       deviceToken: session.deviceToken,
@@ -2005,57 +2354,81 @@ fastify.get('/api/auth/device/poll', async (request, reply) => {
   return reply.send({ status: 'pending' })
 })
 
-fastify.post('/api/auth/device/claim', async (request, reply) => {
-  let auth = authenticateRequest(request)
-  const { pairingCode, vehicleId, newVehicleName, tankLitres, username, password } = request.body || {}
+fastify.post('/api/auth/device/claim', {
+  config: {
+    rateLimit: {
+      max: 10,
+      timeWindow: '10 minutes'
+    }
+  }
+}, async (request, reply) => {
+  const auth = request.auth || (await authenticateRequest(request))
+  if (!auth) {
+    return reply.status(401).send({ error: 'Authentication required: Sign in or provide API key to pair vehicle' })
+  }
+
+  const { pairingCode, vehicleId, newVehicleName, tankLitres } = request.body || {}
   if (!pairingCode || typeof pairingCode !== 'string') {
     return reply.status(400).send({ error: 'pairingCode is required' })
   }
 
   const normalized = pairingCode.replace(/[^0-9]/g, '')
-  const session = pendingPairings.get(normalized) || pendingPairings.get(pairingCode.trim())
+  const session = pendingPairingsByCode.get(normalized) || pendingPairingsByCode.get(pairingCode.trim())
   if (!session || session.expiresAt < Date.now()) {
     return reply.status(404).send({ error: 'Invalid or expired pairing code' })
   }
 
-  if (!auth && username && password) {
-    const user = usersStore.find(u => u.username.toLowerCase() === username.toLowerCase().trim())
-    if (user && verifyPassword(password, user.passwordSalt, user.passwordHash)) {
-      auth = { type: 'user', user }
-    }
+  // Single-use check: must be pending. Atomically transition state before any async await
+  if (session.status !== 'pending') {
+    return reply.status(409).send({ error: 'Pairing session is no longer pending' })
   }
-
-  if (!auth) {
-    const adminUser = usersStore.find(u => u.username === 'admin')
-    if (adminUser) auth = { type: 'user', user: adminUser }
-  }
-
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized: Sign in or provide API key to pair vehicle' })
-  }
+  session.status = 'claiming'
 
   let targetVehicleId = vehicleId
   if (newVehicleName && typeof newVehicleName === 'string' && newVehicleName.trim().length > 0) {
+    const trimmedName = newVehicleName.trim()
+    if (trimmedName.length > 64) {
+      session.status = 'pending'
+      return reply.status(400).send({ error: 'Vehicle name cannot exceed 64 characters' })
+    }
+    const litres = typeof tankLitres === 'number' && tankLitres > 0 && tankLitres <= 2000 ? tankLitres : 40
     targetVehicleId = 'veh-' + crypto.randomBytes(4).toString('hex')
     const newVeh = {
       id: targetVehicleId,
-      name: newVehicleName.trim(),
-      tankLitres: typeof tankLitres === 'number' && tankLitres > 0 ? tankLitres : 40,
+      name: trimmedName,
+      tankLitres: litres,
+      ownerId: auth.type === 'user' ? auth.user.id : 'usr-admin',
       createdAt: Date.now()
     }
     vehiclesStore.push(newVeh)
     await persist(VEHICLES_PATH, vehiclesStore)
+
+    if (auth.type === 'user') {
+      if (!auth.user.vehicles) auth.user.vehicles = []
+      if (!auth.user.vehicles.includes(targetVehicleId)) {
+        auth.user.vehicles.push(targetVehicleId)
+        await persist(USERS_PATH, usersStore)
+      }
+    }
+  } else {
+    // Existing vehicle: caller must have authorized access
+    if (!targetVehicleId || !vehicleExists(targetVehicleId)) {
+      targetVehicleId = DEFAULT_VEHICLE_ID
+    }
+    if (!canAccessVehicle(auth, targetVehicleId)) {
+      session.status = 'pending'
+      return reply.status(403).send({ error: 'Vehicle access denied: Not authorized to pair this vehicle' })
+    }
   }
 
-  if (!targetVehicleId || !vehicleExists(targetVehicleId)) {
-    targetVehicleId = DEFAULT_VEHICLE_ID
-  }
-
-  const deviceToken = `obd_dev_${crypto.randomBytes(24).toString('hex')}`
+  const rawDeviceToken = `obd_dev_${crypto.randomBytes(24).toString('hex')}`
+  const tokenHash = crypto.createHash('sha256').update(rawDeviceToken).digest('hex')
   const device = {
     id: `dev-${crypto.randomBytes(4).toString('hex')}`,
     name: session.fingerprint?.deviceModel || 'Car Head Unit',
-    deviceToken,
+    tokenHash,
+    tokenPrefix: rawDeviceToken.slice(0, 12),
+    tokenSuffix: rawDeviceToken.slice(-4),
     vehicleId: targetVehicleId,
     userId: auth.type === 'user' ? auth.user.id : 'usr-admin',
     fingerprint: session.fingerprint,
@@ -2066,17 +2439,13 @@ fastify.post('/api/auth/device/claim', async (request, reply) => {
   devicesStore.push(device)
   await persist(DEVICES_PATH, devicesStore)
 
-  if (auth.type === 'user') {
-    if (!auth.user.vehicles) auth.user.vehicles = []
-    if (!auth.user.vehicles.includes(targetVehicleId)) {
-      auth.user.vehicles.push(targetVehicleId)
-      await persist(USERS_PATH, usersStore)
-    }
-  }
+  // Remove pairing code from pending map so it cannot be claimed again
+  pendingPairingsByCode.delete(session.code)
+  pendingPairingsByCode.delete(session.normalizedCode)
 
   const vehName = vehiclesStore.find(v => v.id === targetVehicleId)?.name || 'Default Vehicle'
   session.status = 'approved'
-  session.deviceToken = deviceToken
+  session.deviceToken = rawDeviceToken
   session.vehicleId = targetVehicleId
   session.vehicleName = vehName
 
@@ -2085,14 +2454,20 @@ fastify.post('/api/auth/device/claim', async (request, reply) => {
     deviceId: device.id,
     vehicleId: targetVehicleId,
     vehicleName: vehName,
-    deviceToken
+    deviceToken: rawDeviceToken
   })
 })
 
 // ----- Paired Devices Management -----------------------------------------
 
 fastify.get('/api/devices', async (request, reply) => {
-  const list = devicesStore.map(d => ({
+  const auth = request.auth || (await authenticateRequest(request))
+  let list = devicesStore
+  if (!isAdmin(auth)) {
+    const scope = vehicleScope(auth)
+    list = devicesStore.filter(d => d.userId === auth?.user?.id || (scope && scope.includes(d.vehicleId)))
+  }
+  const result = list.map(d => ({
     id: d.id,
     name: d.name,
     vehicleId: d.vehicleId,
@@ -2100,20 +2475,22 @@ fastify.get('/api/devices', async (request, reply) => {
     fingerprint: d.fingerprint,
     createdAt: d.createdAt,
     lastSeenAt: d.lastSeenAt,
-    tokenMasked: d.deviceToken ? `${d.deviceToken.slice(0, 12)}...${d.deviceToken.slice(-4)}` : 'N/A'
+    tokenMasked: d.tokenPrefix ? `${d.tokenPrefix}...${d.tokenSuffix}` : (d.deviceToken ? `${d.deviceToken.slice(0, 12)}...${d.deviceToken.slice(-4)}` : 'N/A')
   }))
-  return reply.send(list)
+  return reply.send(result)
 })
 
 fastify.delete('/api/devices/:id', async (request, reply) => {
-  const apiKey = request.headers['x-api-key'];
-  if (apiKey && !constantTimeEquals(apiKey, OBD_API_KEY)) {
-    return reply.status(401).send({ error: 'Unauthorized: Invalid API Key' });
-  }
-
+  const auth = request.auth || (await authenticateRequest(request))
   const idx = devicesStore.findIndex(d => d.id === request.params.id)
   if (idx === -1) {
     return reply.status(404).send({ error: 'Device not found' })
+  }
+
+  const device = devicesStore[idx]
+  const isOwner = auth?.type === 'user' && (device.userId === auth.user.id || (auth.user.vehicles || []).includes(device.vehicleId))
+  if (!isAdmin(auth) && !isOwner) {
+    return reply.status(403).send({ error: 'Device access denied' })
   }
 
   devicesStore.splice(idx, 1)
@@ -2160,36 +2537,6 @@ fastify.get('/healthz', async (request, reply) => {
 // Both are unauthenticated on purpose: the APK contains the
 // public-facing client and the URL is on the public dashboard
 // subdomain. The HMAC for telemetry ingest is unrelated.
-const APK_DOWNLOAD_PATH = process.env.APK_PATH || path.join(__dirname, 'agent', 'app-debug.apk');
-const APK_VERSION_FILE = process.env.APK_VERSION_PATH || path.join(__dirname, 'agent', 'version.json');
-
-function _readApkVersion() {
-  // Returns {versionCode, versionName, size_bytes, sha256} or
-  // null if the APK isn't baked into this image. The build
-  // pipeline writes version.json; if absent (developer build
-  // that didn't run `make apk-and-server`), we synthesize a
-  // placeholder so the route returns something useful rather
-  // than 503.
-  if (fs.existsSync(APK_VERSION_FILE)) {
-    try {
-      return JSON.parse(fs.readFileSync(APK_VERSION_FILE, 'utf8'));
-    } catch (err) {
-      fastify.log.warn(`Failed to parse ${APK_VERSION_FILE}: ${err}`);
-    }
-  }
-  if (fs.existsSync(APK_DOWNLOAD_PATH)) {
-    const stat = fs.statSync(APK_DOWNLOAD_PATH);
-    return {
-      versionCode: 0,
-      versionName: 'unknown',
-      size_bytes: stat.size,
-      sha256: '',
-      note: 'version.json not found; using placeholder values from filesystem stat',
-    };
-  }
-  return null;
-}
-
 fastify.get('/api/agent/latest', async (request, reply) => {
   const info = _readApkVersion();
   if (!info) {
@@ -2233,11 +2580,6 @@ fastify.get('/api/agent/latest.apk', async (request, reply) => {
 // Dockerfile (or it can be overridden via OBD_INSTALL_SCRIPT).
 // If absent (e.g. developer build), the route returns a stub
 // shell script that prints a clear error.
-const INSTALL_SCRIPT_PATH = process.env.OBD_INSTALL_SCRIPT
-  || (fs.existsSync('/app/install.sh')
-      ? '/app/install.sh'
-      : path.join(__dirname, '..', 'static', 'install.sh'));
-
 fastify.get('/install.sh', async (request, reply) => {
   if (!fs.existsSync(INSTALL_SCRIPT_PATH)) {
     return reply.status(404).send(
@@ -2251,6 +2593,8 @@ fastify.get('/install.sh', async (request, reply) => {
   reply.header('Cache-Control', 'no-store');
   return reply.send(fs.createReadStream(INSTALL_SCRIPT_PATH));
 });
+
+}); // end apiRoutes
 
 // Run the server!
 const start = async () => {
@@ -2289,4 +2633,26 @@ if (require.main === module) {
   start()
 }
 
-module.exports = { fastify, segmentDrives, getHaversineDistance, telemetryDataStore, vehiclesStore, fuelLogsStore, maintenanceStore, usersStore, devicesStore, hashPassword, DEFAULT_VEHICLE_ID }
+module.exports = {
+  fastify,
+  segmentDrives,
+  getHaversineDistance,
+  telemetryDataStore,
+  vehiclesStore,
+  fuelLogsStore,
+  maintenanceStore,
+  usersStore,
+  devicesStore,
+  sessionsStore,
+  pendingPairingsByToken,
+  pendingPairingsByCode,
+  hashPassword,
+  hashPasswordSync,
+  verifyPassword,
+  authenticateRequest,
+  migrateDeviceTokensAtRest,
+  DEFAULT_VEHICLE_ID,
+  USERS_PATH,
+  DEVICES_PATH,
+  VEHICLES_PATH
+}

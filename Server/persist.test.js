@@ -3,9 +3,12 @@
 // checking that the data files it produces are valid JSON
 // after concurrent writes (which is the failure mode the
 // helper fixes).
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
+const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-test-persist-'));
+process.env.OBD_DATA_DIR = TEST_DATA_DIR;
 const TEST_API_KEY = 'a'.repeat(64);
 process.env.OBD_API_KEY = TEST_API_KEY;
 const { fastify } = require('./server');
@@ -13,6 +16,7 @@ const { fastify } = require('./server');
 describe('persist helper', () => {
   afterAll(async () => {
     await fastify.close();
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
   });
 
   it('produces valid JSON after multiple ingests in quick succession', async () => {
@@ -31,7 +35,7 @@ describe('persist helper', () => {
     }
     // Give the persist chain a moment to drain.
     await new Promise(r => setTimeout(r, 100));
-    const dbPath = path.join(__dirname, 'data', 'telemetry.json');
+    const dbPath = path.join(TEST_DATA_DIR, 'telemetry.json');
     expect(fs.existsSync(dbPath)).toBe(true);
     // The important assertion: the file is valid JSON, not torn.
     const parsed = JSON.parse(fs.readFileSync(dbPath, 'utf8'));

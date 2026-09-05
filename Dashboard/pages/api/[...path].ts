@@ -6,13 +6,17 @@ export const config = {
   },
 };
 
+const BACKEND_BASE = (
+  process.env.INTERNAL_API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  'http://127.0.0.1:3000'
+).replace(/\/$/, '');
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const { path } = req.query;
   const pathStr = Array.isArray(path) ? path.join('/') : path || '';
   const queryString = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  
-  const backendBase = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://server:3000';
-  const backendUrl = `${backendBase.replace(/\/$/, '')}/api/${pathStr}${queryString}`;
+  const targetUrl = `${BACKEND_BASE}/api/${pathStr}${queryString}`;
 
   const headers: Record<string, string> = {
     'Content-Type': req.headers['content-type'] || 'application/json',
@@ -32,6 +36,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const fetchOptions: RequestInit = {
       method: req.method,
       headers,
+      signal: AbortSignal.timeout(15000),
     };
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -44,37 +49,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    const candidateBases = [
-      process.env.INTERNAL_API_URL,
-      'http://server:3000',
-      'http://127.0.0.1:3000',
-      process.env.NEXT_PUBLIC_API_URL,
-    ].filter(Boolean) as string[];
+    const backendRes = await fetch(targetUrl, fetchOptions);
+    const bodyBuffer = Buffer.from(await backendRes.arrayBuffer());
 
-    let lastError: any = null;
-    for (const backendBase of candidateBases) {
-      const backendUrl = `${backendBase.replace(/\/$/, '')}/api/${pathStr}${queryString}`;
-      try {
-        const backendRes = await fetch(backendUrl, fetchOptions);
-        const data = await backendRes.text();
-
-        res.status(backendRes.status);
-        backendRes.headers.forEach((val, key) => {
-          const lower = key.toLowerCase();
-          if (lower !== 'content-encoding' && lower !== 'transfer-encoding') {
-            res.setHeader(key, val);
-          }
-        });
-        return res.send(data);
-      } catch (err) {
-        lastError = err;
+    res.status(backendRes.status);
+    backendRes.headers.forEach((val, key) => {
+      const lower = key.toLowerCase();
+      if (lower !== 'content-encoding' && lower !== 'transfer-encoding') {
+        res.setHeader(key, val);
       }
-    }
-
-    console.error('API proxy error:', lastError);
-    return res.status(502).json({ error: 'Backend API unreachable' });
+    });
+    return res.send(bodyBuffer);
   } catch (err: any) {
-    console.error('API proxy processing error:', err);
-    return res.status(500).json({ error: 'Internal proxy error' });
+    if (err.name === 'TimeoutError') {
+      return res.status(504).json({ error: 'Backend gateway timeout' });
+    }
+    console.error('API proxy error:', err);
+    return res.status(502).json({ error: 'Backend API unreachable' });
   }
 }

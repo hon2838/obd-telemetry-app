@@ -4,22 +4,13 @@
 // against the head unit) and the queue was in-memory only
 // (lost on container restart). These tests assert the new
 // behavior.
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
 // Use a temp data dir so we don't pollute the real one.
-const TEST_DATA_DIR = path.join(__dirname, '__test_data_commands__');
-fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
-process.env.OBD_API_KEY = 'a'.repeat(64);
-// Override the data dir by monkey-patching path.join via a
-// module-load shim. The simpler approach: import the
-// server's modules after setting the env. But server.js
-// bakes the path at module load. We test via the HTTP layer
-// (fastify.inject) with a freshly-imported server in a
-// child-process? No — we just import and accept the default
-// data dir, then verify the queue file there.
-delete process.env.OBD_API_KEY; // re-set so server.js doesn't fail-fast
+const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-test-commands-'));
+process.env.OBD_DATA_DIR = TEST_DATA_DIR;
 process.env.OBD_API_KEY = 'a'.repeat(64);
 
 const { fastify } = require('./server');
@@ -27,6 +18,7 @@ const { fastify } = require('./server');
 describe('POST /api/commands', () => {
   afterAll(async () => {
     await fastify.close();
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
   });
 
   beforeEach(() => {
@@ -81,7 +73,7 @@ describe('POST /api/commands', () => {
     // We don't want to depend on the order tests run in. The
     // previous test added a `read_dtc`; this test just verifies
     // the file exists and is valid JSON.
-    const queuePath = path.join(__dirname, 'data', 'commands_queue.json');
+    const queuePath = path.join(TEST_DATA_DIR, 'commands_queue.json');
     expect(fs.existsSync(queuePath)).toBe(true);
     const loaded = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
     expect(Array.isArray(loaded)).toBe(true);
