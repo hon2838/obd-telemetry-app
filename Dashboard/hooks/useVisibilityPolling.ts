@@ -4,7 +4,7 @@ import { isAbortError } from '../api';
 /** Polls only while visible, aborts hidden/obsolete work, and never overlaps requests. */
 export function useVisibilityPolling(
   task: (signal: AbortSignal) => Promise<void>,
-  intervalMs: number,
+  intervalMs: number | (() => number),
   dependencies: React.DependencyList,
 ) {
   const taskRef = useRef(task);
@@ -30,7 +30,7 @@ export function useVisibilityPolling(
       } finally {
         running = false;
         controller = null;
-        schedule(intervalMs);
+        schedule(typeof intervalMs === 'function' ? intervalMs() : intervalMs);
       }
     };
     const onVisibilityChange = () => {

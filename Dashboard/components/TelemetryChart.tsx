@@ -204,6 +204,7 @@ export default function TelemetryDashboard() {
   const changesSupportedRef = useRef<boolean | null>(null);
   const generationRef = useRef(0);
   const initializedRef = useRef(false);
+  const latestTimestampRef = useRef<number | null>(null);
 
   const withTimeLabel = useCallback((item: TelemetryData): TelemetryData => ({
     ...item,
@@ -228,6 +229,11 @@ export default function TelemetryDashboard() {
   const mergeRecords = useCallback((records: TelemetryData[], generation: number) => {
     if (generation !== generationRef.current) return;
     for (const record of records) recordsRef.current.set(recordKey(record as TelemetryData & { eventId?: string | number; ingestSeq?: number; vehicleId?: string }), withTimeLabel(record));
+    for (const record of records) {
+      if (latestTimestampRef.current === null || record.timestamp > latestTimestampRef.current) {
+        latestTimestampRef.current = record.timestamp;
+      }
+    }
     const bounded = [...recordsRef.current.values()]
       .sort((a, b) => a.timestamp - b.timestamp)
       .slice(-2000);
@@ -264,6 +270,7 @@ export default function TelemetryDashboard() {
     cursorRef.current = 0;
     changesSupportedRef.current = null;
     initializedRef.current = false;
+    latestTimestampRef.current = null;
     setData([]);
     setConnectionOk(true);
   }, [activeVehicleId]);
@@ -304,7 +311,12 @@ export default function TelemetryDashboard() {
     if (generation === generationRef.current) setConnectionOk(true);
   }, [buildUrl, fetchChanges, mergeRecords]);
 
-  useVisibilityPolling(pollTelemetry, 3000, [activeVehicleId, buildUrl, pollTelemetry]);
+  const pollingInterval = useCallback(() => {
+    const timestamp = latestTimestampRef.current;
+    return timestamp === null || Date.now() - timestamp > STALE_THRESHOLD_MS ? 15000 : 3000;
+  }, []);
+
+  useVisibilityPolling(pollTelemetry, pollingInterval, [activeVehicleId, buildUrl, pollTelemetry, pollingInterval]);
 
   const latestTimestamp = data.length > 0 ? data[data.length - 1].timestamp : null;
 

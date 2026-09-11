@@ -39,6 +39,24 @@ interface LeaderboardData {
   longest_duration: DriveSession[];
 }
 
+const MAX_DETAIL_CHART_POINTS = 750;
+
+// Keep the first and last samples, then select evenly spaced samples from the
+// interior. This bounds Recharts' SVG work while preserving the full trip
+// time range and its overall shape for long sessions.
+function decimateChartPoints<T>(points: T[], maxPoints: number): T[] {
+  if (points.length <= maxPoints) return points;
+  const result = [points[0]];
+  const interiorCount = maxPoints - 2;
+  const interiorLength = points.length - 2;
+  for (let i = 0; i < interiorCount; i++) {
+    const index = 1 + Math.floor((i * interiorLength) / interiorCount);
+    result.push(points[index]);
+  }
+  result.push(points[points.length - 1]);
+  return result;
+}
+
 export default function TripsDashboard() {
   const { activeVehicleId, buildUrl } = useVehicle();
   const [drives, setDrives] = useState<DriveSession[]>([]);
@@ -65,7 +83,7 @@ export default function TripsDashboard() {
         speed: (d.speed !== null && d.speed !== undefined) ? d.speed : (d.gpsSpeed || 0),
         rpm: d.rpm || 0
       }));
-      setSelectedDrivePoints(transformed);
+      setSelectedDrivePoints(decimateChartPoints(transformed, MAX_DETAIL_CHART_POINTS));
     } catch (err) {
       console.error(err);
     }

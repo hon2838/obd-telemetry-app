@@ -608,38 +608,79 @@ if (telemetryMigrationNeeded) {
   persistStartupMigration(DB_PATH, telemetryDataStore)
 }
 
+function eventIdOf(record) {
+  return typeof record?.eventId === 'string' && record.eventId.length > 0 ? record.eventId : null
+}
+function telemetryEventKey(record) {
+  const eventId = eventIdOf(record)
+  return eventId ? `${record.vehicleId || DEFAULT_VEHICLE_ID}\u0000${eventId}` : null
+}
+
+// Event keys are maintained incrementally so batch classification does not
+// rescan the complete telemetry store. This set is updated only after a
+// telemetry transaction commits; failed persistence therefore cannot poison
+// the dedupe state.
+const telemetryEventKeySet = new Set()
+function syncTelemetryEventKeySet() {
+  telemetryEventKeySet.clear()
+  for (const record of telemetryDataStore) {
+    const key = telemetryEventKey(record)
+    if (key) telemetryEventKeySet.add(key)
+  }
+}
+syncTelemetryEventKeySet()
+
 let telemetryRevision = 0
 let vehicleRevision = 0
 const latestCaptureCache = new Map()
 const tripSummaryCache = new Map()
-function invalidateAnalyticsCaches({ telemetry = false, vehicles = false } = {}) {
-  if (telemetry) telemetryRevision++
-  if (vehicles) vehicleRevision++
+function cacheKeyContainsVehicle(cacheKey, vehicleId) {
+  const scope = String(cacheKey).split('|')[1]
+  return scope === 'all' || scope === vehicleId || scope?.split(',').includes(vehicleId)
+}
+function invalidateAnalyticsCaches({ telemetry = false, vehicles = false, vehicleId = null } = {}) {
+  if (vehicles) {
+    vehicleRevision++
+    latestCaptureCache.clear()
+    tripSummaryCache.clear()
+    return
+  }
+  if (!telemetry) return
+  if (vehicleId) {
+    for (const key of latestCaptureCache.keys()) {
+      if (cacheKeyContainsVehicle(key, vehicleId)) latestCaptureCache.delete(key)
+    }
+    for (const key of tripSummaryCache.keys()) {
+      if (cacheKeyContainsVehicle(key, vehicleId)) tripSummaryCache.delete(key)
+    }
+    return
+  }
+  telemetryRevision++
   latestCaptureCache.clear()
   tripSummaryCache.clear()
 }
 
-function eventIdOf(record) {
-  return typeof record?.eventId === 'string' && record.eventId.length > 0 ? record.eventId : null
-}
 function validateEventId(record) {
   return record.eventId === undefined || (typeof record.eventId === 'string' && record.eventId.length >= 1 && record.eventId.length <= 256)
 }
 function replaceArrayContents(target, values) {
   target.splice(0, target.length, ...values)
 }
-function classifyEventIds(store, records) {
+function classifyEventIds(store, records, persistentKeys = null) {
+  const existing = persistentKeys || new Set()
   const seen = new Set()
   const accepted = []
   const duplicate = []
-  for (const record of store) {
-    const eventId = eventIdOf(record)
-    if (eventId) seen.add(`${record.vehicleId || DEFAULT_VEHICLE_ID}\u0000${eventId}`)
+  if (!persistentKeys) {
+    for (const record of store) {
+      const key = telemetryEventKey(record)
+      if (key) existing.add(key)
+    }
   }
   for (const record of records) {
     const eventId = eventIdOf(record)
     const key = eventId && `${record.vehicleId || DEFAULT_VEHICLE_ID}\u0000${eventId}`
-    if (eventId && seen.has(key)) duplicate.push(eventId)
+    if (eventId && (existing.has(key) || seen.has(key))) duplicate.push(eventId)
     else {
       accepted.push(record)
       if (eventId) seen.add(key)
@@ -1663,7 +1704,7 @@ fastify.post('/api/telemetry/batch', {
         btConnected: record.btConnected,
         receivedAt: Date.now()
       }));
-      const classified = classifyEventIds(telemetryDataStore, normalized);
+      const classified = classifyEventIds(telemetryDataStore, normalized, telemetryEventKeySet);
       const accepted = classified.accepted.map((record, index) => ({
         ...record,
         ingestSeq: nextIngestSeq + index + 1
@@ -1683,8 +1724,15 @@ fastify.post('/api/telemetry/batch', {
       if (commandsToSend.length !== 0) ingestEntries.push([COMMANDS_QUEUE_PATH, remainingCommands]);
       runFileTransactionSync(ingestEntries);
       telemetryDataStore.push(...accepted);
+      for (const record of accepted) {
+        const key = telemetryEventKey(record);
+        if (key) telemetryEventKeySet.add(key);
+      }
       nextIngestSeq += accepted.length;
-      invalidateAnalyticsCaches({ telemetry: accepted.length > 0 });
+      const affectedVehicles = new Set(accepted.map(record => record.vehicleId || DEFAULT_VEHICLE_ID));
+      for (const vehicleId of affectedVehicles) {
+        invalidateAnalyticsCaches({ telemetry: true, vehicleId });
+      }
 
       if (commandsToSend.length !== 0) {
         pendingCommands = remainingCommands;
@@ -2199,18 +2247,17 @@ fastify.get('/api/telemetry/changes', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query)
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
   const scoped = record => filterRecordsByScope([record], request.auth, vehicle).length > 0
-  const ordered = [...telemetryDataStore].sort((a, b) => a.ingestSeq - b.ingestSeq)
   const records = []
   let nextCursor = cursor
   let index = 0
-  for (; index < ordered.length; index++) {
-    const record = ordered[index]
+  for (; index < telemetryDataStore.length; index++) {
+    const record = telemetryDataStore[index]
     if (record.ingestSeq <= cursor) continue
     nextCursor = record.ingestSeq
     if (scoped(record)) records.push(record)
     if (records.length >= limit) { index++; break }
   }
-  const hasMore = index < ordered.length
+  const hasMore = index < telemetryDataStore.length
   return reply.send({ records, nextCursor, hasMore })
 })
 
@@ -2686,6 +2733,7 @@ fastify.delete('/api/vehicles/:id', async (request, reply) => {
       replaceArrayContents(vehiclesStore, vehiclesCandidate);
       if (reassign) {
         replaceArrayContents(telemetryDataStore, telemetryCandidate);
+        syncTelemetryEventKeySet();
         replaceArrayContents(fuelLogsStore, fuelCandidate);
         replaceArrayContents(maintenanceStore, maintenanceCandidate);
         replaceArrayContents(dtcHistoryStore, dtcHistoryCandidate);
@@ -3316,6 +3364,7 @@ module.exports = {
   segmentDrives,
   getHaversineDistance,
   telemetryDataStore,
+  telemetryEventKeySet,
   vehiclesStore,
   fuelLogsStore,
   maintenanceStore,
