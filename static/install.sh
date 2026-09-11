@@ -8,7 +8,7 @@
 #  Options:
 #    --api-url URL     The OBD server's public URL (e.g. https://obd-api.hon2838.name.my)
 #                      Default: https://obd-api.hon2838.name.my
-#    --api-key KEY     The X-API-Key shared with the server (required).
+#    --api-key KEY     (Deprecated) Optional legacy API key.
 #    --node-id ID      Override the auto-detected node id (defaults to hostname).
 #    --force           Reinstall even if the same version is already installed.
 #    --uninstall       Remove the app and disable the service.
@@ -85,9 +85,10 @@ for cmd in curl sha256sum pm; do
   fi
 done
 
-if [ -z "$API_KEY" ]; then
-  err "--api-key is required. Fetch it from /api/admin/agent-config (admin auth required)."
-  exit 1
+# Note: In previous versions, --api-key was required on CLI. Authentication
+# is now securely managed via in-app device pairing (/pair) or app settings.
+if [ -n "$API_KEY" ]; then
+  warn "Passing --api-key via CLI is deprecated. Pair the device securely from the OBD app interface."
 fi
 
 # ----- auto-detect node id ----------------------------------------------
