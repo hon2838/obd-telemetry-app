@@ -14,7 +14,7 @@ services:
         - BUILD_TIME=${BUILD_TIME:-unknown}
     image: obd-telemetry-server:${BUILD_COMMIT:-latest}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       # Required. The server boot-guard (Server/server.js)
       # refuses to start if OBD_API_KEY is missing or
@@ -50,7 +50,7 @@ services:
         - BUILD_TIME=${BUILD_TIME:-unknown}
     image: obd-telemetry-dashboard:${BUILD_COMMIT:-latest}
     ports:
-      - "3003:3001"
+      - "127.0.0.1:3003:3001"
     environment:
       # Server-side dashboard requests use the private Compose network.
       # NEXT_PUBLIC_API_URL remains the browser-facing public URL.
