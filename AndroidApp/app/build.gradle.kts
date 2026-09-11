@@ -11,6 +11,7 @@ android {
         applicationId = "com.example.obdapp"
         minSdk = 23
         targetSdk = 29
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Bump versionCode when shipping a new APK; Android
         // refuses to install a new build over the old one if
         // versionCode is <= what's already on the device.
@@ -46,6 +47,12 @@ kotlin {
     jvmToolchain(17)
 }
 
+kapt {
+    arguments {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
+}
+
 dependencies {
   implementation("androidx.core:core-ktx:1.3.2")
   implementation("androidx.appcompat:appcompat:1.2.0")
@@ -71,8 +78,12 @@ dependencies {
 
   // Testing
   testImplementation("junit:junit:4.13.2")
+  testImplementation("androidx.test:core:1.5.0")
+  testImplementation("org.robolectric:robolectric:4.11.1")
   androidTestImplementation("androidx.test.ext:junit:1.1.5")
   androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+  androidTestImplementation("androidx.test:core:1.5.0")
+  androidTestImplementation("androidx.test:runner:1.5.2")
 }
 
 configurations.all {

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import Head from 'next/head';
-import { API_HOST } from '../api';
+import { apiFetch } from '../api';
+import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 import {
   AlertTriangle, CheckCircle, RefreshCw, Trash2, ArrowLeft, Terminal, ShieldAlert, AlertCircle, Clock, Car
@@ -50,62 +51,32 @@ export default function DiagnosticsDashboard() {
     };
   }, []);
 
-  const fetchDtcDetails = async (codes: string[]) => {
-    try {
-      if (codes.length === 0) {
-        setActiveDtcDetails([]);
-        return;
-      }
-      const res = await fetch(`${API_HOST}/api/dtc/lookup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codes })
-      });
-      if (res.ok) {
-        const details = await res.json();
-        setActiveDtcDetails(details);
-      }
-    } catch (err) {
-      console.error('Error looking up DTCs:', err);
+  const fetchDtcDetails = async (codes: string[], signal?: AbortSignal) => {
+    if (codes.length === 0) {
+      setActiveDtcDetails([]);
+      return;
     }
+    const res = await apiFetch('/api/dtc/lookup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes }), signal,
+    });
+    if (!res.ok) throw new Error(`DTC lookup HTTP ${res.status}`);
+    setActiveDtcDetails(await res.json());
   };
 
-  const fetchData = async () => {
-    try {
-      const res = await fetch(buildUrl('/api/telemetry/dtc'));
-      if (res.ok) {
-        const d = await res.json();
-        setData(d || { latest: { latestDtc: { code: "", timestamp: null }, latestClearStatus: { success: null, timestamp: null } }, history: [] });
-
-        // Parse and resolve details for currently active code string
-        const currentCodeStr = d.latest?.latestDtc?.code || "";
-        if (currentCodeStr && currentCodeStr !== "No trouble codes found" && currentCodeStr !== "No DTCs") {
-          // Parse codes
-          const codes = currentCodeStr
-            .split(/[,\s]+/)
-            .map((c: string) => c.trim().toUpperCase())
-            .filter((c: string) => /^[PBUC]\d{4}$/.test(c));
-          
-          if (codes.length > 0) {
-            fetchDtcDetails(codes);
-          } else {
-            setActiveDtcDetails([]);
-          }
-        } else {
-          setActiveDtcDetails([]);
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching diagnostics data:', err);
-    }
+  const fetchData = async (signal: AbortSignal) => {
+    const res = await apiFetch(buildUrl('/api/telemetry/dtc'), { signal });
+    if (!res.ok) throw new Error(`Diagnostics HTTP ${res.status}`);
+    const d = await res.json();
+    setData(d || { latest: { latestDtc: { code: "", timestamp: null }, latestClearStatus: { success: null, timestamp: null } }, history: [] });
+    const currentCodeStr = d.latest?.latestDtc?.code || "";
+    const codes = currentCodeStr && currentCodeStr !== 'No trouble codes found' && currentCodeStr !== 'No DTCs'
+      ? currentCodeStr.split(/[,\s]+/).map((c: string) => c.trim().toUpperCase()).filter((c: string) => /^[PBUC]\d{4}$/.test(c))
+      : [];
+    await fetchDtcDetails(codes, signal);
   };
 
-  useEffect(() => {
-    fetchData();
-    // Poll diagnostics status every 3 seconds
-    const interval = setInterval(fetchData, 3000);
-    return () => clearInterval(interval);
-  }, [activeVehicleId, buildUrl]);
+  useVisibilityPolling(fetchData, 3000, [activeVehicleId, buildUrl]);
 
   const queueCommand = async (command: 'read_dtc' | 'clear_dtc') => {
     setError('');
@@ -116,11 +87,9 @@ export default function DiagnosticsDashboard() {
         payload.vehicleId = activeVehicleId;
       }
 
-      const res = await fetch(`${API_HOST}/api/commands`, {
+      const res = await apiFetch('/api/commands', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       if (res.ok) {
@@ -128,7 +97,6 @@ export default function DiagnosticsDashboard() {
         if (timerRef.current) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => {
           setCommandLoading(null);
-          fetchData();
         }, 3000);
       } else {
         try {
@@ -522,7 +490,7 @@ const styles: Record<string, any> = {
     flexDirection: 'column',
     gap: '20px',
     paddingLeft: '12px',
-    borderLeft: '1px solid var(--border)',
+    border: '1px solid var(--border)',
     marginLeft: '12px',
     maxHeight: '400px',
     overflowY: 'auto'

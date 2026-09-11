@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import java.util.Locale
 
 
 class MainActivity : AppCompatActivity() {
@@ -84,8 +85,10 @@ class MainActivity : AppCompatActivity() {
                     tvObdStatus.text = obdStatus
 
                     tvEngineRpm.text = if (rpm != -1) "$rpm RPM" else "N/A"
+                    tvCoolantTemp.text = if (coolant != -1) "$coolant °C" else "N/A"
                     tvCoolantTemp.setTextColor(if (coolant > 105) getColor(R.color.accent_red) else getColor(R.color.text_primary))
                     tvThrottlePos.text = if (throttle != -1) "$throttle %" else "N/A"
+                    tvVoltage.text = if (volt >= 0f) String.format("%.1f V", volt) else "N/A"
                     tvVoltage.setTextColor(
                         when {
                             volt < 0f -> getColor(R.color.text_primary)
@@ -102,6 +105,11 @@ class MainActivity : AppCompatActivity() {
                     tvVolume.text = if (volume != -1) volume.toString() else "N/A"
                     tvWifiSsid.text = if (wifiSsid.isNotEmpty()) wifiSsid else "N/A"
                     tvBtConnected.text = if (btConnected) "Connected" else "Disconnected"
+
+                    val accelTime = if (it.hasExtra("accelTime")) it.getDoubleExtra("accelTime", -1.0) else -1.0
+                    if (accelTime > 0.0) {
+                        Toast.makeText(this@MainActivity, String.format(Locale.getDefault(), "⚡ 0-100 km/h: %.2fs", accelTime), Toast.LENGTH_LONG).show()
+                    }
                 } else if (it.action == "com.example.obdapp.STATUS_UPDATE") {
                     val status = it.getStringExtra("status") ?: "Service Stopped"
                     val running = it.getBooleanExtra("running", status != "Service Stopped")
@@ -258,49 +266,34 @@ class MainActivity : AppCompatActivity() {
                     try {
                         db.fuelLogDao().insert(fuelLog)
 
-                        // Attempt immediate sync
+                        // Immediate delivery goes through the same serialized
+                        // OutboxUploader as every other path: it uploads with
+                        // the stable persisted eventId and deletes only rows
+                        // the server acknowledges. Offline rows stay queued.
+                        var statusMessage = "Refuel logged successfully!"
                         try {
-                            val unsyncedLogs = db.fuelLogDao().getUnsyncedLogs()
-                            if (unsyncedLogs.isNotEmpty()) {
-                                val fuelArray = org.json.JSONArray()
-                                unsyncedLogs.forEach { log ->
-                                    val jsonObj = org.json.JSONObject().apply {
-                                        put("id", log.id)
-                                        put("vehicleId", log.vehicleId)
-                                        put("timestamp", log.timestamp)
-                                        put("litres", log.litres)
-                                        put("odometer", log.odometer)
-                                        put("source", "app")
-                                    }
-                                    fuelArray.put(jsonObj)
-                                }
-
-                                val url = java.net.URL(getApiBaseUrl(this@MainActivity) + "/api/fuel-logs")
-                                val connection = url.openConnection() as java.net.HttpURLConnection
-                                connection.requestMethod = "POST"
-                                connection.setRequestProperty("Content-Type", "application/json")
-                                applyAuthHeader(connection, this@MainActivity)
-                                connection.doOutput = true
-                                connection.connectTimeout = 5000
-
-                                val writer = java.io.OutputStreamWriter(connection.outputStream)
-                                writer.write(fuelArray.toString())
-                                writer.flush()
-                                writer.close()
-
-                                if (connection.responseCode in 200..299) {
-                                    unsyncedLogs.forEach { it.synced = true }
-                                    db.fuelLogDao().updateLogs(unsyncedLogs)
-                                    db.fuelLogDao().deleteSyncedLogs()
-                                }
+                            val report = OutboxUploader.drainOutbox(applicationContext)
+                            statusMessage = when {
+                                report.totalAckedFuel > 0 -> "Refuel logged & synced!"
+                                report.quarantinedVehicles.contains(fuelLog.vehicleId) ->
+                                    "Refuel saved locally; server rejected the entry (check values)."
+                                report.blockedVehicles.contains(fuelLog.vehicleId) ->
+                                    "Refuel saved locally; vehicle not authorized on server."
+                                report.hadNetworkFailures || report.hadIncompatibleServer ->
+                                    "Refuel saved offline — will sync when connected."
+                                else -> "Refuel logged successfully!"
                             }
                         } catch (e: Exception) {
                             e.printStackTrace()
+                            statusMessage = "Refuel saved offline — will sync when connected."
+                        }
+                        val finalMessage = statusMessage
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(this@MainActivity, finalMessage, Toast.LENGTH_LONG).show()
                         }
                     } finally {
                         withContext(Dispatchers.Main) {
                             btnLogFuel.isEnabled = true
-                            Toast.makeText(this@MainActivity, "Refuel logged successfully!", Toast.LENGTH_SHORT).show()
                             etFuelLitres.text.clear()
                             etFuelOdometer.text.clear()
                         }
@@ -468,6 +461,7 @@ class MainActivity : AppCompatActivity() {
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.doOutput = true
                 conn.connectTimeout = 8000
+                conn.readTimeout = 15000
 
                 val payload = org.json.JSONObject().apply {
                     put("fingerprint", DeviceIdentity.getHardwareFingerprint(this@MainActivity))
@@ -497,6 +491,7 @@ class MainActivity : AppCompatActivity() {
                             val pollUrl = java.net.URL("${getApiBaseUrl(this@MainActivity)}/api/auth/device/poll?token=$pollToken")
                             val pollConn = pollUrl.openConnection() as java.net.HttpURLConnection
                             pollConn.connectTimeout = 5000
+                            pollConn.readTimeout = 15000
                             if (pollConn.responseCode in 200..299) {
                                 val pollResp = org.json.JSONObject(pollConn.inputStream.bufferedReader().readText())
                                 if (pollResp.optString("status") == "approved") {
@@ -574,6 +569,7 @@ class MainActivity : AppCompatActivity() {
                     applyAuthHeader(conn, this@MainActivity)
                     conn.doOutput = true
                     conn.connectTimeout = 8000
+                    conn.readTimeout = 15000
                     conn.outputStream.use {
                         it.write(org.json.JSONObject().apply { put("name", name) }.toString().toByteArray())
                     }
@@ -588,6 +584,7 @@ class MainActivity : AppCompatActivity() {
                             val listConn = java.net.URL(getApiBaseUrl(this@MainActivity) + "/api/vehicles")
                                 .openConnection() as java.net.HttpURLConnection
                             listConn.connectTimeout = 8000
+                            listConn.readTimeout = 15000
                             val arr = org.json.JSONArray(listConn.inputStream.bufferedReader().readText())
                             for (i in 0 until arr.length()) {
                                 val v = arr.optJSONObject(i) ?: continue

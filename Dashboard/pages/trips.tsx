@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
-import { API_HOST } from '../api';
+import { apiFetch, isAbortError } from '../api';
+import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 import {
   Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X, Car
@@ -56,9 +57,9 @@ export default function TripsDashboard() {
     setSelectedDrive(drive);
     setSelectedDrivePoints([]);
     try {
-      const res = await fetch(buildUrl('/api/telemetry/history', { start: drive.startTime, end: drive.endTime }));
+      const res = await apiFetch(buildUrl('/api/telemetry/history', { start: drive.startTime, end: drive.endTime }));
+      if (!res.ok) throw new Error(`Trip telemetry HTTP ${res.status}`);
       const data = await res.json();
-      
       const transformed = data.map((d: any) => ({
         time: new Date(d.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         speed: (d.speed !== null && d.speed !== undefined) ? d.speed : (d.gpsSpeed || 0),
@@ -70,28 +71,21 @@ export default function TripsDashboard() {
     }
   };
 
-  const fetchData = async () => {
-    try {
-      const drivesRes = await fetch(buildUrl('/api/drives'));
-      const drivesData = await drivesRes.json();
-      setDrives(Array.isArray(drivesData) ? drivesData : []);
-
-      const lbRes = await fetch(buildUrl('/api/trips/leaderboard'));
-      const lbData = await lbRes.json();
-      setLeaderboard(lbData || { best_efficiency: [], longest_distance: [], highest_speed: [], longest_duration: [] });
-    } catch (err) {
-      console.error('Error fetching trips/drives data:', err);
-    } finally {
-      setLoaded(true);
-    }
+  const fetchData = async (signal: AbortSignal) => {
+    const [drivesRes, lbRes] = await Promise.all([
+      apiFetch(buildUrl('/api/drives'), { signal }),
+      apiFetch(buildUrl('/api/trips/leaderboard'), { signal }),
+    ]);
+    if (!drivesRes.ok) throw new Error(`Drives HTTP ${drivesRes.status}`);
+    if (!lbRes.ok) throw new Error(`Leaderboard HTTP ${lbRes.status}`);
+    const [drivesData, lbData] = await Promise.all([drivesRes.json(), lbRes.json()]);
+    setDrives(Array.isArray(drivesData) ? drivesData : []);
+    setLeaderboard(lbData || { best_efficiency: [], longest_distance: [], highest_speed: [], longest_duration: [] });
+    setLoaded(true);
   };
 
-  useEffect(() => {
-    setSelectedDrive(null);
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
-  }, [activeVehicleId, buildUrl]);
+  useEffect(() => { setSelectedDrive(null); }, [activeVehicleId]);
+  useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
 
   // Compute overall stats
   const totalTrips = drives.length;
@@ -101,14 +95,14 @@ export default function TripsDashboard() {
   const longestTrip = drives.length > 0 ? Math.max(...drives.map(d => d.summary.distanceKm)) : 0;
 
   // Chart data sorted chronologically
-  const chartData = [...drives]
+  const chartData = useMemo(() => [...drives]
     .reverse()
     .map(d => ({
       date: new Date(d.startTime).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
       distance: d.summary.distanceKm,
       efficiency: d.summary.fuelEfficiencyKmL || 0,
       id: d.id
-    }));
+    })), [drives]);
 
   const getLeaderboardList = () => {
     switch (activeLeaderboardTab) {

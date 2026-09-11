@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
-import { API_HOST } from '../api';
+import { apiFetch } from '../api';
+import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 import {
   Zap, Trophy, Clock, ArrowLeft, TrendingUp, Gauge, Calendar, Activity, Car
@@ -45,41 +46,31 @@ export default function PerformanceDashboard() {
   });
   const [runs, setRuns] = useState<AccelerationRun[]>([]);
 
-  const fetchData = async () => {
-    try {
-      const recordsRes = await fetch(buildUrl('/api/performance/records'));
-      const recordsData = await recordsRes.json();
-      setRecords(recordsData || {
-        best0to100: null,
-        topSpeed: null,
-        highestRpm: null,
-        longestDrive: null,
-        totalDrivingTime: 0,
-        totalDrives: 0
-      });
-
-      const runsRes = await fetch(buildUrl('/api/performance/runs'));
-      const runsData = await runsRes.json();
-      setRuns(Array.isArray(runsData) ? runsData : []);
-    } catch (err) {
-      console.error('Error fetching performance data:', err);
-    }
+  const fetchData = async (signal: AbortSignal) => {
+    const [recordsRes, runsRes] = await Promise.all([
+      apiFetch(buildUrl('/api/performance/records'), { signal }),
+      apiFetch(buildUrl('/api/performance/runs'), { signal }),
+    ]);
+    if (!recordsRes.ok) throw new Error(`Performance records HTTP ${recordsRes.status}`);
+    if (!runsRes.ok) throw new Error(`Performance runs HTTP ${runsRes.status}`);
+    const [recordsData, runsData] = await Promise.all([recordsRes.json(), runsRes.json()]);
+    setRecords(recordsData || {
+      best0to100: null, topSpeed: null, highestRpm: null, longestDrive: null,
+      totalDrivingTime: 0, totalDrives: 0
+    });
+    setRuns(Array.isArray(runsData) ? runsData : []);
   };
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
-  }, [activeVehicleId, buildUrl]);
+  useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
 
-  // Format line chart data
-  const chartData = [...runs]
+  // Format line chart data only when the source data changes.
+  const chartData = useMemo(() => [...runs]
     .reverse()
     .map(r => ({
       date: new Date(r.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
       time: r.accelTime,
       runId: r.id
-    }));
+    })), [runs]);
 
   return (
     <div style={styles.container}>

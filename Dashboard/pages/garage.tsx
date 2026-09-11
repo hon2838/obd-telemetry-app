@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import Head from 'next/head';
 import { Car, Plus, Trash2, Edit3, Check, ShieldAlert, Activity, Fuel, Wrench } from 'lucide-react';
 import { useVehicle, Vehicle } from '../context/VehicleContext';
-import { API_HOST } from '../api';
+import { apiFetch } from '../api';
 
 export default function Garage() {
   const { vehicles, activeVehicleId, selectVehicle, refreshVehicles } = useVehicle();
@@ -51,7 +51,7 @@ export default function Garage() {
         payload.vehicleId = formId.trim();
       }
 
-      const res = await fetch(`${API_HOST}/api/vehicles`, {
+      const res = await apiFetch('/api/vehicles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -85,7 +85,7 @@ export default function Garage() {
         tankLitres: Number(formTank) || 36,
       };
 
-      const res = await fetch(`${API_HOST}/api/vehicles/${editingVehicle.id}`, {
+      const res = await apiFetch(`/api/vehicles/${editingVehicle.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -112,7 +112,7 @@ export default function Garage() {
 
     try {
       const query = reassignTarget ? `?reassign=${encodeURIComponent(reassignTarget)}` : '';
-      const res = await fetch(`${API_HOST}/api/vehicles/${deletingVehicle.id}${query}`, {
+      const res = await apiFetch(`/api/vehicles/${deletingVehicle.id}${query}`, {
         method: 'DELETE',
       });
 
