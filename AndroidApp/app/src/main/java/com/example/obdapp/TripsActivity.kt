@@ -41,6 +41,7 @@ class TripsActivity : AppCompatActivity() {
             try {
                 val conn = URL("$base/api/drives?vehicle=$vid").openConnection() as HttpURLConnection
                 conn.connectTimeout = 8000
+                conn.readTimeout = 15000
                 applyAuthHeader(conn, this@TripsActivity)
                 val arr = org.json.JSONArray(conn.inputStream.bufferedReader().readText())
 

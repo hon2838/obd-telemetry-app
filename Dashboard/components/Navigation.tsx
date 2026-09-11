@@ -3,13 +3,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { Activity, Clock, Fuel, Navigation as NavIcon, AlertCircle, Wrench, Car, ChevronDown, Check, Plus, Shield, Radio } from 'lucide-react';
 import { useVehicle } from '../context/VehicleContext';
-import { API_HOST } from '../api';
+import { useAuth } from '../context/AuthContext';
 
 export default function Navigation() {
   const router = useRouter();
   const { vehicles, activeVehicleId, selectVehicle } = useVehicle();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const { profile, logout } = useAuth();
+  const mustChangePassword = !!profile?.mustChangePassword;
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const navItems = [
@@ -23,22 +24,6 @@ export default function Navigation() {
     { name: 'Pair Car (QR/PIN)', href: '/pair', icon: Radio },
     { name: 'Account & Security', href: '/account', icon: Shield },
   ];
-
-  // Check account security status
-  useEffect(() => {
-    let isMounted = true;
-    async function checkAccountStatus() {
-      try {
-        const res = await fetch(`${API_HOST}/api/auth/me`);
-        if (res.ok && isMounted) {
-          const data = await res.json();
-          setMustChangePassword(!!data.mustChangePassword);
-        }
-      } catch (_e) {}
-    }
-    checkAccountStatus();
-    return () => { isMounted = false; };
-  }, [router.pathname]);
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -235,6 +220,10 @@ export default function Navigation() {
             </Link>
           );
         })}
+        <button type="button" className="nav-item nav-logout" onClick={() => logout()}>
+          <Shield size={18} />
+          <span>Sign out</span>
+        </button>
       </div>
     </nav>
   );

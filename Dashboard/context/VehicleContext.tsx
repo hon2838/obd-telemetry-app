@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { API_HOST } from '../api';
+import { API_HOST, apiFetch } from '../api';
 
 export interface Vehicle {
   id: string;
@@ -46,7 +46,7 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const fetchVehicles = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_HOST}/api/vehicles`);
+      const res = await apiFetch(`${API_HOST}/api/vehicles`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: Vehicle[] = await res.json();
       setVehicles(data);

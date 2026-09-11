@@ -68,6 +68,274 @@ if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true })
 }
 
+// ----- Durable multi-file transactions ------------------------------------
+//
+// Sequential candidate persists are not atomic: a crash or a failed rename
+// halfway through a vehicle reassignment leaves some files moved and others
+// not, and memory disagreeing with disk (verified with an injected rename
+// failure: HTTP 503 while telemetry on disk had already moved). Candidate
+// snapshots alone cannot fix this; every multi-file mutation below goes
+// through a write-ahead journal instead:
+//
+//   PREPARED   journal + fully-fsynced staging files are durable before any
+//              final path is touched.
+//   COMMITTING journal is durably flipped before the first staging->final
+//              rename, so a crash mid-commit is always recoverable.
+//   recovery   runs synchronously at startup BEFORE any store is loaded:
+//              PREPARED  -> delete staging, drop journal (rollback, nothing
+//                           committed); COMMITTING -> rename every remaining
+//                           staging file to its final path (roll forward,
+//                           idempotent: a staging file that already renamed
+//                           away counts as done). Any recovery failure throws
+//                           during module load so the server fails closed
+//                           instead of serving a half-committed data dir.
+//
+// All request handlers that persist funnel through serializeMutation (see
+// below) and await their writes, so no unrelated persist can interleave a
+// synchronous transaction. Single-file mutations keep using persist().
+const TXN_JOURNAL_PATH = path.join(DB_DIR, 'txn_journal.json')
+
+let isServerPoisoned = false
+let serverPoisonError = null
+
+function poisonServer(err) {
+  isServerPoisoned = true
+  serverPoisonError = err
+  fastify.log.error(`FATAL: Server process poisoned: ${err?.message || err}`)
+}
+
+function _resetPoisonStateForTesting() {
+  isServerPoisoned = false
+  serverPoisonError = null
+}
+
+function isPoisoned() {
+  return isServerPoisoned
+}
+
+fastify.addHook('onRequest', async (request, reply) => {
+  if (isServerPoisoned) {
+    return reply.status(503).send({
+      error: 'Server process is poisoned due to a critical persistence failure; restart required',
+      poisoned: true,
+      retryable: false
+    })
+  }
+})
+
+function fsyncFileSync(filePath) {
+  const fd = fs.openSync(filePath, 'r')
+  try {
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+function fsyncDirSync(dirPath) {
+  try {
+    const fd = fs.openSync(dirPath, 'r')
+    try {
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch (err) {
+    if (process.platform === 'linux') {
+      throw err
+    }
+    // Best effort: some platforms cannot fsync a directory handle.
+  }
+}
+
+async function fsyncFile(filePath) {
+  const handle = await fs.promises.open(filePath, 'r')
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+async function fsyncDir(dirPath) {
+  try {
+    const handle = await fs.promises.open(dirPath, 'r')
+    try {
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+  } catch (err) {
+    if (process.platform === 'linux') {
+      throw err
+    }
+    // Best effort: some platforms cannot fsync a directory handle.
+  }
+}
+
+function atomicWriteSync(targetPath, data) {
+  const tmp = `${targetPath}.tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}`
+  let renamed = false
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 })
+    fsyncFileSync(tmp)
+    fs.renameSync(tmp, targetPath)
+    renamed = true
+    fsyncDirSync(path.dirname(targetPath))
+  } catch (err) {
+    if (!renamed) {
+      try { fs.unlinkSync(tmp) } catch (_) {}
+    } else {
+      poisonServer(new Error(`Failure occurred after rename of ${targetPath}: ${err.message}`))
+    }
+    throw err
+  }
+}
+
+function stagingPathFor(targetPath, txnId) {
+  return `${targetPath}.txn.${txnId}.tmp`
+}
+
+function isTxnStagingFile(name) {
+  return /\.txn\.txn_[^.]+\.tmp$/.test(name)
+}
+
+// Atomically commit a unit of file snapshots: entries is an array of
+// [absoluteTargetPath, data] pairs. Either every target is replaced or
+// none is; memory must only be updated after this returns. Throws the
+// original error after rolling back (staging failure) or leaving a
+// COMMITTING journal for startup roll-forward (commit failure).
+function runFileTransactionSync(entries) {
+  if (isServerPoisoned) {
+    throw (serverPoisonError || new Error('Server is poisoned: refusing to run transaction'))
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return
+  if (fs.existsSync(TXN_JOURNAL_PATH)) {
+    const err = new Error(`Cannot start transaction: unresolved journal already exists at ${TXN_JOURNAL_PATH}`)
+    poisonServer(err)
+    throw err
+  }
+  const txnId = `txn_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`
+  const staging = entries.map(([target]) => stagingPathFor(target, txnId))
+  const journal = {
+    id: txnId,
+    state: 'PREPARED',
+    files: entries.map(([target]) => target),
+    createdAt: Date.now()
+  }
+  const cleanupStaging = () => {
+    for (const tmp of staging) {
+      try { fs.unlinkSync(tmp) } catch (_) {}
+    }
+  }
+  // Phase 1: durable intent + staged snapshots; no final path touched.
+  try {
+    atomicWriteSync(TXN_JOURNAL_PATH, journal)
+    entries.forEach(([, data], index) => atomicWriteSync(staging[index], data))
+  } catch (err) {
+    cleanupStaging()
+    try { fs.unlinkSync(TXN_JOURNAL_PATH) } catch (_) {}
+    throw err
+  }
+  // Phase 2: flip to COMMITTING durably, then rename each staging file.
+  // Recovery rolls forward from this journal, so a crash here is safe.
+  try {
+    atomicWriteSync(TXN_JOURNAL_PATH, { ...journal, state: 'COMMITTING' })
+  } catch (err) {
+    let journalState = null
+    try {
+      journalState = JSON.parse(fs.readFileSync(TXN_JOURNAL_PATH, 'utf8')).state
+    } catch (_) {}
+    if (journalState === 'COMMITTING') {
+      poisonServer(new Error(`Transaction ${txnId} entered COMMITTING state but failed: ${err.message}`))
+    } else {
+      cleanupStaging()
+      try { fs.unlinkSync(TXN_JOURNAL_PATH) } catch (_) {}
+    }
+    throw err
+  }
+
+  try {
+    for (let index = 0; index < staging.length; index++) {
+      fs.renameSync(staging[index], entries[index][0])
+      fsyncDirSync(DB_DIR)
+    }
+  } catch (err) {
+    poisonServer(new Error(`Transaction ${txnId} failed mid-commit: ${err.message}`))
+    throw err
+  }
+  try {
+    fs.unlinkSync(TXN_JOURNAL_PATH)
+    fsyncDirSync(DB_DIR)
+  } catch (err) {
+    poisonServer(new Error(`Transaction ${txnId} commit cleanup failed: ${err.message}`))
+    throw err
+  }
+}
+
+function recoverPendingTransactionsSync() {
+  // If a journal is present it owns its staging files: a PREPARED journal
+  // rolls back, a COMMITTING journal rolls forward. Only afterwards are
+  // leftover staging files (a crash before any journal was durable, or an
+  // older version without journals) safe to sweep as true orphans.
+  if (!fs.existsSync(TXN_JOURNAL_PATH)) {
+    sweepTxnOrphansSync();
+    return
+  }
+  let journal
+  try {
+    journal = JSON.parse(fs.readFileSync(TXN_JOURNAL_PATH, 'utf8'))
+  } catch (err) {
+    throw new Error(`Transaction recovery failed: corrupt journal, refusing to start: ${err.message}`)
+  }
+  if (!journal || typeof journal !== 'object' || typeof journal.id !== 'string' || !Array.isArray(journal.files)) {
+    throw new Error('Transaction recovery failed: malformed journal, refusing to start')
+  }
+  try {
+    if (journal.state === 'PREPARED') {
+      // Nothing committed: drop staging and the journal (rollback).
+      for (const target of journal.files) {
+        try { fs.unlinkSync(stagingPathFor(target, journal.id)) } catch (_) {}
+      }
+      fs.unlinkSync(TXN_JOURNAL_PATH)
+      fsyncDirSync(DB_DIR)
+    } else if (journal.state === 'COMMITTING') {
+      // Roll forward: every file reaches its staged content. A staging
+      // file that already renamed away counts as done (idempotent).
+      for (const target of journal.files) {
+        const staging = stagingPathFor(target, journal.id)
+        if (fs.existsSync(staging)) {
+          fs.renameSync(staging, target)
+        } else if (!fs.existsSync(target)) {
+          throw new Error(`missing both staging and final for ${target}`)
+        }
+      }
+      fs.unlinkSync(TXN_JOURNAL_PATH)
+      fsyncDirSync(DB_DIR)
+    } else {
+      throw new Error(`unknown journal state: ${journal.state}`)
+    }
+  } catch (err) {
+    throw new Error(`Transaction recovery failed, refusing to start: ${err.message}`)
+  }
+  sweepTxnOrphansSync()
+}
+
+function sweepTxnOrphansSync() {
+  try {
+    for (const name of fs.readdirSync(DB_DIR)) {
+      if (isTxnStagingFile(name)) {
+        try { fs.unlinkSync(path.join(DB_DIR, name)) } catch (_) {}
+      }
+    }
+  } catch (err) {
+    throw new Error(`Transaction recovery failed: cannot scan data dir: ${err.message}`)
+  }
+}
+
+// Recovery MUST run before any store file is read into memory.
+recoverPendingTransactionsSync()
+
 // Load existing telemetry data or start fresh
 let telemetryDataStore = []
 if (fs.existsSync(DB_PATH)) {
@@ -191,31 +459,92 @@ const _writeChains = new Map();
 fastify.addHook('onClose', async () => {
   await Promise.allSettled([..._writeChains.values()]);
 });
-function persist(path, data) {
-  const prev = _writeChains.get(path) || Promise.resolve();
-  const next = prev
-    .then(async () => {
-      const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
-      await fs.promises.writeFile(tmp, JSON.stringify(data, null, 2));
-      await fs.promises.rename(tmp, path);
-    })
-    .catch(err => {
-      fastify.log.error(`Failed to persist ${path}: ${err}`);
-    });
-  _writeChains.set(path, next);
-  return next;
+function persist(targetPath, data) {
+  if (isServerPoisoned) {
+    return Promise.reject(serverPoisonError || new Error('Server is poisoned: refusing to persist'))
+  }
+  const prev = _writeChains.get(targetPath) || Promise.resolve()
+  const snapshot = JSON.stringify(data, null, 2)
+  // A failed write must remain visible to the caller. The snapshot is taken
+  // before queuing so later in-memory mutations cannot alter this write.
+  const next = prev.catch(() => {}).then(async () => {
+    if (isServerPoisoned) {
+      throw (serverPoisonError || new Error('Server is poisoned: refusing to persist'))
+    }
+    const tmp = `${targetPath}.tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}`
+    let renamed = false
+    try {
+      await fs.promises.writeFile(tmp, snapshot, { mode: 0o600 })
+      await fsyncFile(tmp)
+      await fs.promises.rename(tmp, targetPath)
+      renamed = true
+      await fsyncDir(path.dirname(targetPath))
+    } catch (err) {
+      if (!renamed) {
+        try { await fs.promises.unlink(tmp) } catch (_) {}
+      } else {
+        poisonServer(new Error(`Failure occurred after rename of ${targetPath}: ${err.message}`))
+      }
+      fastify.log.error(`Failed to persist ${targetPath}: ${err}`)
+      throw err
+    }
+  })
+  _writeChains.set(targetPath, next.catch(() => {}))
+  return next
 }
 
-function persistStartupMigration(path, data) {
-  const backupPath = fs.existsSync(path) ? `${path}.bak.${Date.now()}` : null
-  const tmpPath = `${path}.tmp.${process.pid}.${Date.now()}`
+// All store mutations that participate in a request are serialized.  This
+// protects the validate -> persist candidate -> commit sequence from racing
+// another request that is using the same resource.
+let mutationTail = Promise.resolve()
+function serializeMutation(operation) {
+  if (isServerPoisoned) {
+    return Promise.reject(serverPoisonError || new Error('Server is poisoned: refusing to execute mutation'))
+  }
+  const run = mutationTail.then(
+    () => {
+      if (isServerPoisoned) {
+        throw (serverPoisonError || new Error('Server is poisoned: refusing to execute mutation'))
+      }
+      return operation()
+    },
+    () => {
+      if (isServerPoisoned) {
+        throw (serverPoisonError || new Error('Server is poisoned: refusing to execute mutation'))
+      }
+      return operation()
+    }
+  )
+  mutationTail = run.catch(() => {})
+  return run
+}
 
-  if (backupPath) fs.copyFileSync(path, backupPath)
+function retryablePersistenceError(reply, request, err) {
+  request.log.error(err)
+  return reply.status(503).send({
+    error: 'Persistence failed; retry the request',
+    retryable: true
+  })
+}
+
+function persistStartupMigration(targetPath, data) {
+  const backupPath = fs.existsSync(targetPath) ? `${targetPath}.bak.${Date.now()}` : null
+  const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}`
+
+  if (backupPath) fs.copyFileSync(targetPath, backupPath)
+  let renamed = false
   try {
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 })
-    fs.renameSync(tmpPath, path)
+    fsyncFileSync(tmpPath)
+    fs.renameSync(tmpPath, targetPath)
+    renamed = true
+    fsyncDirSync(path.dirname(targetPath))
   } catch (err) {
-    try { fs.unlinkSync(tmpPath) } catch (_) {}
+    if (!renamed) {
+      try { fs.unlinkSync(tmpPath) } catch (_) {}
+    } else {
+      poisonServer(new Error(`Failure occurred after rename of ${targetPath}: ${err.message}`))
+    }
     throw err
   }
 }
@@ -229,7 +558,9 @@ const saveVehicles = () => persist(VEHICLES_PATH, vehiclesStore)
 function ensureDefaultVehicle() {
   if (!vehiclesStore.some(v => v.id === DEFAULT_VEHICLE_ID)) {
     vehiclesStore.push({ id: DEFAULT_VEHICLE_ID, name: 'Default Vehicle', createdAt: Date.now() })
-    persist(VEHICLES_PATH, vehiclesStore)
+    // Startup migrations are synchronous so a failed configuration write
+    // prevents the process from serving with an unpersisted registry.
+    persistStartupMigration(VEHICLES_PATH, vehiclesStore)
   }
 }
 ensureDefaultVehicle()
@@ -251,6 +582,71 @@ stampLegacyVehicleIds(telemetryDataStore)
 stampLegacyVehicleIds(fuelLogsStore)
 stampLegacyVehicleIds(maintenanceStore)
 stampLegacyVehicleIds(dtcHistoryStore)
+
+// Durable telemetry change-log sequence. Existing rows are assigned stable
+// sequences in file order; new rows always receive the next server sequence.
+let nextIngestSeq = 0
+let telemetryMigrationNeeded = false
+const assignedSequences = new Set()
+for (const record of telemetryDataStore) {
+  if (!Number.isInteger(record.ingestSeq) || record.ingestSeq <= 0 || assignedSequences.has(record.ingestSeq)) {
+    record.ingestSeq = 0
+    telemetryMigrationNeeded = true
+  } else {
+    assignedSequences.add(record.ingestSeq)
+    nextIngestSeq = Math.max(nextIngestSeq, record.ingestSeq)
+  }
+}
+for (const record of telemetryDataStore) {
+  if (record.ingestSeq === 0) {
+    record.ingestSeq = ++nextIngestSeq
+    assignedSequences.add(record.ingestSeq)
+  }
+}
+if (telemetryMigrationNeeded) {
+  // persistStartupMigration makes a backup before rewriting legacy data.
+  persistStartupMigration(DB_PATH, telemetryDataStore)
+}
+
+let telemetryRevision = 0
+let vehicleRevision = 0
+const latestCaptureCache = new Map()
+const tripSummaryCache = new Map()
+function invalidateAnalyticsCaches({ telemetry = false, vehicles = false } = {}) {
+  if (telemetry) telemetryRevision++
+  if (vehicles) vehicleRevision++
+  latestCaptureCache.clear()
+  tripSummaryCache.clear()
+}
+
+function eventIdOf(record) {
+  return typeof record?.eventId === 'string' && record.eventId.length > 0 ? record.eventId : null
+}
+function validateEventId(record) {
+  return record.eventId === undefined || (typeof record.eventId === 'string' && record.eventId.length >= 1 && record.eventId.length <= 256)
+}
+function replaceArrayContents(target, values) {
+  target.splice(0, target.length, ...values)
+}
+function classifyEventIds(store, records) {
+  const seen = new Set()
+  const accepted = []
+  const duplicate = []
+  for (const record of store) {
+    const eventId = eventIdOf(record)
+    if (eventId) seen.add(`${record.vehicleId || DEFAULT_VEHICLE_ID}\u0000${eventId}`)
+  }
+  for (const record of records) {
+    const eventId = eventIdOf(record)
+    const key = eventId && `${record.vehicleId || DEFAULT_VEHICLE_ID}\u0000${eventId}`
+    if (eventId && seen.has(key)) duplicate.push(eventId)
+    else {
+      accepted.push(record)
+      if (eventId) seen.add(key)
+    }
+  }
+  return { accepted, duplicate }
+}
 
 // Resolve the vehicle scope for a read request: undefined/null means
 // "all vehicles" (combined view, the pre-multicar behavior the dashboard
@@ -421,7 +817,9 @@ function migrateDeviceTokensAtRest() {
     }
   }
   if (mutated) {
-    persist(DEVICES_PATH, devicesStore)
+    // This is a startup migration: fail closed rather than serving with
+    // credentials transformed only in memory.
+    persistStartupMigration(DEVICES_PATH, devicesStore)
   }
 }
 migrateDeviceTokensAtRest()
@@ -429,6 +827,51 @@ migrateDeviceTokensAtRest()
 const sessionsStore = new Map()
 const pendingPairingsByToken = new Map()
 const pendingPairingsByCode = new Map()
+const SESSION_COOKIE = 'obd_session'
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000
+
+function parseCookies(header) {
+  const cookies = {}
+  if (typeof header !== 'string') return cookies
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=')
+    if (index <= 0) continue
+    const key = part.slice(0, index).trim()
+    try { cookies[key] = decodeURIComponent(part.slice(index + 1).trim()) } catch (_) {}
+  }
+  return cookies
+}
+function sessionCookie(token, maxAge = 24 * 60 * 60) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : ''
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`
+}
+function setSessionCookie(reply, token) {
+  reply.header('Set-Cookie', sessionCookie(token))
+}
+function clearSessionCookie(reply) {
+  reply.header('Set-Cookie', sessionCookie('', 0))
+}
+function publicUser(user, userVehicles) {
+  const role = user.role || ((user.username === 'admin' || user.id === 'usr-admin') ? 'admin' : 'user')
+  return {
+    id: user.id,
+    username: user.username,
+    role,
+    mustChangePassword: !!user.mustChangePassword,
+    vehicles: userVehicles
+  }
+}
+function newSession(fields) {
+  const token = `sess_${crypto.randomBytes(32).toString('hex')}`
+  const session = {
+    ...fields,
+    csrfToken: crypto.randomBytes(32).toString('hex'),
+    createdAt: Date.now(),
+    expiresAt: Date.now() + SESSION_TTL_MS
+  }
+  sessionsStore.set(token, session)
+  return { token, session }
+}
 
 // Clean up expired pairings every minute
 function cleanExpiredPairings() {
@@ -476,16 +919,22 @@ async function authenticateRequest(request) {
   // 1. Master API key check (X-API-Key)
   const apiKey = request.headers['x-api-key']
   if (apiKey) {
-    if (constantTimeEquals(apiKey, OBD_API_KEY)) return { type: 'master' }
+    if (constantTimeEquals(apiKey, OBD_API_KEY)) return { type: 'master', via: 'api-key' }
     return null
   }
 
-  // 2. Device token check (X-Device-Token or Bearer obd_dev_...)
+  // 2. Device token, bearer session, or browser session cookie.
   const devTokenHeader = request.headers['x-device-token']
   const authHeader = request.headers['authorization']
+  const cookies = parseCookies(request.headers.cookie)
   let token = devTokenHeader
+  let viaCookie = false
   if (!token && authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.slice(7).trim()
+  }
+  if (!token && cookies[SESSION_COOKIE]) {
+    token = cookies[SESSION_COOKIE]
+    viaCookie = true
   }
 
   if (token) {
@@ -503,9 +952,9 @@ async function authenticateRequest(request) {
     } else {
       const session = sessionsStore.get(token)
       if (session && session.expiresAt && session.expiresAt > Date.now()) {
-        if (session.type === 'master') return { type: 'master' }
+        if (session.type === 'master') return { type: 'master', via: viaCookie ? 'cookie' : 'bearer', session }
         const user = usersStore.find(u => u.id === session.userId)
-        if (user) return { type: 'user', user }
+        if (user) return { type: 'user', user, via: viaCookie ? 'cookie' : 'bearer', session }
       }
       return null
     }
@@ -914,6 +1363,29 @@ function segmentDrives(vehicleFilter = null) {
   });
 }
 
+function authCacheScope(auth) {
+  if (!auth) return 'anonymous'
+  if (isAdmin(auth)) return 'admin'
+  if (auth.type === 'device') return `device:${auth.vehicleId}`
+  return `user:${auth.user?.id || 'unknown'}:${(vehicleScope(auth) || []).slice().sort().join(',')}`
+}
+function cachedDrives(vehicleId, auth) {
+  const scope = vehicleId || (vehicleScope(auth) || []).slice().sort().join(',') || 'all'
+  const key = `${authCacheScope(auth)}|${scope}|${telemetryRevision}|${vehicleRevision}`
+  if (!tripSummaryCache.has(key)) {
+    tripSummaryCache.set(key, segmentDrives(vehicleId || vehicleScope(auth)))
+  }
+  return tripSummaryCache.get(key)
+}
+function latestCapture(vehicleId, auth) {
+  const key = `${authCacheScope(auth)}|${vehicleId || 'all'}|${telemetryRevision}`
+  if (!latestCaptureCache.has(key)) {
+    const records = filterRecordsByScope(telemetryDataStore, auth, vehicleId)
+    latestCaptureCache.set(key, records.reduce((latest, record) =>
+      !latest || Number(record.timestamp) > Number(latest.timestamp) ? record : latest, null))
+  }
+  return latestCaptureCache.get(key)
+}
 
 function getMaintenanceItems(vehicleId = null, auth = null) {
   const scopedLogs = filterRecordsByScope(fuelLogsStore, auth, vehicleId);
@@ -1062,6 +1534,7 @@ const telemetryRecordSchema = {
   properties: {
     timestamp: { type: 'number' },
     vehicleId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
+    eventId: { type: 'string', minLength: 1, maxLength: 256 },
     rpm: { type: ['number', 'null'] },
     speed: { type: ['number', 'null'] },
     coolantTemp: { type: ['number', 'null'] },
@@ -1100,23 +1573,23 @@ fastify.post('/api/telemetry/batch', {
     }
   }
 }, async (request, reply) => {
-  try {
-    const auth = request.auth;
-    const payload = request.body;
-
-    // Reject batches that reference an unknown vehicle rather than
-    // silently re-homing them into the default vehicle — a typo'd
-    // vehicleId would otherwise split one car's history in two.
-    for (const record of payload) {
-      if (record.vehicleId !== undefined && !vehicleExists(record.vehicleId)) {
-        return reply.status(400).send({ error: `Unknown vehicleId: ${record.vehicleId}` });
+  const payload = request.body;
+  return serializeMutation(async () => {
+    try {
+      // Validate the entire batch before preparing any candidate state.
+      for (const record of payload) {
+        if (record.vehicleId !== undefined && !vehicleExists(record.vehicleId)) {
+          return reply.status(400).send({ error: `Unknown vehicleId: ${record.vehicleId}` });
+        }
       }
-    }
 
-    payload.forEach(record => {
-      telemetryDataStore.push({
+      if (payload.some(record => Object.prototype.hasOwnProperty.call(record, 'ingestSeq'))) {
+        return reply.status(400).send({ error: 'ingestSeq is server-assigned and must not be supplied' });
+      }
+      const normalized = payload.map(record => ({
         timestamp: record.timestamp,
         vehicleId: record.vehicleId || DEFAULT_VEHICLE_ID,
+        ...(record.eventId !== undefined ? { eventId: record.eventId } : {}),
         rpm: record.rpm,
         speed: record.speed,
         coolantTemp: record.coolantTemp,
@@ -1138,35 +1611,46 @@ fastify.post('/api/telemetry/batch', {
         wifiSsid: record.wifiSsid,
         btConnected: record.btConnected,
         receivedAt: Date.now()
+      }));
+      const classified = classifyEventIds(telemetryDataStore, normalized);
+      const accepted = classified.accepted.map((record, index) => ({
+        ...record,
+        ingestSeq: nextIngestSeq + index + 1
+      }));
+      const acceptedIds = accepted.flatMap(record => eventIdOf(record) ? [eventIdOf(record)] : []);
+      const duplicateIds = classified.duplicate;
+      const candidate = telemetryDataStore.concat(accepted);
+
+      const batchVehicles = new Set(normalized.map(r => r.vehicleId));
+      const commandsToSend = pendingCommands.filter(c => batchVehicles.has(c.vehicleId));
+      const remainingCommands = pendingCommands.filter(c => !batchVehicles.has(c.vehicleId));
+
+      // Telemetry rows and the command-queue drain commit as one
+      // transaction so a failed write leaves both the store and dedupe
+      // state untouched and is explicitly retryable.
+      const ingestEntries = [[DB_PATH, candidate]];
+      if (commandsToSend.length !== 0) ingestEntries.push([COMMANDS_QUEUE_PATH, remainingCommands]);
+      runFileTransactionSync(ingestEntries);
+      telemetryDataStore.push(...accepted);
+      nextIngestSeq += accepted.length;
+      invalidateAnalyticsCaches({ telemetry: accepted.length > 0 });
+
+      if (commandsToSend.length !== 0) {
+        pendingCommands = remainingCommands;
+      }
+      const commandStrings = commandsToSend.map(c => (typeof c === 'string') ? c : c.command);
+
+      return reply.status(201).send({
+        success: true,
+        message: `Ingested ${accepted.length} records successfully.`,
+        acceptedIds,
+        duplicateIds,
+        commands: commandStrings
       });
-    });
-
-    saveToDisk();
-
-    // Pull queued commands for the vehicle(s) in this batch and
-    // clear only those. Persist the remaining queue so a crash
-    // between this filter and the response doesn't leave a
-    // phantom command (which would get re-sent to the next head
-    // unit that syncs) — and so other vehicles' commands survive.
-    const batchVehicles = new Set(payload.map(r => r.vehicleId || DEFAULT_VEHICLE_ID));
-    const commandsToSend = pendingCommands.filter(c => batchVehicles.has(c.vehicleId));
-    pendingCommands = pendingCommands.filter(c => !batchVehicles.has(c.vehicleId));
-    persist(COMMANDS_QUEUE_PATH, pendingCommands);
-    // Wire format stays plain strings (legacy head units parse
-    // commands[i] as a string); vehicle routing already happened
-    // via batchVehicles, so the id adds nothing for the client.
-    const commandStrings = commandsToSend.map(c => (typeof c === 'string') ? c : c.command);
-
-    return reply.status(201).send({
-      success: true,
-      message: `Ingested ${payload.length} records successfully.`,
-      commands: commandStrings
-    });
-
-  } catch (err) {
-    request.log.error(err)
-    return reply.status(500).send({ error: 'Internal Server Error' })
-  }
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
+  });
 })
 
 // Queue diagnostic command from Dashboard
@@ -1200,20 +1684,27 @@ fastify.post('/api/commands', {
   if (!command || (command !== 'read_dtc' && command !== 'clear_dtc')) {
     return reply.status(400).send({ error: 'Invalid command. Must be read_dtc or clear_dtc' });
   }
-  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
-    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
-  }
-  if (pendingCommands.length >= MAX_PENDING_COMMANDS) {
-    return reply.status(429).send({
-      error: 'Command queue is full. The head unit will drain it on next sync; retry shortly.',
-      queue_size: pendingCommands.length,
-    });
-  }
-  pendingCommands.push({ command, vehicleId: vehicleId || DEFAULT_VEHICLE_ID });
-  // Persist the queue so a restart doesn't drop this command.
-  // We await so the response reflects the on-disk state.
-  await persist(COMMANDS_QUEUE_PATH, pendingCommands);
-  return reply.send({ success: true, message: `Command ${command} queued.`, queue_size: pendingCommands.length });
+  const targetVehicleId = vehicleId || DEFAULT_VEHICLE_ID;
+
+  return serializeMutation(async () => {
+    if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
+      return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
+    }
+    if (pendingCommands.length >= MAX_PENDING_COMMANDS) {
+      return reply.status(429).send({
+        error: 'Command queue is full. The head unit will drain it on next sync; retry shortly.',
+        queue_size: pendingCommands.length,
+      });
+    }
+    const candidateQueue = pendingCommands.concat({ command, vehicleId: targetVehicleId });
+    try {
+      await persist(COMMANDS_QUEUE_PATH, candidateQueue);
+      pendingCommands = candidateQueue;
+      return reply.send({ success: true, message: `Command ${command} queued.`, queue_size: pendingCommands.length });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
+  });
 })
 
 // Handler to ingest DTC reads
@@ -1226,26 +1717,33 @@ const handleDtcPost = async (request, reply) => {
   const time = timestamp || Date.now();
   const rawCodeStr = dtc || "No trouble codes found";
 
-  const diag = getDiagnosticsFor(vid);
-  diag.latestDtc = {
-    code: rawCodeStr,
-    timestamp: time
-  };
-  saveDiagnostics();
-
-  // Add to history
-  const parsedCodes = parseDtcCodes(rawCodeStr);
-  dtcHistoryStore.push({
-    id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-    vehicleId: vid,
-    timestamp: time,
-    type: 'read',
-    codes: parsedCodes,
-    success: true
+  return serializeMutation(async () => {
+    try {
+      const nextDiagnostics = JSON.parse(JSON.stringify(diagnosticsStore));
+      if (!nextDiagnostics.byVehicle[vid]) {
+        nextDiagnostics.byVehicle[vid] = {
+          latestDtc: { code: '', timestamp: null },
+          latestClearStatus: { success: null, timestamp: null }
+        };
+      }
+      nextDiagnostics.byVehicle[vid].latestDtc = { code: rawCodeStr, timestamp: time };
+      const historyEntry = {
+        id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        vehicleId: vid,
+        timestamp: time,
+        type: 'read',
+        codes: parseDtcCodes(rawCodeStr),
+        success: true
+      };
+      const nextHistory = dtcHistoryStore.concat(historyEntry);
+      runFileTransactionSync([[DIAG_PATH, nextDiagnostics], [DTC_HIST_PATH, nextHistory]]);
+      diagnosticsStore = nextDiagnostics;
+      dtcHistoryStore.push(historyEntry);
+      return reply.send({ success: true });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
   });
-  saveDtcHistory();
-
-  return reply.send({ success: true });
 };
 fastify.post('/api/telemetry/dtc', handleDtcPost);
 fastify.post('/api/dtc', handleDtcPost);
@@ -1260,25 +1758,33 @@ const handleDtcClearPost = async (request, reply) => {
   const time = timestamp || Date.now();
   const clearSuccess = success ?? false;
 
-  const diag = getDiagnosticsFor(vid);
-  diag.latestClearStatus = {
-    success: clearSuccess,
-    timestamp: time
-  };
-  saveDiagnostics();
-
-  // Add to history
-  dtcHistoryStore.push({
-    id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-    vehicleId: vid,
-    timestamp: time,
-    type: 'clear',
-    codes: [],
-    success: clearSuccess
+  return serializeMutation(async () => {
+    try {
+      const nextDiagnostics = JSON.parse(JSON.stringify(diagnosticsStore));
+      if (!nextDiagnostics.byVehicle[vid]) {
+        nextDiagnostics.byVehicle[vid] = {
+          latestDtc: { code: '', timestamp: null },
+          latestClearStatus: { success: null, timestamp: null }
+        };
+      }
+      nextDiagnostics.byVehicle[vid].latestClearStatus = { success: clearSuccess, timestamp: time };
+      const historyEntry = {
+        id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        vehicleId: vid,
+        timestamp: time,
+        type: 'clear',
+        codes: [],
+        success: clearSuccess
+      };
+      const nextHistory = dtcHistoryStore.concat(historyEntry);
+      runFileTransactionSync([[DIAG_PATH, nextDiagnostics], [DTC_HIST_PATH, nextHistory]]);
+      diagnosticsStore = nextDiagnostics;
+      dtcHistoryStore.push(historyEntry);
+      return reply.send({ success: true });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
   });
-  saveDtcHistory();
-
-  return reply.send({ success: true });
 };
 fastify.post('/api/telemetry/dtc/clear', handleDtcClearPost);
 fastify.post('/api/dtc/clear', handleDtcClearPost);
@@ -1340,7 +1846,7 @@ fastify.get('/api/performance/runs', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const drives = segmentDrives(vehicle || vehicleScope(request.auth));
+  const drives = cachedDrives(vehicle, request.auth);
   const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
   const sortedRuns = scopedStore
     .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0)
@@ -1372,7 +1878,7 @@ fastify.get('/api/performance/records', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
-  const drives = segmentDrives(vehicle || vehicleScope(request.auth));
+  const drives = cachedDrives(vehicle, request.auth);
   const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
 
   const findDrive = (record) => {
@@ -1543,7 +2049,7 @@ fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
 fastify.get('/api/drives', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  const formattedDrives = segmentDrives(vehicle || vehicleScope(request.auth));
+  const formattedDrives = cachedDrives(vehicle, request.auth);
   return reply.send([...formattedDrives].reverse()); // Newest drives first
 })
 
@@ -1551,7 +2057,7 @@ fastify.get('/api/drives', async (request, reply) => {
 fastify.get('/api/trips/leaderboard', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  const drives = segmentDrives(vehicle || vehicleScope(request.auth));
+  const drives = cachedDrives(vehicle, request.auth);
   if (drives.length === 0) {
     return reply.send({
       best_efficiency: [],
@@ -1617,64 +2123,96 @@ fastify.get('/api/telemetry/history', async (request, reply) => {
   return reply.send(records.slice(-cap));
 })
 
-// Lightweight single-record endpoint for dashboard live polling
+// Lightweight single-record endpoint for dashboard live polling. Capture time,
+// not array order, defines "latest" so a late-arriving sample is handled correctly.
 fastify.get('/api/telemetry/latest', async (request, reply) => {
   const vehicle = resolveVehicleQuery(request.query);
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+  return reply.send(latestCapture(vehicle, request.auth));
+})
 
-  const records = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
-  const latest = records[records.length - 1];
-  return reply.send(latest !== undefined ? latest : null);
+// Incremental change feed. The cursor is a server ingest sequence, not a
+// client-supplied sequence. Filtering happens while scanning, so an
+// unauthorized record advances the scan but is never returned.
+fastify.get('/api/telemetry/changes', async (request, reply) => {
+  const rawCursor = request.query?.cursor === undefined ? '0' : String(request.query.cursor)
+  const rawLimit = request.query?.limit === undefined ? '100' : String(request.query.limit)
+  if (!/^\d+$/.test(rawCursor) || !/^\d+$/.test(rawLimit)) {
+    return reply.status(400).send({ error: 'cursor and limit must be nonnegative integers' })
+  }
+  const cursor = Number(rawCursor)
+  const limit = Number(rawLimit)
+  if (!Number.isSafeInteger(cursor) || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+    return reply.status(400).send({ error: 'limit must be between 1 and 1000' })
+  }
+  const vehicle = resolveVehicleQuery(request.query)
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
+  const scoped = record => filterRecordsByScope([record], request.auth, vehicle).length > 0
+  const ordered = [...telemetryDataStore].sort((a, b) => a.ingestSeq - b.ingestSeq)
+  const records = []
+  let nextCursor = cursor
+  let index = 0
+  for (; index < ordered.length; index++) {
+    const record = ordered[index]
+    if (record.ingestSeq <= cursor) continue
+    nextCursor = record.ingestSeq
+    if (scoped(record)) records.push(record)
+    if (records.length >= limit) { index++; break }
+  }
+  const hasMore = index < ordered.length
+  return reply.send({ records, nextCursor, hasMore })
 })
 
 // POST /api/fuel-logs - Add one or more fuel log entries
 fastify.post('/api/fuel-logs', async (request, reply) => {
-  try {
-    const auth = request.auth;
-    const payload = request.body;
-    if (!payload) {
-      return reply.status(400).send({ error: 'Missing request body' });
-    }
+  const auth = request.auth;
+  const payload = request.body;
+  if (!payload) return reply.status(400).send({ error: 'Missing request body' });
+  const logsToAdd = Array.isArray(payload) ? payload : [payload];
 
-    const logsToAdd = Array.isArray(payload) ? payload : [payload];
-    let addedCount = 0;
-
-    // Validate every referenced vehicle before writing anything so a
-    // batch with a bad vehicleId fails atomically, not halfway.
-    for (const item of logsToAdd) {
-      if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
-        return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
-      }
-    }
-
-    logsToAdd.forEach((item, index) => {
-      const litres = parseFloat(item.litres);
-      const odometer = parseFloat(item.odometer);
-      if (isNaN(litres) || isNaN(odometer)) {
-        return;
+  return serializeMutation(async () => {
+    try {
+      // Validate every row before mutation. Invalid rows are no longer
+      // silently dropped, which makes retry behavior deterministic.
+      for (const item of logsToAdd) {
+        if (!item || typeof item !== 'object' || !validateEventId(item)) {
+          return reply.status(400).send({ error: 'Invalid fuel log' });
+        }
+        if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
+          return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
+        }
+        const litres = Number(item.litres);
+        const odometer = Number(item.odometer);
+        if (!Number.isFinite(litres) || !Number.isFinite(odometer)) {
+          return reply.status(400).send({ error: 'litres and odometer must be numbers' });
+        }
       }
 
-      fuelLogsStore.push({
-        // Always generate a unique server ID since Android app is write-only for logs
-        // and its local auto-increment IDs will reset if app data is cleared
-        id: `${Date.now()}-${index}-${Math.floor(Math.random() * 10000)}`,
+      const normalized = logsToAdd.map((item, index) => ({
+        id: item.id || `${Date.now()}-${index}-${crypto.randomBytes(4).toString('hex')}`,
         vehicleId: item.vehicleId || (auth?.type === 'device' ? auth.vehicleId : DEFAULT_VEHICLE_ID),
-        timestamp: parseInt(item.timestamp) || Date.now(),
-        litres,
-        odometer,
+        ...(item.eventId !== undefined ? { eventId: item.eventId } : {}),
+        timestamp: Number.isFinite(Number(item.timestamp)) ? Number(item.timestamp) : Date.now(),
+        litres: Number(item.litres),
+        odometer: Number(item.odometer),
         source: item.source || (auth?.type === 'device' ? 'app' : 'web')
+      }));
+      const classified = classifyEventIds(fuelLogsStore, normalized);
+      const candidate = fuelLogsStore.concat(classified.accepted).sort((a, b) => b.timestamp - a.timestamp);
+      await persist(FUEL_PATH, candidate);
+      replaceArrayContents(fuelLogsStore, candidate);
+      invalidateAnalyticsCaches({ telemetry: classified.accepted.length > 0 });
+
+      return reply.status(201).send({
+        success: true,
+        message: `Added ${classified.accepted.length} fuel logs.`,
+        acceptedIds: classified.accepted.flatMap(item => eventIdOf(item) ? [eventIdOf(item)] : []),
+        duplicateIds: classified.duplicate
       });
-      addedCount++;
-    });
-
-    fuelLogsStore.sort((a, b) => b.timestamp - a.timestamp);
-    saveFuelLogs();
-
-    return reply.status(201).send({ success: true, message: `Added ${addedCount} fuel logs.` });
-  } catch (err) {
-    request.log.error(err);
-    return reply.status(500).send({ error: 'Internal Server Error' });
-  }
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
+  });
 });
 
 // GET /api/fuel-logs - Fetch all fuel log entries
@@ -1688,23 +2226,22 @@ fastify.get('/api/fuel-logs', async (request, reply) => {
 
 // DELETE /api/fuel-logs/:id - Delete a fuel log entry
 fastify.delete('/api/fuel-logs/:id', async (request, reply) => {
-  try {
-    const { id } = request.params;
-    const idNum = parseInt(id);
-    const initialLength = fuelLogsStore.length;
-
-    fuelLogsStore = fuelLogsStore.filter(log => log.id !== id && log.id !== idNum);
-
-    if (fuelLogsStore.length === initialLength) {
-      return reply.status(404).send({ error: 'Fuel log not found' });
+  const { id } = request.params;
+  const idNum = parseInt(id);
+  return serializeMutation(async () => {
+    try {
+      const candidate = fuelLogsStore.filter(log => log.id !== id && log.id !== idNum);
+      if (candidate.length === fuelLogsStore.length) {
+        return reply.status(404).send({ error: 'Fuel log not found' });
+      }
+      await persist(FUEL_PATH, candidate);
+      replaceArrayContents(fuelLogsStore, candidate);
+      invalidateAnalyticsCaches({ telemetry: true });
+      return reply.send({ success: true, message: 'Fuel log deleted successfully' });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
     }
-
-    saveFuelLogs();
-    return reply.send({ success: true, message: 'Fuel log deleted successfully' });
-  } catch (err) {
-    request.log.error(err);
-    return reply.status(500).send({ error: 'Internal Server Error' });
-  }
+  });
 });
 
 // GET /api/fuel-stats - Get calculated fuel stats (average km/L, total litres, total distance)
@@ -1775,114 +2312,117 @@ fastify.get('/api/maintenance', async (request, reply) => {
 
 // POST a new maintenance item
 fastify.post('/api/maintenance', async (request, reply) => {
-  try {
-    const auth = request.auth;
-    const payload = request.body || {};
-    const itemsToAdd = Array.isArray(payload) ? payload : [payload];
-    let addedCount = 0;
+  const auth = request.auth;
+  const payload = request.body || {};
+  const itemsToAdd = Array.isArray(payload) ? payload : [payload];
 
-    // Validate every referenced vehicle before writing anything so a
-    // batch with a bad vehicleId fails atomically, not halfway.
-    for (const item of itemsToAdd) {
-      if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
-        return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
+  return serializeMutation(async () => {
+    try {
+      for (const item of itemsToAdd) {
+        if (!item || typeof item !== 'object' || !item.name || !validateEventId(item)) {
+          return reply.status(400).send({ error: 'Each maintenance item requires a name' });
+        }
+        if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
+          return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
+        }
+        if (item.intervalKm !== undefined && item.intervalKm !== null && !Number.isFinite(Number(item.intervalKm))) {
+          return reply.status(400).send({ error: 'intervalKm must be a number' });
+        }
+        if (item.intervalDays !== undefined && item.intervalDays !== null && !Number.isFinite(Number(item.intervalDays))) {
+          return reply.status(400).send({ error: 'intervalDays must be a number' });
+        }
       }
-    }
 
-    itemsToAdd.forEach((item, index) => {
-      if (!item.name) return;
-
-      // Current odometer baseline comes from the item's own vehicle so
-      // a schedule created from car B never inherits car A's odometer.
-      const vid = item.vehicleId || (auth?.type === 'device' ? auth.vehicleId : DEFAULT_VEHICLE_ID);
-      const vehicleLogs = filterByVehicle(fuelLogsStore, vid);
-      const sortedLogs = [...vehicleLogs].sort((a, b) => b.odometer - a.odometer);
-      const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
-
-      const intervalKm = item.intervalKm ? parseFloat(item.intervalKm) : null;
-      const intervalDays = item.intervalDays ? parseInt(item.intervalDays) : null;
-      const lastServiceOdo = item.lastServiceOdo !== undefined && item.lastServiceOdo !== null ? parseFloat(item.lastServiceOdo) : currentOdometer;
-      const lastServiceDate = item.lastServiceDate !== undefined && item.lastServiceDate !== null ? parseInt(item.lastServiceDate) : Date.now();
-
-      maintenanceStore.push({
-        id: item.id || `${Date.now()}-${index}-${Math.floor(Math.random() * 10000)}`,
-        vehicleId: vid,
-        name: item.name,
-        intervalKm,
-        intervalDays,
-        lastServiceOdo,
-        lastServiceDate,
-        notes: item.notes || "",
-        createdAt: Date.now(),
-        updatedAt: Date.now()
+      const normalized = itemsToAdd.map((item, index) => {
+        const vid = item.vehicleId || (auth?.type === 'device' ? auth.vehicleId : DEFAULT_VEHICLE_ID);
+        const vehicleLogs = filterByVehicle(fuelLogsStore, vid);
+        const currentOdometer = vehicleLogs.length ? Math.max(...vehicleLogs.map(log => Number(log.odometer) || 0)) : 0;
+        return {
+          id: item.id || `${Date.now()}-${index}-${crypto.randomBytes(4).toString('hex')}`,
+          vehicleId: vid,
+          ...(item.eventId !== undefined ? { eventId: item.eventId } : {}),
+          name: item.name,
+          intervalKm: item.intervalKm ? Number(item.intervalKm) : null,
+          intervalDays: item.intervalDays ? Number(item.intervalDays) : null,
+          lastServiceOdo: item.lastServiceOdo !== undefined && item.lastServiceOdo !== null ? Number(item.lastServiceOdo) : currentOdometer,
+          lastServiceDate: item.lastServiceDate !== undefined && item.lastServiceDate !== null ? Number(item.lastServiceDate) : Date.now(),
+          notes: item.notes || '',
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
       });
-      addedCount++;
-    });
+      const classified = classifyEventIds(maintenanceStore, normalized);
+      const candidate = maintenanceStore.concat(classified.accepted);
+      await persist(MAINT_PATH, candidate);
+      replaceArrayContents(maintenanceStore, candidate);
+      invalidateAnalyticsCaches({ telemetry: classified.accepted.length > 0 });
 
-    saveMaintenance();
-    return reply.status(201).send({ success: true, message: `Added ${addedCount} maintenance items.` });
-  } catch (err) {
-    request.log.error(err);
-    return reply.status(500).send({ error: 'Internal Server Error' });
-  }
+      return reply.status(201).send({
+        success: true,
+        message: `Added ${classified.accepted.length} maintenance items.`,
+        acceptedIds: classified.accepted.flatMap(item => eventIdOf(item) ? [eventIdOf(item)] : []),
+        duplicateIds: classified.duplicate
+      });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
+  });
 })
 
 // PUT to edit/update a maintenance item (e.g. log a service event or edit settings)
 fastify.put('/api/maintenance/:id', async (request, reply) => {
-  try {
-    const { id } = request.params;
-    const body = request.body || {};
-    const index = maintenanceStore.findIndex(item => item.id === id);
+  const { id } = request.params;
+  const body = request.body || {};
+  return serializeMutation(async () => {
+    try {
+      const index = maintenanceStore.findIndex(item => String(item.id) === String(id));
+      if (index === -1) return reply.status(404).send({ error: 'Maintenance item not found' });
 
-    if (index === -1) {
-      return reply.status(404).send({ error: 'Maintenance item not found' });
+      const candidate = maintenanceStore.map(item => ({ ...item }));
+      const item = candidate[index];
+      if (body.markServiced) {
+        const vehicleLogs = filterByVehicle(fuelLogsStore, item.vehicleId || DEFAULT_VEHICLE_ID);
+        const currentOdometer = vehicleLogs.length
+          ? Math.max(...vehicleLogs.map(log => Number(log.odometer) || 0))
+          : 0;
+        item.lastServiceOdo = currentOdometer;
+        item.lastServiceDate = Date.now();
+      } else {
+        if (body.name !== undefined) item.name = body.name;
+        if (body.intervalKm !== undefined) item.intervalKm = body.intervalKm ? Number(body.intervalKm) : null;
+        if (body.intervalDays !== undefined) item.intervalDays = body.intervalDays ? Number(body.intervalDays) : null;
+        if (body.lastServiceOdo !== undefined) item.lastServiceOdo = body.lastServiceOdo !== null ? Number(body.lastServiceOdo) : null;
+        if (body.lastServiceDate !== undefined) item.lastServiceDate = body.lastServiceDate !== null ? Number(body.lastServiceDate) : null;
+        if (body.notes !== undefined) item.notes = body.notes || '';
+      }
+      item.updatedAt = Date.now();
+      await persist(MAINT_PATH, candidate);
+      replaceArrayContents(maintenanceStore, candidate);
+      invalidateAnalyticsCaches({ telemetry: true });
+      return reply.send({ success: true, message: 'Maintenance item updated successfully' });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
     }
-
-    const item = maintenanceStore[index];
-
-    // If update requests marking as serviced now (resetting counters)
-    if (body.markServiced) {
-      const vehicleLogs = filterByVehicle(fuelLogsStore, item.vehicleId || DEFAULT_VEHICLE_ID);
-      const sortedLogs = [...vehicleLogs].sort((a, b) => b.odometer - a.odometer);
-      const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
-      item.lastServiceOdo = currentOdometer;
-      item.lastServiceDate = Date.now();
-    } else {
-      if (body.name !== undefined) item.name = body.name;
-      if (body.intervalKm !== undefined) item.intervalKm = body.intervalKm ? parseFloat(body.intervalKm) : null;
-      if (body.intervalDays !== undefined) item.intervalDays = body.intervalDays ? parseInt(body.intervalDays) : null;
-      if (body.lastServiceOdo !== undefined) item.lastServiceOdo = body.lastServiceOdo !== null ? parseFloat(body.lastServiceOdo) : null;
-      if (body.lastServiceDate !== undefined) item.lastServiceDate = body.lastServiceDate !== null ? parseInt(body.lastServiceDate) : null;
-      if (body.notes !== undefined) item.notes = body.notes || "";
-    }
-
-    item.updatedAt = Date.now();
-    saveMaintenance();
-
-    return reply.send({ success: true, message: 'Maintenance item updated successfully' });
-  } catch (err) {
-    request.log.error(err);
-    return reply.status(500).send({ error: 'Internal Server Error' });
-  }
+  });
 })
 
 // DELETE a maintenance item
 fastify.delete('/api/maintenance/:id', async (request, reply) => {
-  try {
-    const { id } = request.params;
-    const initialLength = maintenanceStore.length;
-    maintenanceStore = maintenanceStore.filter(item => String(item.id) !== String(id));
-
-    if (maintenanceStore.length === initialLength) {
-      return reply.status(404).send({ error: 'Maintenance item not found' });
+  const { id } = request.params;
+  return serializeMutation(async () => {
+    try {
+      const candidate = maintenanceStore.filter(item => String(item.id) !== String(id));
+      if (candidate.length === maintenanceStore.length) {
+        return reply.status(404).send({ error: 'Maintenance item not found' });
+      }
+      await persist(MAINT_PATH, candidate);
+      replaceArrayContents(maintenanceStore, candidate);
+      invalidateAnalyticsCaches({ telemetry: true });
+      return reply.send({ success: true, message: 'Maintenance item deleted successfully' });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
     }
-
-    saveMaintenance();
-    return reply.send({ success: true, message: 'Maintenance item deleted successfully' });
-  } catch (err) {
-    request.log.error(err);
-    return reply.status(500).send({ error: 'Internal Server Error' });
-  }
+  });
 })
 
 // GET maintenance summary status
@@ -1947,18 +2487,41 @@ fastify.post('/api/vehicles', async (request, reply) => {
     vehicle.tankLitres = tank;
   }
 
-  vehiclesStore.push(vehicle);
-  await persist(VEHICLES_PATH, vehiclesStore);
-
+  const candidateVehicle = { ...vehicle };
   if (auth && auth.type === 'user' && auth.user) {
-    if (!Array.isArray(auth.user.vehicles)) auth.user.vehicles = [];
-    if (!auth.user.vehicles.includes(id)) {
-      auth.user.vehicles.push(id);
-      await persist(USERS_PATH, usersStore);
-    }
+    return serializeMutation(async () => {
+      try {
+        const candidateUsers = usersStore.map(user => {
+          if (user.id !== auth.user.id) return user;
+          const assigned = Array.isArray(user.vehicles) ? [...user.vehicles] : [];
+          if (!assigned.includes(id)) assigned.push(id);
+          return { ...user, vehicles: assigned };
+        });
+        // Registry and assignment commit as one transaction so a failed
+        // user write cannot leave a vehicle on disk that no one owns.
+        const txnEntries = [[VEHICLES_PATH, [...vehiclesStore, candidateVehicle]]];
+        if (!auth.user.vehicles?.includes(id)) txnEntries.push([USERS_PATH, candidateUsers]);
+        runFileTransactionSync(txnEntries);
+        vehiclesStore.push(candidateVehicle);
+        if (!Array.isArray(auth.user.vehicles)) auth.user.vehicles = [];
+        if (!auth.user.vehicles.includes(id)) auth.user.vehicles.push(id);
+      } catch (err) {
+        return retryablePersistenceError(reply, request, err);
+      }
+      invalidateAnalyticsCaches({ vehicles: true });
+      return reply.status(201).send(candidateVehicle);
+    });
   }
-
-  return reply.status(201).send(vehicle);
+  return serializeMutation(async () => {
+    try {
+      runFileTransactionSync([[VEHICLES_PATH, [...vehiclesStore, candidateVehicle]]]);
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
+    vehiclesStore.push(candidateVehicle);
+    invalidateAnalyticsCaches({ vehicles: true });
+    return reply.status(201).send(candidateVehicle);
+  });
 })
 
 fastify.put('/api/vehicles/:id', async (request, reply) => {
@@ -1968,22 +2531,32 @@ fastify.put('/api/vehicles/:id', async (request, reply) => {
   }
 
   const { name, tankLitres } = request.body || {};
+  const updatedVehicle = { ...vehicle };
   if (name !== undefined) {
     if (!isValidVehicleName(name)) {
       return reply.status(400).send({ error: 'name must be 1-64 chars' });
     }
-    vehicle.name = name.trim();
+    updatedVehicle.name = name.trim();
   }
   if (tankLitres !== undefined) {
     const tank = Number(tankLitres);
     if (!Number.isFinite(tank) || tank <= 0 || tank > 500) {
       return reply.status(400).send({ error: 'tankLitres must be a positive number (<= 500)' });
     }
-    vehicle.tankLitres = tank;
+    updatedVehicle.tankLitres = tank;
   }
 
-  await persist(VEHICLES_PATH, vehiclesStore);
-  return reply.send(vehicle);
+  const candidateVehicles = vehiclesStore.map(item => item.id === vehicle.id ? updatedVehicle : item);
+  return serializeMutation(async () => {
+    try {
+      await persist(VEHICLES_PATH, candidateVehicles);
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
+    }
+    Object.assign(vehicle, updatedVehicle);
+    invalidateAnalyticsCaches({ vehicles: true });
+    return reply.send(vehicle);
+  });
 })
 
 fastify.delete('/api/vehicles/:id', async (request, reply) => {
@@ -1995,86 +2568,87 @@ fastify.delete('/api/vehicles/:id', async (request, reply) => {
     return reply.status(404).send({ error: 'Vehicle not found' });
   }
 
-  const reassign = request.query.reassign === DEFAULT_VEHICLE_ID;
-  const ownsData = (records) => records.some(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === id);
-  if (!reassign && (ownsData(telemetryDataStore) || ownsData(fuelLogsStore) || ownsData(maintenanceStore) || ownsData(dtcHistoryStore))) {
-    return reply.status(409).send({
-      error: 'Vehicle still owns records. Pass ?reassign=default to move them to the default vehicle.',
-    });
-  }
-  if (reassign) {
-    for (const store of [telemetryDataStore, fuelLogsStore, maintenanceStore, dtcHistoryStore]) {
-      for (const r of store) {
-        if ((r.vehicleId || DEFAULT_VEHICLE_ID) === id) r.vehicleId = DEFAULT_VEHICLE_ID;
+  return serializeMutation(async () => {
+    try {
+      const reassign = request.query.reassign === DEFAULT_VEHICLE_ID;
+      const ownsData = records => records.some(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === id);
+      if (!reassign && (ownsData(telemetryDataStore) || ownsData(fuelLogsStore) || ownsData(maintenanceStore) || ownsData(dtcHistoryStore))) {
+        return reply.status(409).send({
+          error: 'Vehicle still owns records. Pass ?reassign=default to move them to the default vehicle.'
+        });
       }
-    }
-    // Re-home the vehicle's diagnostics slot and any queued commands
-    // so nothing dangles after the id disappears from the registry.
-    const diagSlot = diagnosticsStore.byVehicle[id];
-    if (diagSlot) {
-      const existing = diagnosticsStore.byVehicle[DEFAULT_VEHICLE_ID];
-      if (existing) {
-        if (!existing.latestDtc?.timestamp && diagSlot.latestDtc?.timestamp) existing.latestDtc = diagSlot.latestDtc;
-        if (!existing.latestClearStatus?.timestamp && diagSlot.latestClearStatus?.timestamp) existing.latestClearStatus = diagSlot.latestClearStatus;
-      } else {
-        diagnosticsStore.byVehicle[DEFAULT_VEHICLE_ID] = diagSlot;
+
+      const move = record => reassign && (record.vehicleId || DEFAULT_VEHICLE_ID) === id
+        ? { ...record, vehicleId: DEFAULT_VEHICLE_ID }
+        : { ...record };
+      const telemetryCandidate = reassign ? telemetryDataStore.map(move) : telemetryDataStore.slice();
+      const fuelCandidate = reassign ? fuelLogsStore.map(move) : fuelLogsStore.slice();
+      const maintenanceCandidate = reassign ? maintenanceStore.map(move) : maintenanceStore.slice();
+      const dtcHistoryCandidate = reassign ? dtcHistoryStore.map(move) : dtcHistoryStore.slice();
+      const diagnosticsCandidate = JSON.parse(JSON.stringify(diagnosticsStore));
+      const diagnosticChanged = Boolean(diagnosticsCandidate.byVehicle[id]);
+      if (diagnosticChanged) {
+        const slot = diagnosticsCandidate.byVehicle[id];
+        if (reassign) {
+          const existing = diagnosticsCandidate.byVehicle[DEFAULT_VEHICLE_ID];
+          if (existing) {
+            if (!existing.latestDtc?.timestamp && slot.latestDtc?.timestamp) existing.latestDtc = slot.latestDtc;
+            if (!existing.latestClearStatus?.timestamp && slot.latestClearStatus?.timestamp) existing.latestClearStatus = slot.latestClearStatus;
+          } else {
+            diagnosticsCandidate.byVehicle[DEFAULT_VEHICLE_ID] = slot;
+          }
+        }
+        delete diagnosticsCandidate.byVehicle[id];
       }
-      delete diagnosticsStore.byVehicle[id];
-      saveDiagnostics();
-    }
-    const hadCommands = pendingCommands.some(c => c.vehicleId === id);
-    if (hadCommands) {
-      pendingCommands = pendingCommands.map(c => c.vehicleId === id ? { ...c, vehicleId: DEFAULT_VEHICLE_ID } : c);
-      persist(COMMANDS_QUEUE_PATH, pendingCommands);
-    }
-    saveToDisk();
-    saveFuelLogs();
-    saveMaintenance();
-    saveDtcHistory();
-  } else {
-    // Deleting outright: drop the vehicle's diagnostics slot and any
-    // queued commands so they can't consume queue slots forever.
-    if (diagnosticsStore.byVehicle[id]) {
-      delete diagnosticsStore.byVehicle[id];
-      saveDiagnostics();
-    }
-    if (pendingCommands.some(c => c.vehicleId === id)) {
-      pendingCommands = pendingCommands.filter(c => c.vehicleId !== id);
-      persist(COMMANDS_QUEUE_PATH, pendingCommands);
-    }
-  }
+      const commandsChanged = pendingCommands.some(c => c.vehicleId === id);
+      const commandsCandidate = reassign
+        ? pendingCommands.map(c => c.vehicleId === id ? { ...c, vehicleId: DEFAULT_VEHICLE_ID } : { ...c })
+        : pendingCommands.filter(c => c.vehicleId !== id);
+      const vehiclesCandidate = vehiclesStore.filter(v => v.id !== id);
+      const devicesCandidate = devicesStore.filter(d => d.vehicleId !== id);
+      const usersCandidate = usersStore.map(user => ({
+        ...user,
+        ...(Array.isArray(user.vehicles) ? { vehicles: user.vehicles.filter(v => v !== id) } : {})
+      }));
 
-  // Splice (not filter-reassign) so any exported/shared reference to
-  // the registry array stays valid.
-  const idx = vehiclesStore.findIndex(v => v.id === id);
-  if (idx !== -1) vehiclesStore.splice(idx, 1);
-  await persist(VEHICLES_PATH, vehiclesStore);
+      // Every affected file commits as one durable transaction: either
+      // all staged snapshots reach their final paths (with startup
+      // roll-forward if we crash mid-commit) or a staging failure rolls
+      // back before any final path is touched. Memory is only updated
+      // after the transaction returns, so a 503 never leaves memory
+      // disagreeing with disk.
+      const txnEntries = []
+      if (reassign) {
+        txnEntries.push([DB_PATH, telemetryCandidate])
+        txnEntries.push([FUEL_PATH, fuelCandidate])
+        txnEntries.push([MAINT_PATH, maintenanceCandidate])
+        txnEntries.push([DTC_HIST_PATH, dtcHistoryCandidate])
+      }
+      if (diagnosticChanged) txnEntries.push([DIAG_PATH, diagnosticsCandidate])
+      if (commandsChanged) txnEntries.push([COMMANDS_QUEUE_PATH, commandsCandidate])
+      txnEntries.push([VEHICLES_PATH, vehiclesCandidate])
+      if (devicesCandidate.length !== devicesStore.length) txnEntries.push([DEVICES_PATH, devicesCandidate])
+      const usersChanged = usersCandidate.some((user, index) => JSON.stringify(user) !== JSON.stringify(usersStore[index]))
+      if (usersChanged) txnEntries.push([USERS_PATH, usersCandidate])
+      runFileTransactionSync(txnEntries)
 
-  // Delete all paired device tokens associated with this vehicle so stale tokens cannot access recycled IDs
-  let devicesMutated = false;
-  for (let i = devicesStore.length - 1; i >= 0; i--) {
-    if (devicesStore[i].vehicleId === id) {
-      devicesStore.splice(i, 1);
-      devicesMutated = true;
+      replaceArrayContents(vehiclesStore, vehiclesCandidate);
+      if (reassign) {
+        replaceArrayContents(telemetryDataStore, telemetryCandidate);
+        replaceArrayContents(fuelLogsStore, fuelCandidate);
+        replaceArrayContents(maintenanceStore, maintenanceCandidate);
+        replaceArrayContents(dtcHistoryStore, dtcHistoryCandidate);
+      }
+      if (diagnosticChanged) diagnosticsStore = diagnosticsCandidate;
+      if (commandsChanged) pendingCommands = commandsCandidate;
+      if (devicesCandidate.length !== devicesStore.length) replaceArrayContents(devicesStore, devicesCandidate);
+      if (usersCandidate.some((user, index) => JSON.stringify(user) !== JSON.stringify(usersStore[index]))) replaceArrayContents(usersStore, usersCandidate);
+      invalidateAnalyticsCaches({ telemetry: reassign, vehicles: true });
+      return reply.send({ success: true, message: reassign ? 'Vehicle deleted; records reassigned to default.' : 'Vehicle deleted.' });
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err);
     }
-  }
-  if (devicesMutated) {
-    await persist(DEVICES_PATH, devicesStore);
-  }
-
-  // Remove vehicle ID from any user's vehicle list
-  let usersChanged = false;
-  for (const user of usersStore) {
-    if (Array.isArray(user.vehicles) && user.vehicles.includes(id)) {
-      user.vehicles = user.vehicles.filter(v => v !== id);
-      usersChanged = true;
-    }
-  }
-  if (usersChanged) {
-    await persist(USERS_PATH, usersStore);
-  }
-
-  return reply.send({ success: true, message: reassign ? 'Vehicle deleted; records reassigned to default.' : 'Vehicle deleted.' });
+  });
 })
 
 // ----- User Authentication & Account Management -------------------------
@@ -2094,16 +2668,11 @@ fastify.post('/api/auth/login', {
 
   // Master key login support
   if (constantTimeEquals(password, OBD_API_KEY)) {
-    const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`
-    sessionsStore.set(sessionToken, {
-      userId: 'usr-admin',
-      username: 'admin',
-      type: 'master',
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 24 * 60 * 60 * 1000
-    })
+    const { token: sessionToken, session } = newSession({ userId: 'usr-admin', username: 'admin', type: 'master' })
+    setSessionCookie(reply, sessionToken)
     return reply.send({
       token: sessionToken,
+      csrfToken: session.csrfToken,
       user: {
         id: 'usr-admin',
         username: 'admin',
@@ -2119,13 +2688,8 @@ fastify.post('/api/auth/login', {
     return reply.status(401).send({ error: 'Invalid username or password' })
   }
 
-  const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`
-  sessionsStore.set(sessionToken, {
-    userId: user.id,
-    username: user.username,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000
-  })
+  const { token: sessionToken, session } = newSession({ userId: user.id, username: user.username })
+  setSessionCookie(reply, sessionToken)
 
   const userRole = user.role || ((user.username === 'admin' || user.id === 'usr-admin') ? 'admin' : 'user')
   const userVehicles = isAdmin({ type: 'user', user: { ...user, role: userRole } })
@@ -2134,6 +2698,7 @@ fastify.post('/api/auth/login', {
 
   return reply.send({
     token: sessionToken,
+    csrfToken: session.csrfToken,
     user: {
       id: user.id,
       username: user.username,
@@ -2177,11 +2742,25 @@ fastify.post('/api/auth/change-password', async (request, reply) => {
   }
 
   const { salt, hash } = await hashPasswordAsync(newPassword)
-  targetUser.passwordSalt = salt
-  targetUser.passwordHash = hash
-  targetUser.mustChangePassword = false
-  targetUser.updatedAt = Date.now()
-  await persist(USERS_PATH, usersStore)
+  const updatedUser = {
+    ...targetUser,
+    passwordSalt: salt,
+    passwordHash: hash,
+    mustChangePassword: false,
+    updatedAt: Date.now()
+  }
+  // Serialized so two concurrent rotations cannot interleave read-modify-write.
+  return serializeMutation(async () => {
+    if (!usersStore.some(user => user.id === targetUser.id)) {
+      return reply.status(404).send({ error: 'User not found' })
+    }
+    const liveCandidates = usersStore.map(user => user.id === targetUser.id ? updatedUser : user)
+    try {
+      await persist(USERS_PATH, liveCandidates)
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err)
+    }
+    replaceArrayContents(usersStore, liveCandidates)
 
   if (targetUser.id === 'usr-admin' && fs.existsSync(INITIAL_ADMIN_SECRET_PATH)) {
     try {
@@ -2198,18 +2777,17 @@ fastify.post('/api/auth/change-password', async (request, reply) => {
     }
   }
 
-  const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`
-  sessionsStore.set(sessionToken, {
+  const { token: sessionToken, session } = newSession({
     userId: targetUser.id,
-    username: targetUser.username,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000
+    username: targetUser.username
   })
+  setSessionCookie(reply, sessionToken)
 
   return reply.send({
     success: true,
     message: 'Password updated successfully',
     token: sessionToken,
+    csrfToken: session.csrfToken,
     user: {
       id: targetUser.id,
       username: targetUser.username,
@@ -2218,18 +2796,21 @@ fastify.post('/api/auth/change-password', async (request, reply) => {
       vehicles: targetUser.vehicles || [DEFAULT_VEHICLE_ID]
     }
   })
+  })
 })
 
 fastify.post('/api/auth/logout', async (request, reply) => {
   const authHeader = request.headers['authorization']
   if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim()
-    sessionsStore.delete(token)
+    sessionsStore.delete(authHeader.slice(7).trim())
+  }
+  const cookies = parseCookies(request.headers.cookie)
+  if (cookies[SESSION_COOKIE]) {
+    sessionsStore.delete(cookies[SESSION_COOKIE])
   }
   const devToken = request.headers['x-device-token']
-  if (devToken) {
-    sessionsStore.delete(devToken)
-  }
+  if (devToken) sessionsStore.delete(devToken)
+  clearSessionCookie(reply)
   return reply.send({ success: true, message: 'Logged out successfully' })
 })
 
@@ -2251,7 +2832,8 @@ fastify.get('/api/auth/me', async (request, reply) => {
       role: userRole,
       mustChangePassword: !!auth.user.mustChangePassword,
       vehicles: userVehicles,
-      deviceCount: userDevices.length
+      deviceCount: userDevices.length,
+      ...(auth.session?.csrfToken ? { csrfToken: auth.session.csrfToken } : {})
     })
   }
 
@@ -2273,7 +2855,8 @@ fastify.get('/api/auth/me', async (request, reply) => {
     role: 'admin',
     mustChangePassword: false,
     vehicles: vehiclesStore.map(v => v.id),
-    deviceCount: devicesStore.length
+    deviceCount: devicesStore.length,
+    ...(auth.session?.csrfToken ? { csrfToken: auth.session.csrfToken } : {})
   })
 })
 
@@ -2384,77 +2967,106 @@ fastify.post('/api/auth/device/claim', {
   }
   session.status = 'claiming'
 
-  let targetVehicleId = vehicleId
-  if (newVehicleName && typeof newVehicleName === 'string' && newVehicleName.trim().length > 0) {
-    const trimmedName = newVehicleName.trim()
-    if (trimmedName.length > 64) {
-      session.status = 'pending'
-      return reply.status(400).send({ error: 'Vehicle name cannot exceed 64 characters' })
-    }
-    const litres = typeof tankLitres === 'number' && tankLitres > 0 && tankLitres <= 2000 ? tankLitres : 40
-    targetVehicleId = 'veh-' + crypto.randomBytes(4).toString('hex')
-    const newVeh = {
-      id: targetVehicleId,
-      name: trimmedName,
-      tankLitres: litres,
-      ownerId: auth.type === 'user' ? auth.user.id : 'usr-admin',
-      createdAt: Date.now()
-    }
-    vehiclesStore.push(newVeh)
-    await persist(VEHICLES_PATH, vehiclesStore)
-
-    if (auth.type === 'user') {
-      if (!auth.user.vehicles) auth.user.vehicles = []
-      if (!auth.user.vehicles.includes(targetVehicleId)) {
-        auth.user.vehicles.push(targetVehicleId)
-        await persist(USERS_PATH, usersStore)
+  // Serialized with every other store mutation so a concurrent vehicle
+  // delete cannot interleave this claim's multi-file commit.
+  return serializeMutation(async () => {
+    try {
+      let targetVehicleId = vehicleId
+      let newVeh = null
+      let candidateUsers = null
+      if (newVehicleName && typeof newVehicleName === 'string' && newVehicleName.trim().length > 0) {
+        const trimmedName = newVehicleName.trim()
+        if (trimmedName.length > 64) {
+          session.status = 'pending'
+          return reply.status(400).send({ error: 'Vehicle name cannot exceed 64 characters' })
+        }
+        const litres = typeof tankLitres === 'number' && tankLitres > 0 && tankLitres <= 2000 ? tankLitres : 40
+        targetVehicleId = 'veh-' + crypto.randomBytes(4).toString('hex')
+        newVeh = {
+          id: targetVehicleId,
+          name: trimmedName,
+          tankLitres: litres,
+          ownerId: auth.type === 'user' ? auth.user.id : 'usr-admin',
+          createdAt: Date.now()
+        }
+        candidateUsers = usersStore.map(user => {
+          if (auth.type !== 'user' || user.id !== auth.user.id) return user
+          const assigned = Array.isArray(user.vehicles) ? [...user.vehicles] : []
+          if (!assigned.includes(targetVehicleId)) assigned.push(targetVehicleId)
+          return { ...user, vehicles: assigned }
+        })
+      } else {
+        // Existing vehicle: caller must have authorized access
+        if (!targetVehicleId || !vehicleExists(targetVehicleId)) {
+          targetVehicleId = DEFAULT_VEHICLE_ID
+        }
+        if (!canAccessVehicle(auth, targetVehicleId)) {
+          session.status = 'pending'
+          return reply.status(403).send({ error: 'Vehicle access denied: Not authorized to pair this vehicle' })
+        }
       }
+
+      const rawDeviceToken = `obd_dev_${crypto.randomBytes(24).toString('hex')}`
+      const tokenHash = crypto.createHash('sha256').update(rawDeviceToken).digest('hex')
+      const device = {
+        id: `dev-${crypto.randomBytes(4).toString('hex')}`,
+        name: session.fingerprint?.deviceModel || 'Car Head Unit',
+        tokenHash,
+        tokenPrefix: rawDeviceToken.slice(0, 12),
+        tokenSuffix: rawDeviceToken.slice(-4),
+        vehicleId: targetVehicleId,
+        userId: auth.type === 'user' ? auth.user.id : 'usr-admin',
+        fingerprint: session.fingerprint,
+        createdAt: Date.now(),
+        lastSeenAt: Date.now()
+      }
+
+      // Vehicle registry, user assignment and device issuance commit as
+      // one durable transaction: a failed write leaves no orphan vehicle
+      // or token on disk, and memory is only updated afterwards.
+      const claimEntries = []
+      if (newVeh) claimEntries.push([VEHICLES_PATH, vehiclesStore.concat(newVeh)])
+      if (newVeh && auth.type === 'user' && !(auth.user.vehicles || []).includes(targetVehicleId)) {
+        claimEntries.push([USERS_PATH, candidateUsers])
+      }
+      claimEntries.push([DEVICES_PATH, devicesStore.concat(device)])
+      runFileTransactionSync(claimEntries)
+
+      if (newVeh) {
+        vehiclesStore.push(newVeh)
+        if (auth.type === 'user') {
+          if (!auth.user.vehicles) auth.user.vehicles = []
+          if (!auth.user.vehicles.includes(targetVehicleId)) {
+            auth.user.vehicles.push(targetVehicleId)
+          }
+        }
+        invalidateAnalyticsCaches({ vehicles: true })
+      }
+      devicesStore.push(device)
+
+      // Remove pairing code from pending map so it cannot be claimed again
+      pendingPairingsByCode.delete(session.code)
+      pendingPairingsByCode.delete(session.normalizedCode)
+
+      const vehName = vehiclesStore.find(v => v.id === targetVehicleId)?.name || 'Default Vehicle'
+      session.status = 'approved'
+      session.deviceToken = rawDeviceToken
+      session.vehicleId = targetVehicleId
+      session.vehicleName = vehName
+
+      return reply.send({
+        success: true,
+        deviceId: device.id,
+        vehicleId: targetVehicleId,
+        vehicleName: vehName,
+        deviceToken: rawDeviceToken
+      })
+    } catch (err) {
+      if (!isServerPoisoned) {
+        session.status = 'pending'
+      }
+      return retryablePersistenceError(reply, request, err)
     }
-  } else {
-    // Existing vehicle: caller must have authorized access
-    if (!targetVehicleId || !vehicleExists(targetVehicleId)) {
-      targetVehicleId = DEFAULT_VEHICLE_ID
-    }
-    if (!canAccessVehicle(auth, targetVehicleId)) {
-      session.status = 'pending'
-      return reply.status(403).send({ error: 'Vehicle access denied: Not authorized to pair this vehicle' })
-    }
-  }
-
-  const rawDeviceToken = `obd_dev_${crypto.randomBytes(24).toString('hex')}`
-  const tokenHash = crypto.createHash('sha256').update(rawDeviceToken).digest('hex')
-  const device = {
-    id: `dev-${crypto.randomBytes(4).toString('hex')}`,
-    name: session.fingerprint?.deviceModel || 'Car Head Unit',
-    tokenHash,
-    tokenPrefix: rawDeviceToken.slice(0, 12),
-    tokenSuffix: rawDeviceToken.slice(-4),
-    vehicleId: targetVehicleId,
-    userId: auth.type === 'user' ? auth.user.id : 'usr-admin',
-    fingerprint: session.fingerprint,
-    createdAt: Date.now(),
-    lastSeenAt: Date.now()
-  }
-
-  devicesStore.push(device)
-  await persist(DEVICES_PATH, devicesStore)
-
-  // Remove pairing code from pending map so it cannot be claimed again
-  pendingPairingsByCode.delete(session.code)
-  pendingPairingsByCode.delete(session.normalizedCode)
-
-  const vehName = vehiclesStore.find(v => v.id === targetVehicleId)?.name || 'Default Vehicle'
-  session.status = 'approved'
-  session.deviceToken = rawDeviceToken
-  session.vehicleId = targetVehicleId
-  session.vehicleName = vehName
-
-  return reply.send({
-    success: true,
-    deviceId: device.id,
-    vehicleId: targetVehicleId,
-    vehicleName: vehName,
-    deviceToken: rawDeviceToken
   })
 })
 
@@ -2493,9 +3105,23 @@ fastify.delete('/api/devices/:id', async (request, reply) => {
     return reply.status(403).send({ error: 'Device access denied' })
   }
 
-  devicesStore.splice(idx, 1)
-  await persist(DEVICES_PATH, devicesStore)
-  return reply.send({ success: true, message: 'Device revoked successfully' })
+  // Token revocation is a single-file atomic persist, serialized with the
+  // device-claim transaction so a concurrent claim cannot interleave and
+  // resurrect or lose a revocation.
+  return serializeMutation(async () => {
+    const liveIdx = devicesStore.findIndex(d => d.id === request.params.id)
+    if (liveIdx === -1) {
+      return reply.status(404).send({ error: 'Device not found' })
+    }
+    const candidateDevices = devicesStore.filter((_, index) => index !== liveIdx)
+    try {
+      await persist(DEVICES_PATH, candidateDevices)
+    } catch (err) {
+      return retryablePersistenceError(reply, request, err)
+    }
+    replaceArrayContents(devicesStore, candidateDevices)
+    return reply.send({ success: true, message: 'Device revoked successfully' })
+  })
 })
 
 // Liveness + readiness probe. Used by the container HEALTHCHECK
@@ -2651,6 +3277,17 @@ module.exports = {
   verifyPassword,
   authenticateRequest,
   migrateDeviceTokensAtRest,
+  runFileTransactionSync,
+  recoverPendingTransactionsSync,
+  serializeMutation,
+  isPoisoned,
+  _resetPoisonStateForTesting,
+  fsyncFile,
+  fsyncDir,
+  fsyncFileSync,
+  fsyncDirSync,
+  COMMANDS_QUEUE_PATH,
+  getPendingCommands: () => pendingCommands,
   DEFAULT_VEHICLE_ID,
   USERS_PATH,
   DEVICES_PATH,

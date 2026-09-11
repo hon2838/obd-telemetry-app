@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
-import { API_HOST } from '../api';
+import { apiFetch, applyAuthResponse } from '../api';
+import { useAuth } from '../context/AuthContext';
 import {
   Shield, KeyRound, Smartphone, Trash2, CheckCircle2, AlertCircle, RefreshCw, Radio, Lock, Car, Plus
 } from 'lucide-react';
@@ -23,6 +24,7 @@ interface PairedDevice {
 }
 
 export default function AccountSecurityPage() {
+  const { profile, refreshProfile } = useAuth();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -39,17 +41,12 @@ export default function AccountSecurityPage() {
   const fetchProfileAndDevices = async () => {
     try {
       setDevicesLoading(true);
-      const [meRes, devRes] = await Promise.all([
-        fetch(`${API_HOST}/api/auth/me`).catch(() => null),
-        fetch(`${API_HOST}/api/devices`).catch(() => null),
-      ]);
-
-      if (meRes && meRes.ok) {
-        const meData = await meRes.json();
-        setMustChangePassword(!!meData.mustChangePassword);
-        if (meData.username) setUsername(meData.username);
+      const currentProfile = profile || await refreshProfile();
+      if (currentProfile) {
+        setMustChangePassword(!!currentProfile.mustChangePassword);
+        if (currentProfile.username) setUsername(currentProfile.username);
       }
-
+      const devRes = await apiFetch('/api/devices').catch(() => null);
       if (devRes && devRes.ok) {
         const devData = await devRes.json();
         setDevices(Array.isArray(devData) ? devData : []);
@@ -63,7 +60,9 @@ export default function AccountSecurityPage() {
 
   useEffect(() => {
     fetchProfileAndDevices();
-  }, []);
+    // AuthContext owns the shared /me request; this page only loads devices.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id]);
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,7 +81,7 @@ export default function AccountSecurityPage() {
 
     setPwdLoading(true);
     try {
-      const res = await fetch(`${API_HOST}/api/auth/change-password`, {
+      const res = await apiFetch('/api/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -97,6 +96,8 @@ export default function AccountSecurityPage() {
         throw new Error(data.error || 'Failed to update password');
       }
 
+      applyAuthResponse(data);
+      await refreshProfile();
       setPwdSuccess('Password changed successfully! Default setup password deactivated.');
       setMustChangePassword(false);
       setCurrentPassword('');
@@ -115,7 +116,7 @@ export default function AccountSecurityPage() {
     }
 
     try {
-      const res = await fetch(`${API_HOST}/api/devices/${deviceId}`, {
+      const res = await apiFetch(`/api/devices/${deviceId}`, {
         method: 'DELETE',
       });
       if (res.ok) {

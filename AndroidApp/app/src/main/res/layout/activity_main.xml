@@ -18,7 +18,7 @@
         <include layout="@layout/view_api_config_card" />
         <include layout="@layout/view_settings_card" />
         <include layout="@layout/view_fuel_card" />
-        <include layout="@layout/view_head_unit_card" />
         <include layout="@layout/view_telemetry_hud" />
+        <include layout="@layout/view_head_unit_card" />
     </LinearLayout>
 </ScrollView>

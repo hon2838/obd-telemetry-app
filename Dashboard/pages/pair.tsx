@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
-import { API_HOST } from '../api';
+import { apiFetch } from '../api';
 import { useVehicle } from '../context/VehicleContext';
 import {
   Car, ShieldCheck, CheckCircle2, AlertCircle, KeyRound, Radio, Smartphone, QrCode, ArrowRight
@@ -44,7 +44,7 @@ export default function PairVehiclePage() {
         payload.vehicleId = selectedVehicleId;
       }
 
-      const res = await fetch(`${API_HOST}/api/auth/device/claim`, {
+      const res = await apiFetch('/api/auth/device/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

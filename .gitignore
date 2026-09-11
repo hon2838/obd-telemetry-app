@@ -33,6 +33,7 @@ Server/install.sh
 !Dashboard/package-lock.json
 !tsconfig.json
 !manifest.json
+!AndroidApp/app/schemas/**
 !project.json
 !Server/agent/.gitkeep
 

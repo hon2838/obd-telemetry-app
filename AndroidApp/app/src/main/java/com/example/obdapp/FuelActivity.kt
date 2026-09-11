@@ -66,6 +66,7 @@ class FuelActivity : AppCompatActivity() {
     private fun httpGet(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 8000
+        conn.readTimeout = 15000
         applyAuthHeader(conn, this)
         return conn.inputStream.bufferedReader().readText()
     }

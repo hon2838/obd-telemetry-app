@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
-import { Activity, Map, Thermometer, Battery, Flame, Navigation, AlertCircle, Clock, Car } from 'lucide-react';
-import { API_HOST } from '../api';
+import { Activity, Map as MapIcon, Thermometer, Battery, Flame, Navigation, AlertCircle, Clock, Car } from 'lucide-react';
+import { apiFetch } from '../api';
+import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 
 // A record older than this means the vehicle is not currently reporting
@@ -47,7 +48,38 @@ interface MapProps {
   routeData: TelemetryData[];
 }
 
+const FreshnessBadge = ({ connectionOk, timestamp }: { connectionOk: boolean; timestamp: number | null }) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const ticker = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
+  const age = timestamp === null ? null : now - timestamp;
+  const stale = age === null || age > STALE_THRESHOLD_MS;
+  const label = !connectionOk ? 'SERVER OFFLINE' : stale ? (age === null ? 'AWAITING DATA' : `LAST SEEN ${formatAge(age).toUpperCase()}`) : 'LIVE';
+  return <div className="glass-panel-static" style={styles.liveIndicatorWrapper}>
+    <span className="live-indicator" style={connectionOk && !stale ? undefined : { animation: 'none', backgroundColor: !connectionOk ? 'var(--accent-red)' : 'var(--accent-amber)' }} />
+    <span style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.05em', color: !connectionOk ? 'var(--accent-red)' : stale ? 'var(--accent-amber)' : 'var(--accent-green)' }}>{label}</span>
+  </div>;
+};
+
+const StaleDataNotice = ({ connectionOk, timestamp }: { connectionOk: boolean; timestamp: number | null }) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const ticker = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
+  if (!connectionOk) return null;
+  const age = timestamp === null ? null : now - timestamp;
+  if (age !== null && age <= STALE_THRESHOLD_MS) return null;
+  return <div style={{ background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.5)', color: '#fbbf24', padding: '12px 18px', borderRadius: '12px', fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px', width: '100%' }}>
+    <Clock size={18} />
+    <span>Vehicle offline — engine off or head unit not reporting.{timestamp !== null && ` Last known data from ${new Date(timestamp).toLocaleString()}.`}</span>
+  </div>;
+};
+
 const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
+  const routeCoords = React.useMemo(() => routeData.filter(p => p.latitude !== 0 && p.longitude !== 0).map(p => [p.latitude, p.longitude]), [routeData]);
   const mapInstanceRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
   const polylineRef = useRef<any>(null);
@@ -115,17 +147,13 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
       markerRef.current = L.marker([latitude, longitude]).addTo(mapInstanceRef.current);
 
       // Polyline route history
-      const coords = routeData
-        .filter(p => p.latitude !== 0 && p.longitude !== 0)
-        .map(p => [p.latitude, p.longitude]);
-
-      polylineRef.current = L.polyline(coords, {
+      polylineRef.current = L.polyline(routeCoords, {
         color: '#3b82f6',
         weight: 4,
         opacity: 0.8
       }).addTo(mapInstanceRef.current);
 
-      if (coords.length > 1) {
+      if (routeCoords.length > 1) {
         mapInstanceRef.current.fitBounds(polylineRef.current.getBounds(), { padding: [30, 30] });
       }
     } else {
@@ -139,15 +167,12 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
       }
 
       if (polyline) {
-        const coords = routeData
-          .filter(p => p.latitude !== 0 && p.longitude !== 0)
-          .map(p => [p.latitude, p.longitude]);
-        polyline.setLatLngs(coords);
+        polyline.setLatLngs(routeCoords);
       }
 
       map.panTo([latitude, longitude]);
     }
-  }, [loaded, latitude, longitude, routeData]);
+  }, [loaded, latitude, longitude, routeCoords]);
 
   useEffect(() => {
     return () => {
@@ -173,84 +198,115 @@ export default function TelemetryDashboard() {
   const [data, setData] = useState<TelemetryData[]>([]);
   const [activeTab, setActiveTab] = useState<'engine' | 'temperatures' | 'fuel_load'>('engine');
   const [connectionOk, setConnectionOk] = useState(true);
-  const [now, setNow] = useState(() => Date.now());
 
-  const withTimeLabel = (item: TelemetryData): TelemetryData => ({
+  const recordsRef = useRef<globalThis.Map<string, TelemetryData>>(new globalThis.Map());
+  const cursorRef = useRef(0);
+  const changesSupportedRef = useRef<boolean | null>(null);
+  const generationRef = useRef(0);
+  const initializedRef = useRef(false);
+
+  const withTimeLabel = useCallback((item: TelemetryData): TelemetryData => ({
     ...item,
     timeLabel: new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  });
+  }), []);
 
-  // Poll for Live data: full history once on mount / vehicle change, then lightweight latest-record updates
+  // Bounded per-poll catch-up: at most CHANGE_PAGES_PER_POLL pages of
+  // CHANGE_PAGE_LIMIT records per poll. A large backlog converges across
+  // successive polls via the persisted cursor instead of accumulating up
+  // to 500k rows in one poll; the cursor only advances past pages the
+  // server actually returned, so late records are never skipped.
+  const CHANGE_PAGE_LIMIT = 500;
+  const CHANGE_PAGES_PER_POLL = 4;
+
+  const recordKey = useCallback((record: TelemetryData & { eventId?: string | number; ingestSeq?: number; vehicleId?: string }) => {
+    const vehicle = record.vehicleId || activeVehicleId || 'all';
+    if (record.eventId !== undefined && record.eventId !== null) return `${vehicle}:event:${record.eventId}`;
+    if (record.ingestSeq !== undefined && record.ingestSeq !== null) return `${vehicle}:seq:${record.ingestSeq}`;
+    return `${vehicle}:legacy:${record.timestamp}:${record.rpm}:${record.speed}:${record.latitude}:${record.longitude}`;
+  }, [activeVehicleId]);
+
+  const mergeRecords = useCallback((records: TelemetryData[], generation: number) => {
+    if (generation !== generationRef.current) return;
+    for (const record of records) recordsRef.current.set(recordKey(record as TelemetryData & { eventId?: string | number; ingestSeq?: number; vehicleId?: string }), withTimeLabel(record));
+    const bounded = [...recordsRef.current.values()]
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(-2000);
+    recordsRef.current = new globalThis.Map(bounded.map(record => [recordKey(record as TelemetryData & { eventId?: string | number; ingestSeq?: number; vehicleId?: string }), record]));
+    setData(bounded);
+  }, [recordKey, withTimeLabel]);
+
+  const fetchChanges = useCallback(async (cursor: number, generation: number, signal: AbortSignal) => {
+    const records: TelemetryData[] = [];
+    let nextCursor = cursor;
+    let hasMore = true;
+    let pages = 0;
+    while (hasMore && pages++ < CHANGE_PAGES_PER_POLL) {
+      const response = await apiFetch(buildUrl('/api/telemetry/changes', { cursor: nextCursor, limit: CHANGE_PAGE_LIMIT }), { signal });
+      if (response.status === 404 || response.status === 501) {
+        changesSupportedRef.current = false;
+        return null;
+      }
+      if (!response.ok) throw new Error(`Telemetry changes HTTP ${response.status}`);
+      changesSupportedRef.current = true;
+      const result = await response.json() as { records?: TelemetryData[]; nextCursor?: number; hasMore?: boolean };
+      records.push(...(Array.isArray(result.records) ? result.records : []));
+      const returnedCursor = typeof result.nextCursor === 'number' ? result.nextCursor : nextCursor;
+      hasMore = !!result.hasMore && returnedCursor > nextCursor;
+      nextCursor = returnedCursor;
+    }
+    if (generation === generationRef.current) cursorRef.current = nextCursor;
+    return { records, hasMore };
+  }, [buildUrl]);
+
   useEffect(() => {
-    let useLatestEndpoint = true;
+    const generation = ++generationRef.current;
+    recordsRef.current = new globalThis.Map();
+    cursorRef.current = 0;
+    changesSupportedRef.current = null;
+    initializedRef.current = false;
     setData([]);
+    setConnectionOk(true);
+  }, [activeVehicleId]);
 
-    const mergeRecord = (record: TelemetryData) => {
-      setData(prev => {
-        if (!prev.length) return [record];
-        const last = prev[prev.length - 1];
-        if (record.timestamp < last.timestamp) return prev;
-        if (record.timestamp === last.timestamp) return [...prev.slice(0, -1), record];
-        return [...prev.slice(-999), record];
-      });
-    };
-
-    const fetchFullHistory = async () => {
-      const response = await fetch(buildUrl('/api/telemetry/history'));
-      if (response.ok) {
-        const result = await response.json();
-        setData(result.map((item: TelemetryData) => withTimeLabel(item)));
+  const pollTelemetry = useCallback(async (signal: AbortSignal) => {
+    const generation = generationRef.current;
+    if (!initializedRef.current) {
+      // History and cursor zero are intentionally concurrent. Their union handles
+      // late records around the initial handoff without clearing useful history.
+      // The changes leg is bounded per poll; any remainder converges on later
+      // polls through the persisted cursor.
+      const [historyRes, changePage] = await Promise.all([
+        apiFetch(buildUrl('/api/telemetry/history'), { signal }),
+        fetchChanges(0, generation, signal),
+      ]);
+      if (!historyRes.ok) throw new Error(`Telemetry history HTTP ${historyRes.status}`);
+      const history = await historyRes.json();
+      if (generation !== generationRef.current) return;
+      if (Array.isArray(history)) mergeRecords(history, generation);
+      if (changePage === null) {
+        const latestRes = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
+        if (!latestRes.ok) throw new Error(`Telemetry latest HTTP ${latestRes.status}`);
+        const latest = await latestRes.json();
+        if (latest) mergeRecords([latest], generation);
+      } else if (changePage.records.length) {
+        mergeRecords(changePage.records, generation);
       }
-    };
+      initializedRef.current = true;
+    } else if (changesSupportedRef.current !== false) {
+      const changePage = await fetchChanges(cursorRef.current, generation, signal);
+      if (changePage?.records.length) mergeRecords(changePage.records, generation);
+    } else {
+      const response = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
+      if (!response.ok) throw new Error(`Telemetry latest HTTP ${response.status}`);
+      const record = await response.json();
+      if (record) mergeRecords([record], generation);
+    }
+    if (generation === generationRef.current) setConnectionOk(true);
+  }, [buildUrl, fetchChanges, mergeRecords]);
 
-    const fetchUpdate = async () => {
-      try {
-        if (useLatestEndpoint) {
-          let response: Response;
-          try {
-            response = await fetch(buildUrl('/api/telemetry/latest'));
-          } catch {
-            // Older backend fallback
-            useLatestEndpoint = false;
-            await fetchFullHistory();
-            setConnectionOk(true);
-            return;
-          }
-          if (response.status === 404 || response.status === 501) {
-            useLatestEndpoint = false;
-            await fetchFullHistory();
-          } else if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          } else {
-            const record = await response.json();
-            if (record) mergeRecord(withTimeLabel(record));
-          }
-        } else {
-          await fetchFullHistory();
-        }
-        setConnectionOk(true);
-      } catch (error) {
-        console.error("Error fetching telemetry data:", error);
-        setConnectionOk(false);
-      }
-    };
+  useVisibilityPolling(pollTelemetry, 3000, [activeVehicleId, buildUrl, pollTelemetry]);
 
-    fetchFullHistory().catch((error) => {
-      console.error("Error fetching telemetry history:", error);
-      setConnectionOk(false);
-    });
-    const interval = setInterval(fetchUpdate, 3000);
-    return () => clearInterval(interval);
-  }, [activeVehicleId, buildUrl]);
-
-  // Tick once per second so "last seen" ages up without a refetch
-  useEffect(() => {
-    const ticker = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(ticker);
-  }, []);
-
-  const lastSeenAge = data.length > 0 ? now - data[data.length - 1].timestamp : null;
-  const isStale = lastSeenAge === null || lastSeenAge > STALE_THRESHOLD_MS;
+  const latestTimestamp = data.length > 0 ? data[data.length - 1].timestamp : null;
 
   const latest = data[data.length - 1] || {
     rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
@@ -307,29 +363,7 @@ export default function TelemetryDashboard() {
 
   const renderTelemetryWorkspace = () => (
     <>
-      {/* STALE DATA NOTICE */}
-      {connectionOk && isStale && (
-        <div style={{
-          background: 'rgba(245, 158, 11, 0.12)',
-          border: '1px solid rgba(245, 158, 11, 0.5)',
-          color: '#fbbf24',
-          padding: '12px 18px',
-          borderRadius: '12px',
-          fontWeight: 600,
-          fontSize: '13px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          marginBottom: '20px',
-          width: '100%'
-        }}>
-          <Clock size={18} />
-          <span>
-            Vehicle offline — engine off or head unit not reporting.
-            {data.length > 0 && ` Last known data from ${new Date(data[data.length - 1].timestamp).toLocaleString()}.`}
-          </span>
-        </div>
-      )}
+      <StaleDataNotice connectionOk={connectionOk} timestamp={latestTimestamp} />
 
       {/* WARNING BANNERS */}
       {(latest.alertCoolant || latest.alertVoltage) && (
@@ -378,7 +412,7 @@ export default function TelemetryDashboard() {
         <div style={styles.cardHeader}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between', width: '100%' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Map size={20} color="var(--accent-blue)" />
+              <MapIcon size={20} color="var(--accent-blue)" />
               <span style={styles.cardTitle}>Live Route Tracking Map</span>
             </div>
             <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>
@@ -580,27 +614,7 @@ export default function TelemetryDashboard() {
         </div>
 
         <div style={styles.headerControls}>
-          <div className="glass-panel-static" style={styles.liveIndicatorWrapper}>
-            <span
-              className="live-indicator"
-              style={connectionOk && !isStale ? undefined : {
-                animation: 'none',
-                backgroundColor: !connectionOk ? 'var(--accent-red)' : 'var(--accent-amber)'
-              }}
-            ></span>
-            <span style={{
-              fontSize: '12px',
-              fontWeight: 700,
-              letterSpacing: '0.05em',
-              color: !connectionOk ? 'var(--accent-red)' : isStale ? 'var(--accent-amber)' : 'var(--accent-green)'
-            }}>
-              {!connectionOk
-                ? 'SERVER OFFLINE'
-                : isStale
-                  ? (lastSeenAge === null ? 'AWAITING DATA' : `LAST SEEN ${formatAge(lastSeenAge).toUpperCase()}`)
-                  : 'LIVE'}
-            </span>
-          </div>
+          <FreshnessBadge connectionOk={connectionOk} timestamp={latestTimestamp} />
         </div>
       </div>
 

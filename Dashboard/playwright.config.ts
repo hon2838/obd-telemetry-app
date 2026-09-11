@@ -1,18 +1,20 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Browser suite for the OBD dashboard (Next.js on :3001 proxying /api to the
+// backend on :3000). Credentials are NEVER hardcoded here: provision a
+// disposable backend account and export E2E_USERNAME / E2E_PASSWORD (and
+// E2E_NEW_PASSWORD for the forced-reset test) before running. Tests skip
+// with a clear message when the backend or credentials are unavailable.
 export default defineConfig({
   testDir: './tests',
-  fullyParallel: true,
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: 1,
   reporter: 'list',
   use: {
     trace: 'on-first-retry',
-    httpCredentials: {
-      username: 'admin',
-      password: process.env.DASHBOARD_TEST_PASSWORD || 'mathew1974',
-    },
+    baseURL: 'http://127.0.0.1:3001',
   },
   projects: [
     {

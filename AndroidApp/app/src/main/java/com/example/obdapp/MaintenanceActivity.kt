@@ -64,6 +64,7 @@ class MaintenanceActivity : AppCompatActivity() {
     private fun httpGet(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 8000
+        conn.readTimeout = 15000
         applyAuthHeader(conn, this)
         val code = conn.responseCode
         return if (code in 200..299) conn.inputStream.bufferedReader().readText() else ""
@@ -103,6 +104,7 @@ class MaintenanceActivity : AppCompatActivity() {
                 applyAuthHeader(conn, this@MaintenanceActivity)
                 conn.doOutput = true
                 conn.connectTimeout = 8000
+                conn.readTimeout = 15000
                 conn.outputStream.use { it.write(obj.toString().toByteArray()) }
                 val code = conn.responseCode
                 withContext(Dispatchers.Main) {
@@ -287,6 +289,7 @@ class MaintenanceActivity : AppCompatActivity() {
                 applyAuthHeader(conn, this@MaintenanceActivity)
                 conn.doOutput = true
                 conn.connectTimeout = 8000
+                conn.readTimeout = 15000
                 val body = org.json.JSONObject().apply {
                     put("lastServiceDate", System.currentTimeMillis())
                 }.toString()
@@ -325,6 +328,7 @@ class MaintenanceActivity : AppCompatActivity() {
                 val conn = URL("$base/api/maintenance/$id").openConnection() as HttpURLConnection
                 conn.requestMethod = "DELETE"
                 conn.connectTimeout = 8000
+                conn.readTimeout = 15000
                 applyAuthHeader(conn, this@MaintenanceActivity)
                 val code = conn.responseCode
                 withContext(Dispatchers.Main) {

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
-import { API_HOST } from '../api';
+import { apiFetch } from '../api';
+import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 import {
   Wrench, CheckCircle, AlertTriangle, AlertOctagon, PlusCircle, Trash2, ArrowLeft, Calendar, Gauge, FileText, Car
@@ -50,7 +51,7 @@ const PRESETS = [
 ];
 
 export default function MaintenanceDashboard() {
-  const { activeVehicleId, buildUrl } = useVehicle();
+  const { activeVehicleId, activeVehicle, vehicles, buildUrl } = useVehicle();
   const [items, setItems] = useState<MaintenanceItem[]>([]);
   const [status, setStatus] = useState<MaintenanceStatus>({
     okCount: 0,
@@ -71,44 +72,47 @@ export default function MaintenanceDashboard() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  const fetchData = async () => {
-    try {
-      const itemsRes = await fetch(buildUrl('/api/maintenance'));
-      const itemsData = await itemsRes.json();
-      setItems(Array.isArray(itemsData) ? itemsData : []);
-
-      const statusRes = await fetch(buildUrl('/api/maintenance/status'));
-      const statusData = await statusRes.json();
-      setStatus(statusData || { okCount: 0, dueSoonCount: 0, overdueCount: 0, nextUpcoming: null });
-
-      // Extract current odo from first item's computed field
-      if (Array.isArray(itemsData) && itemsData.length > 0) {
-        setCurrentOdoVal(itemsData[0].currentOdometer);
-      } else {
-        // Fallback: fetch fuel logs to get current odo
-        const logsRes = await fetch(buildUrl('/api/fuel-logs'));
-        if (logsRes.ok) {
-          const logsData = await logsRes.json();
-          if (Array.isArray(logsData) && logsData.length > 0) {
-            setCurrentOdoVal(logsData[0].odometer);
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching maintenance data:', err);
+  const fetchData = async (signal?: AbortSignal) => {
+    const [itemsRes, statusRes] = await Promise.all([
+      apiFetch(buildUrl('/api/maintenance'), { signal }),
+      apiFetch(buildUrl('/api/maintenance/status'), { signal }),
+    ]);
+    if (!itemsRes.ok) throw new Error(`Maintenance HTTP ${itemsRes.status}`);
+    if (!statusRes.ok) throw new Error(`Maintenance status HTTP ${statusRes.status}`);
+    const [itemsData, statusData] = await Promise.all([itemsRes.json(), statusRes.json()]);
+    const nextItems = Array.isArray(itemsData) ? itemsData : [];
+    setItems(nextItems);
+    setStatus(statusData || { okCount: 0, dueSoonCount: 0, overdueCount: 0, nextUpcoming: null });
+    if (nextItems.length > 0) {
+      setCurrentOdoVal(nextItems[0].currentOdometer);
+      return;
+    }
+    const logsRes = await apiFetch(buildUrl('/api/fuel-logs'), { signal });
+    if (logsRes.ok) {
+      const logsData = await logsRes.json();
+      if (Array.isArray(logsData) && logsData.length > 0) setCurrentOdoVal(logsData[0].odometer);
     }
   };
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
-  }, [activeVehicleId, buildUrl]);
+  useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
+
+    // Creates require an explicit authorized vehicle. Never coerce the
+    // fleet-wide "All Vehicles" view (or an unknown id) into "default":
+    // that silently files one car's schedule under another car.
+    const explicitVehicle = vehicles.find(v => v.id === activeVehicleId) || null;
+    if (!explicitVehicle) {
+      setError(
+        vehicles.length === 0
+          ? 'No vehicles are assigned to your account yet. Ask an admin to assign one before creating a schedule.'
+          : 'Select a specific vehicle (not All Vehicles) before creating a schedule.'
+      );
+      return;
+    }
 
     if (!name) {
       setError('Please provide a name for the maintenance item.');
@@ -117,7 +121,7 @@ export default function MaintenanceDashboard() {
 
     setLoading(true);
     try {
-      const res = await fetch(`${API_HOST}/api/maintenance`, {
+      const res = await apiFetch('/api/maintenance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -127,7 +131,7 @@ export default function MaintenanceDashboard() {
           lastServiceOdo: lastServiceOdo ? parseFloat(lastServiceOdo) : null,
           lastServiceDate: lastServiceDate ? new Date(lastServiceDate).getTime() : null,
           notes,
-          vehicleId: activeVehicleId !== 'all' ? activeVehicleId : 'default'
+          vehicleId: explicitVehicle.id
         })
       });
 
@@ -158,7 +162,7 @@ export default function MaintenanceDashboard() {
   const handleMarkServiced = async (id: string) => {
     if (!confirm('Mark this item as completed and reset the counters to current mileage/date?')) return;
     try {
-      const res = await fetch(`${API_HOST}/api/maintenance/${id}`, {
+      const res = await apiFetch(`/api/maintenance/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ markServiced: true })
@@ -174,7 +178,7 @@ export default function MaintenanceDashboard() {
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this maintenance schedule?')) return;
     try {
-      const res = await fetch(`${API_HOST}/api/maintenance/${id}`, {
+      const res = await apiFetch(`/api/maintenance/${id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -206,6 +210,11 @@ export default function MaintenanceDashboard() {
       case 'overdue': return 'var(--accent-red)';
     }
   };
+
+  const explicitVehicleSelected = vehicles.some(v => v.id === activeVehicleId);
+  const vehicleGuardMessage = vehicles.length === 0
+    ? 'No vehicles are assigned to your account yet.'
+    : 'Select a specific vehicle (not All Vehicles) to enable saving.';
 
   return (
     <div style={styles.container}>
@@ -340,11 +349,17 @@ export default function MaintenanceDashboard() {
               />
             </div>
 
-            <button type="submit" disabled={loading} style={styles.submitBtn}>
+            <button
+              type="submit"
+              disabled={loading || !explicitVehicleSelected}
+              title={explicitVehicleSelected ? 'Save to the selected vehicle' : vehicleGuardMessage}
+              style={{ ...styles.submitBtn, ...((loading || !explicitVehicleSelected) ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}
+            >
               <Wrench size={16} />
-              {loading ? 'Creating...' : 'Create Schedule'}
+              {loading ? 'Creating...' : `Create Schedule${activeVehicle ? ` — ${activeVehicle.name}` : ''}`}
             </button>
 
+            {!explicitVehicleSelected && <div style={styles.vehicleGuard}>{vehicleGuardMessage}</div>}
             {error && <div style={styles.errorAlert}>{error}</div>}
             {successMsg && <div style={styles.successAlert}>{successMsg}</div>}
           </form>
@@ -573,6 +588,14 @@ const styles: Record<string, any> = {
     border: '1px solid rgba(239, 68, 68, 0.3)',
     borderRadius: '8px',
     color: 'var(--accent-red)',
+    fontSize: '13px'
+  },
+  vehicleGuard: {
+    padding: '12px',
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    border: '1px solid rgba(245, 158, 11, 0.4)',
+    borderRadius: '8px',
+    color: 'var(--accent-amber)',
     fontSize: '13px'
   },
   successAlert: {

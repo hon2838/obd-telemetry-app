@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
-import { API_HOST } from '../api';
+import { apiFetch } from '../api';
+import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 import {
   Fuel, Gauge, Clock, ArrowLeft, Trash2, PlusCircle, ActivitySquare, TrendingUp, Car
@@ -29,7 +30,7 @@ interface FuelStats {
 }
 
 export default function FuelTracker() {
-  const { activeVehicleId, buildUrl } = useVehicle();
+  const { activeVehicleId, activeVehicle, vehicles, buildUrl } = useVehicle();
   const [logs, setLogs] = useState<FuelLog[]>([]);
   const [stats, setStats] = useState<FuelStats>({
     averageKmPerLitre: 0,
@@ -46,49 +47,45 @@ export default function FuelTracker() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  const fetchData = async () => {
-    try {
-      // Fetch Logs
-      const logsRes = await fetch(buildUrl('/api/fuel-logs'));
-      const logsData = await logsRes.json();
-      
-      // Calculate economy for each log on the fly (sorted by odo ascending first)
-      const sortedAsc = [...(Array.isArray(logsData) ? logsData : [])].sort((a: FuelLog, b: FuelLog) => a.odometer - b.odometer);
-      const computedLogs = sortedAsc.map((log: FuelLog, index: number) => {
-        if (index === 0) {
-          return { ...log, economy: null };
-        }
-        const prev = sortedAsc[index - 1];
-        const dist = log.odometer - prev.odometer;
-        const litres = log.litres;
-        const economy = dist > 0 && litres > 0 ? parseFloat((dist / litres).toFixed(2)) : null;
-        return { ...log, economy };
-      });
-
-      // Keep logs descending by odometer for table listing
-      const sortedDesc = [...computedLogs].sort((a, b) => b.odometer - a.odometer);
-      setLogs(sortedDesc);
-
-      // Fetch Stats
-      const statsRes = await fetch(buildUrl('/api/fuel-stats'));
-      const statsData = await statsRes.json();
-      setStats(statsData || { averageKmPerLitre: 0, bestKmPerLitre: 0, worstKmPerLitre: 0, totalLitres: 0, totalDistance: 0, logCount: 0 });
-    } catch (err) {
-      console.error('Error fetching fuel data:', err);
-    }
+  const fetchData = async (signal?: AbortSignal) => {
+    const [logsRes, statsRes] = await Promise.all([
+      apiFetch(buildUrl('/api/fuel-logs'), { signal }),
+      apiFetch(buildUrl('/api/fuel-stats'), { signal }),
+    ]);
+    if (!logsRes.ok) throw new Error(`Fuel logs HTTP ${logsRes.status}`);
+    if (!statsRes.ok) throw new Error(`Fuel stats HTTP ${statsRes.status}`);
+    const [logsData, statsData] = await Promise.all([logsRes.json(), statsRes.json()]);
+    const sortedAsc = [...(Array.isArray(logsData) ? logsData : [])].sort((a: FuelLog, b: FuelLog) => a.odometer - b.odometer);
+    const computedLogs = sortedAsc.map((log: FuelLog, index: number) => {
+      if (index === 0) return { ...log, economy: null };
+      const prev = sortedAsc[index - 1];
+      const dist = log.odometer - prev.odometer;
+      const economy = dist > 0 && log.litres > 0 ? parseFloat((dist / log.litres).toFixed(2)) : null;
+      return { ...log, economy };
+    });
+    setLogs([...computedLogs].sort((a, b) => b.odometer - a.odometer));
+    setStats(statsData || { averageKmPerLitre: 0, bestKmPerLitre: 0, worstKmPerLitre: 0, totalLitres: 0, totalDistance: 0, logCount: 0 });
   };
 
-  useEffect(() => {
-    fetchData();
-    // Poll stats/logs every 10 seconds to keep in sync with Android uploads
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
-  }, [activeVehicleId, buildUrl]);
+  useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
+
+    // Creates require an explicit authorized vehicle. Never coerce the
+    // fleet-wide "All Vehicles" view (or an unknown id) into "default":
+    // that silently files one car's fuel under another car.
+    const explicitVehicle = vehicles.find(v => v.id === activeVehicleId) || null;
+    if (!explicitVehicle) {
+      setError(
+        vehicles.length === 0
+          ? 'No vehicles are assigned to your account yet. Ask an admin to assign one before logging fuel.'
+          : 'Select a specific vehicle (not All Vehicles) before logging fuel.'
+      );
+      return;
+    }
 
     const litres = parseFloat(litresInput);
     const odometer = parseFloat(odoInput);
@@ -113,7 +110,7 @@ export default function FuelTracker() {
 
     setLoading(true);
     try {
-      const res = await fetch(`${API_HOST}/api/fuel-logs`, {
+      const res = await apiFetch('/api/fuel-logs', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -123,7 +120,7 @@ export default function FuelTracker() {
           litres,
           odometer,
           source: 'web',
-          vehicleId: activeVehicleId !== 'all' ? activeVehicleId : 'default'
+          vehicleId: explicitVehicle.id
         })
       });
 
@@ -146,7 +143,7 @@ export default function FuelTracker() {
   const handleDelete = async (id: string | number) => {
     if (!confirm('Are you sure you want to delete this log entry?')) return;
     try {
-      const res = await fetch(`${API_HOST}/api/fuel-logs/${id}`, {
+      const res = await apiFetch(`/api/fuel-logs/${id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -160,7 +157,7 @@ export default function FuelTracker() {
   };
 
   // Format data for Recharts line chart (sorted chronologically)
-  const chartData = [...logs]
+  const chartData = useMemo(() => [...logs]
     .filter(log => log.economy !== null && log.economy !== undefined)
     .sort((a, b) => a.timestamp - b.timestamp)
     .map(log => ({
@@ -168,7 +165,12 @@ export default function FuelTracker() {
       'Economy (km/L)': log.economy,
       litres: log.litres,
       odometer: log.odometer
-    }));
+    })), [logs]);
+
+  const explicitVehicleSelected = vehicles.some(v => v.id === activeVehicleId);
+  const vehicleGuardMessage = vehicles.length === 0
+    ? 'No vehicles are assigned to your account yet.'
+    : 'Select a specific vehicle (not All Vehicles) to enable saving.';
 
   return (
     <div style={{ minHeight: '100vh', padding: '1.5rem', display: 'flex', flexDirection: 'column' }}>
@@ -281,14 +283,16 @@ export default function FuelTracker() {
 
                 {error && <div style={styles.errorAlert}>{error}</div>}
                 {successMsg && <div style={styles.successAlert}>{successMsg}</div>}
+                {!explicitVehicleSelected && <div style={styles.vehicleGuard}>{vehicleGuardMessage}</div>}
 
                 <button
                   type="submit"
-                  disabled={loading}
-                  style={styles.submitBtn}
+                  disabled={loading || !explicitVehicleSelected}
+                  title={explicitVehicleSelected ? 'Save to the selected vehicle' : vehicleGuardMessage}
+                  style={{ ...styles.submitBtn, ...((loading || !explicitVehicleSelected) ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}
                   className="glass-panel"
                 >
-                  <PlusCircle size={18} /> {loading ? 'Logging refuel...' : 'Add Refuel Entry'}
+                  <PlusCircle size={18} /> {loading ? 'Logging refuel...' : `Add Refuel Entry${activeVehicle ? ` — ${activeVehicle.name}` : ''}`}
                 </button>
               </form>
             </div>
@@ -582,6 +586,14 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid rgba(239, 68, 68, 0.3)',
     borderRadius: '8px',
     color: 'var(--accent-red)',
+    fontSize: '13px'
+  },
+  vehicleGuard: {
+    padding: '12px',
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    border: '1px solid rgba(245, 158, 11, 0.4)',
+    borderRadius: '8px',
+    color: 'var(--accent-amber)',
     fontSize: '13px'
   },
   successAlert: {

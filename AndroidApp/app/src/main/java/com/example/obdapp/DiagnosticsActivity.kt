@@ -55,6 +55,7 @@ class DiagnosticsActivity : AppCompatActivity() {
                 applyAuthHeader(conn, this@DiagnosticsActivity)
                 conn.doOutput = true
                 conn.connectTimeout = 5000
+                conn.readTimeout = 15000
                 val body = org.json.JSONObject().apply {
                     put("command", command)
                     put("vehicleId", VehiclePrefs.getActiveVehicleId(this@DiagnosticsActivity))
@@ -90,6 +91,7 @@ class DiagnosticsActivity : AppCompatActivity() {
                 val vid = VehiclePrefs.getActiveVehicleId(this@DiagnosticsActivity)
                 val conn = URL("$base/api/telemetry/dtc?vehicle=$vid").openConnection() as HttpURLConnection
                 conn.connectTimeout = 5000
+                conn.readTimeout = 15000
                 applyAuthHeader(conn, this@DiagnosticsActivity)
                 val body = conn.inputStream.bufferedReader().readText()
                 val json = org.json.JSONObject(body)
@@ -126,6 +128,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             applyAuthHeader(conn, this@DiagnosticsActivity)
             conn.doOutput = true
             conn.connectTimeout = 5000
+            conn.readTimeout = 15000
             conn.outputStream.use {
                 it.write(org.json.JSONArray(codes).toString().toByteArray())
             }

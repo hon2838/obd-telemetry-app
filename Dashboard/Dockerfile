@@ -1,39 +1,29 @@
-FROM node:24-alpine
-
+# Build a pruned standalone Next runtime.
+FROM node:24-alpine AS deps
 WORKDIR /app
+COPY package*.json ./
+RUN npm ci
 
-# Build identity. CI / `make build` (in Dashboard/) passes
-# these in so the running container reports which commit it
-# came from. The dashboard Next.js page can read these via
-# next.config.js (if wired up later); for now the build args
-# are also visible in the image's `docker inspect` output.
+FROM node:24-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
 ARG SERVICE_VERSION=dev
 ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
-ENV NEXT_PUBLIC_SERVICE_VERSION=${SERVICE_VERSION}
-ENV NEXT_PUBLIC_BUILD_COMMIT=${BUILD_COMMIT}
-ENV NEXT_PUBLIC_BUILD_TIME=${BUILD_TIME}
-
 ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-
-COPY package*.json ./
-
-RUN npm ci
-
-COPY . .
-
+ENV NEXT_PUBLIC_SERVICE_VERSION=${SERVICE_VERSION} NEXT_PUBLIC_BUILD_COMMIT=${BUILD_COMMIT} NEXT_PUBLIC_BUILD_TIME=${BUILD_TIME} NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 RUN npm run build
 
+FROM node:24-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3001
+ENV HOSTNAME=0.0.0.0
+# INTERNAL_API_URL remains a runtime env so the proxy targets the local backend.
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
 EXPOSE 3001
-
-# Healthcheck the Next.js server. /healthz is a tiny page
-# (Dashboard/pages/healthz.tsx) that's excluded from the
-# auth middleware; it returns 200 with a JSON body containing
-# "status":"ok" when the Next.js process is alive. Use
-# 127.0.0.1 (not localhost) to skip the IPv6/IPv4 DNS resolver
-# issue on Alpine.
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3001/healthz | grep -q '"status":"ok"' || exit 1
-
-CMD ["npm", "start"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://127.0.0.1:3001/healthz | grep -q '"status":"ok"' || exit 1
+CMD ["node", "server.js"]

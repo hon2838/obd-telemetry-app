@@ -80,6 +80,16 @@ function installAuthorization(fastify, stores, authenticate) {
     request.auth = auth;
     reply.header('Cache-Control', 'no-store');
 
+    // Browser cookies are ambient credentials. Require the token bound to
+    // the server-side session for every state-changing request. Bearer,
+    // Basic, device-token, and API-key clients retain their existing contract.
+    if (auth.via === 'cookie' && request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'OPTIONS') {
+      const csrf = request.headers['x-csrf-token'];
+      if (!auth.session?.csrfToken || typeof csrf !== 'string' || csrf !== auth.session.csrfToken) {
+        return reply.code(403).send({ error: 'Invalid CSRF token', code: 'CSRF_REQUIRED' });
+      }
+    }
+
     // If user is flagged mustChangePassword, only allow password/profile/logout endpoints
     if (auth.type === 'user' && auth.user.mustChangePassword && !resetRoutes.has(routeUrl)) {
       return reply.code(403).send({
