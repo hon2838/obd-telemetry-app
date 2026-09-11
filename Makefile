@@ -5,6 +5,9 @@
 # + timestamp + SERVICE_VERSION) into the images, which the
 # /healthz endpoint then surfaces.
 
+-include .env
+export
+
 SERVICE_VERSION ?= 1.2.0
 BUILD_COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -12,7 +15,7 @@ BUILD_TIME      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 SERVER_IMAGE    ?= obd-telemetry-server
 DASH_IMAGE      ?= obd-telemetry-dashboard
 
-.PHONY: help build build-server build-dashboard build-all apk apk-bundle version test test-server lint lint-fix clean
+.PHONY: help build build-server build-dashboard build-all apk apk-bundle apk-and-server version test test-server lint lint-fix clean
 
 help:
 	@echo "OBD Telemetry — make targets"
@@ -63,6 +66,8 @@ apk-bundle: apk
 build: build-server build-dashboard
 
 build-all: apk-bundle build
+
+apk-and-server: build-all
 
 build-server:
 	podman build \
