@@ -17,6 +17,7 @@ const SERVER_FILE = path.join(__dirname, 'server.js');
 let backend;
 let fastify;
 const auth = { 'x-api-key': TEST_API_KEY };
+const VALID_TIMESTAMP = Date.now();
 
 function cookieValue(setCookie) {
   return String(setCookie).split(';')[0];
@@ -88,7 +89,7 @@ test('vehicle delete with reassign rolls back when staging the second file fails
 
   expect((await fastify.inject({
     method: 'POST', url: '/api/telemetry/batch', headers: auth,
-    payload: [{ timestamp: 7001, vehicleId: doomedId, eventId: 'rollback-t1', speed: 11 }]
+    payload: [{ timestamp: VALID_TIMESTAMP + 7001, vehicleId: doomedId, eventId: 'rollback-t1', speed: 11 }]
   })).statusCode).toBe(201);
   expect((await fastify.inject({
     method: 'POST', url: '/api/fuel-logs', headers: auth,
@@ -240,7 +241,7 @@ test('device revocation persists the token removal', async () => {
 test('mixed concurrent mutations serialize without lost updates', async () => {
   const batch = (eventId) => fastify.inject({
     method: 'POST', url: '/api/telemetry/batch', headers: auth,
-    payload: [{ timestamp: 8000, eventId, speed: 5 }]
+    payload: [{ timestamp: VALID_TIMESTAMP + 8000, eventId, speed: 5 }]
   });
   const responses = await Promise.all([
     ...Array.from({ length: 10 }, (_, i) => batch(`mixed-${i}`)),
@@ -281,7 +282,7 @@ test('command enqueue cannot race a telemetry command drain into resurrecting a 
 
     const telemetryPromise = fastify.inject({
       method: 'POST', url: '/api/telemetry/batch', headers: auth,
-      payload: [{ timestamp: 8888, vehicleId: 'default', eventId: 'race-drain-t1', speed: 22 }]
+      payload: [{ timestamp: VALID_TIMESTAMP + 8888, vehicleId: 'default', eventId: 'race-drain-t1', speed: 22 }]
     });
 
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -391,7 +392,7 @@ test('a failed transaction commit poisons all later HTTP reads and writes and pr
 
   expect((await fastify.inject({
     method: 'POST', url: '/api/telemetry/batch', headers: auth,
-    payload: [{ timestamp: 9001, vehicleId: crashId, eventId: 'crash-t1', speed: 7 }]
+    payload: [{ timestamp: VALID_TIMESTAMP + 9001, vehicleId: crashId, eventId: 'crash-t1', speed: 7 }]
   })).statusCode).toBe(201);
   expect((await fastify.inject({
     method: 'POST', url: '/api/fuel-logs', headers: auth,
@@ -444,7 +445,7 @@ test('a failed transaction commit poisons all later HTTP reads and writes and pr
   const subsequentWrites = await Promise.all([
     fastify.inject({ method: 'POST', url: '/api/vehicles', headers: auth, payload: { name: 'Forbidden Second Car' } }),
     fastify.inject({ method: 'POST', url: '/api/commands', headers: auth, payload: { command: 'read_dtc' } }),
-    fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: 9999, speed: 0 }] })
+    fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: VALID_TIMESTAMP + 9999, speed: 0 }] })
   ]);
   for (const writeRes of subsequentWrites) {
     expect(writeRes.statusCode).toBe(503);

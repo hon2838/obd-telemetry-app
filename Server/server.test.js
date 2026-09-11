@@ -146,5 +146,53 @@ describe('API Endpoints Integration', () => {
       expect(json.success).toBe(true);
       expect(json.message).toContain('Ingested 1 records');
     });
+
+    it('accepts batches of 100 items but rejects larger batches', async () => {
+      const record = (index) => ({ timestamp: Date.now() + index, eventId: `batch-limit-${index}` });
+      const accepted = await fastify.inject({
+        method: 'POST',
+        url: '/api/telemetry/batch',
+        headers: { 'x-api-key': TEST_API_KEY },
+        payload: Array.from({ length: 100 }, (_, index) => record(index))
+      });
+      expect(accepted.statusCode).toBe(201);
+      expect(JSON.parse(accepted.payload).acceptedIds).toHaveLength(100);
+
+      const rejected = await fastify.inject({
+        method: 'POST',
+        url: '/api/telemetry/batch',
+        headers: { 'x-api-key': TEST_API_KEY },
+        payload: Array.from({ length: 101 }, (_, index) => record(1000 + index))
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(JSON.parse(rejected.payload).error).toMatch(/100/);
+    });
+
+    it.each([
+      ['timestamp before 2020', { timestamp: 1577836799999 }],
+      ['timestamp more than one day ahead', { timestamp: Date.now() + 2 * 86400000 }],
+      ['latitude below -90', { timestamp: Date.now(), latitude: -90.001 }],
+      ['latitude above 90', { timestamp: Date.now(), latitude: 90.001 }],
+      ['longitude below -180', { timestamp: Date.now(), longitude: -180.001 }],
+      ['longitude above 180', { timestamp: Date.now(), longitude: 180.001 }],
+      ['speed below 0', { timestamp: Date.now(), speed: -0.001 }],
+      ['speed above 500', { timestamp: Date.now(), speed: 500.001 }],
+      ['rpm below 0', { timestamp: Date.now(), rpm: -0.001 }],
+      ['rpm above 20000', { timestamp: Date.now(), rpm: 20000.001 }],
+      ['coolantTemp below -50', { timestamp: Date.now(), coolantTemp: -50.001 }],
+      ['coolantTemp above 250', { timestamp: Date.now(), coolantTemp: 250.001 }],
+      ['fuelLevel below 0', { timestamp: Date.now(), fuelLevel: -0.001 }],
+      ['fuelLevel above 100', { timestamp: Date.now(), fuelLevel: 100.001 }],
+      ['batteryVoltage below 0', { timestamp: Date.now(), batteryVoltage: -0.001 }],
+      ['batteryVoltage above 36', { timestamp: Date.now(), batteryVoltage: 36.001 }]
+    ])('rejects %s', async (_description, payload) => {
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/api/telemetry/batch',
+        headers: { 'x-api-key': TEST_API_KEY },
+        payload: [payload]
+      });
+      expect(response.statusCode).toBe(400);
+    });
   });
 });

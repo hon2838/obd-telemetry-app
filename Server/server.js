@@ -1572,6 +1572,7 @@ const telemetryRecordSchema = {
     fuelLevel: { type: ['number', 'null'] },
     ambientTemp: { type: ['number', 'null'] },
     voltage: { type: ['number', 'null'] },
+    batteryVoltage: { type: ['number', 'null'] },
     accelTime: { type: ['number', 'null'] },
     alertCoolant: { type: 'boolean' },
     alertVoltage: { type: 'boolean' },
@@ -1601,8 +1602,32 @@ fastify.post('/api/telemetry/batch', {
   const payload = request.body;
   return serializeMutation(async () => {
     try {
-      // Validate the entire batch before preparing any candidate state.
+      if (payload.length > 100) {
+        return reply.status(400).send({ error: 'Batch must contain no more than 100 items' });
+      }
+
+      const numericBounds = {
+        latitude: [-90, 90],
+        longitude: [-180, 180],
+        speed: [0, 500],
+        rpm: [0, 20000],
+        coolantTemp: [-50, 250],
+        fuelLevel: [0, 100],
+        batteryVoltage: [0, 36],
+        voltage: [0, 36]
+      };
+      const minimumTimestamp = 1577836800000;
+      const maximumTimestamp = Date.now() + 86400000;
       for (const record of payload) {
+        if (!Number.isFinite(record.timestamp) || record.timestamp < minimumTimestamp || record.timestamp > maximumTimestamp) {
+          return reply.status(400).send({ error: 'Invalid telemetry timestamp' });
+        }
+        for (const [field, [minimum, maximum]] of Object.entries(numericBounds)) {
+          const value = record[field];
+          if (value !== undefined && value !== null && (!Number.isFinite(value) || value < minimum || value > maximum)) {
+            return reply.status(400).send({ error: `Invalid telemetry field: ${field}` });
+          }
+        }
         if (record.vehicleId !== undefined && !vehicleExists(record.vehicleId)) {
           return reply.status(400).send({ error: `Unknown vehicleId: ${record.vehicleId}` });
         }
@@ -1627,6 +1652,7 @@ fastify.post('/api/telemetry/batch', {
         fuelLevel: record.fuelLevel,
         ambientTemp: record.ambientTemp,
         voltage: record.voltage,
+        batteryVoltage: record.batteryVoltage,
         accelTime: record.accelTime,
         alertCoolant: record.alertCoolant,
         alertVoltage: record.alertVoltage,

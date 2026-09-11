@@ -18,6 +18,7 @@ let usersStore;
 let vehiclesStore;
 let hashPassword;
 const auth = { 'x-api-key': TEST_API_KEY };
+const VALID_TIMESTAMP = Date.now();
 
 function cookieValue(setCookie) {
   return String(setCookie).split(';')[0];
@@ -38,9 +39,9 @@ test('telemetry dedupe is durable, per vehicle, and reports accepted and duplica
   const first = await fastify.inject({
     method: 'POST', url: '/api/telemetry/batch', headers: auth,
     payload: [
-      { timestamp: 100, eventId: 'same', speed: 1 },
-      { timestamp: 101, eventId: 'same', speed: 2 },
-      { timestamp: 102, eventId: 'other', speed: 3 }
+      { timestamp: VALID_TIMESTAMP + 100, eventId: 'same', speed: 1 },
+      { timestamp: VALID_TIMESTAMP + 101, eventId: 'same', speed: 2 },
+      { timestamp: VALID_TIMESTAMP + 102, eventId: 'other', speed: 3 }
     ]
   });
   expect(first.statusCode).toBe(201);
@@ -49,7 +50,7 @@ test('telemetry dedupe is durable, per vehicle, and reports accepted and duplica
 
   const retry = await fastify.inject({
     method: 'POST', url: '/api/telemetry/batch', headers: auth,
-    payload: [{ timestamp: 999, eventId: 'same', speed: 99 }]
+    payload: [{ timestamp: VALID_TIMESTAMP + 999, eventId: 'same', speed: 99 }]
   });
   expect(retry.statusCode).toBe(201);
   expect(retry.json().acceptedIds).toEqual([]);
@@ -59,8 +60,8 @@ test('telemetry dedupe is durable, per vehicle, and reports accepted and duplica
 
 test('concurrent telemetry mutations serialize without duplicate IDs', async () => {
   const responses = await Promise.all([
-    fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: 200, eventId: 'parallel-a' }] }),
-    fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: 201, eventId: 'parallel-b' }] })
+    fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: VALID_TIMESTAMP + 200, eventId: 'parallel-a' }] }),
+    fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: VALID_TIMESTAMP + 201, eventId: 'parallel-b' }] })
   ]);
   expect(responses.map(r => r.statusCode)).toEqual([201, 201]);
   expect(new Set(telemetryDataStore.filter(r => /^parallel-/.test(r.eventId)).map(r => r.ingestSeq)).size).toBe(2);
@@ -77,7 +78,7 @@ test('failed telemetry persistence is retryable and does not mutate memory or de
   };
   const failed = await fastify.inject({
     method: 'POST', url: '/api/telemetry/batch', headers: auth,
-    payload: [{ timestamp: 300, eventId: 'retry-after-disk-failure' }]
+    payload: [{ timestamp: VALID_TIMESTAMP + 300, eventId: 'retry-after-disk-failure' }]
   });
   fs.writeFileSync = originalWriteSync;
   expect(failed.statusCode).toBe(503);
@@ -86,7 +87,7 @@ test('failed telemetry persistence is retryable and does not mutate memory or de
 
   const retried = await fastify.inject({
     method: 'POST', url: '/api/telemetry/batch', headers: auth,
-    payload: [{ timestamp: 300, eventId: 'retry-after-disk-failure' }]
+    payload: [{ timestamp: VALID_TIMESTAMP + 300, eventId: 'retry-after-disk-failure' }]
   });
   expect(retried.statusCode).toBe(201);
   expect(retried.json().acceptedIds).toEqual(['retry-after-disk-failure']);
@@ -94,8 +95,8 @@ test('failed telemetry persistence is retryable and does not mutate memory or de
 
 test('latest uses capture timestamp and changes expose scoped durable sequences', async () => {
   await fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [
-    { timestamp: 1000, eventId: 'capture-new', speed: 10 },
-    { timestamp: 900, eventId: 'capture-late', speed: 9 }
+    { timestamp: VALID_TIMESTAMP + 1000, eventId: 'capture-new', speed: 10 },
+    { timestamp: VALID_TIMESTAMP + 900, eventId: 'capture-late', speed: 9 }
   ] });
   const latest = await fastify.inject({ method: 'GET', url: '/api/telemetry/latest', headers: auth });
   expect(latest.json().eventId).toBe('capture-new');
@@ -153,13 +154,13 @@ test('cookie sessions require CSRF, expose it through login/me, and revoke on lo
 
 test('trip cache invalidates after a late telemetry sample and tank change', async () => {
   vehiclesStore.push({ id: 'cache-car', name: 'Cache Car', tankLitres: 20, createdAt: Date.now() });
-  const payload = [{ timestamp: 5000, vehicleId: 'cache-car', fuelLevel: 90, latitude: 1, longitude: 1, speed: 20 }, { timestamp: 5001, vehicleId: 'cache-car', fuelLevel: 80, latitude: 1, longitude: 1.01, speed: 20 }];
+  const payload = [{ timestamp: VALID_TIMESTAMP + 5000, vehicleId: 'cache-car', fuelLevel: 90, latitude: 1, longitude: 1, speed: 20 }, { timestamp: VALID_TIMESTAMP + 5001, vehicleId: 'cache-car', fuelLevel: 80, latitude: 1, longitude: 1.01, speed: 20 }];
   expect((await fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload })).statusCode).toBe(201);
   const first = await fastify.inject({ method: 'GET', url: '/api/drives?vehicle=cache-car', headers: auth });
   expect(first.statusCode).toBe(200);
   expect(first.json()[0].summary.pointCount).toBe(2);
   const initialEfficiency = first.json()[0].summary.fuelEfficiencyKmL;
-  expect((await fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: 5002, vehicleId: 'cache-car', speed: 30 }] })).statusCode).toBe(201);
+  expect((await fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: VALID_TIMESTAMP + 5002, vehicleId: 'cache-car', speed: 30 }] })).statusCode).toBe(201);
   const second = await fastify.inject({ method: 'GET', url: '/api/drives?vehicle=cache-car', headers: auth });
   expect(second.json()[0].summary.pointCount).toBe(3);
   expect((await fastify.inject({ method: 'PUT', url: '/api/vehicles/cache-car', headers: auth, payload: { tankLitres: 40 } })).statusCode).toBe(200);
