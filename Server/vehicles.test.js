@@ -167,7 +167,7 @@ describe('Multi-vehicle support', () => {
   });
 
   describe('telemetry ingest', () => {
-    const makeRecord = (ts, extra = {}) => ({ timestamp: ts, latitude: 3.1, longitude: 101.6, gpsSpeed: 0, ...extra });
+    const makeRecord = (ts, extra = {}) => ({ timestamp: Date.now() + ts, latitude: 3.1, longitude: 101.6, gpsSpeed: 0, ...extra });
 
     it('accepts a batch without vehicleId into the default vehicle', async () => {
       const res = await fastify.inject({
