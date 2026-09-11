@@ -22,6 +22,9 @@ services:
       - OBD_API_KEY=${OBD_API_KEY}
       - OBD_INITIAL_ADMIN_PASSWORD=${OBD_INITIAL_ADMIN_PASSWORD:-}
       - OBD_TRUST_PROXY=${OBD_TRUST_PROXY:-false}
+      - DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL:-https://obd.hon2838.name.my}
+      - API_PUBLIC_URL=${NEXT_PUBLIC_API_URL:-https://obd-api.hon2838.name.my}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
       - NODE_ENV=production
     volumes:
       - server-data:/app/data
@@ -41,7 +44,7 @@ services:
     build:
       context: ./Dashboard
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://obd-api.hon2838.name.my}
         - SERVICE_VERSION=${SERVICE_VERSION:-1.2.0}
         - BUILD_COMMIT=${BUILD_COMMIT:-unknown}
         - BUILD_TIME=${BUILD_TIME:-unknown}
@@ -52,7 +55,8 @@ services:
       # Server-side dashboard requests use the private Compose network.
       # NEXT_PUBLIC_API_URL remains the browser-facing public URL.
       - INTERNAL_API_URL=http://server:3000
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://obd-api.hon2838.name.my}
+      - DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL:-https://obd.hon2838.name.my}
       - NODE_ENV=production
     depends_on:
       - server

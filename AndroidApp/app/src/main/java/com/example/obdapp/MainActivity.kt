@@ -425,14 +425,16 @@ class MainActivity : AppCompatActivity() {
             }
             visibility = android.view.View.GONE
         }
+        val currentApiBase = getApiBaseUrl(this@MainActivity)
+        val defaultPairUrl = currentApiBase.replace("obd-api.", "obd.").replace("/api", "")
         val descView = TextView(this).apply {
-            text = "Scan the QR code or visit https://obd.hon2838.name.my/pair and enter the PIN above to link this car."
+            text = "Requesting pairing code from server..."
             textSize = 12f
             setTextColor(getColor(R.color.text_muted))
             gravity = android.view.Gravity.CENTER_HORIZONTAL
         }
         val statusView = TextView(this).apply {
-            text = "Waiting for confirmation..."
+            text = "Waiting for server response..."
             textSize = 12f
             setTextColor(getColor(R.color.accent_amber))
             setPadding(0, 16, 0, 0)
@@ -472,11 +474,13 @@ class MainActivity : AppCompatActivity() {
                     val resp = org.json.JSONObject(conn.inputStream.bufferedReader().readText())
                     val code = resp.getString("pairingCode")
                     val pollToken = resp.getString("pollToken")
-                    val qrUrl = resp.optString("qrUrl", "https://obd.hon2838.name.my/pair?code=$code")
+                    val fallbackQr = "$defaultPairUrl/pair?code=$code"
+                    val qrUrl = resp.optString("qrUrl", fallbackQr).ifEmpty { fallbackQr }
                     val qrBitmap = generateQrBitmap(qrUrl, 340)
 
                     withContext(Dispatchers.Main) {
                         pinView.text = code
+                        descView.text = "Scan the QR code or visit\n${qrUrl.substringBefore('?')}\nand enter the PIN above to link this car."
                         if (qrBitmap != null) {
                             qrImageView.setImageBitmap(qrBitmap)
                             qrImageView.visibility = android.view.View.VISIBLE

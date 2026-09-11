@@ -1511,9 +1511,34 @@ fastify.register(rateLimit, {
   timeWindow: '15 minutes'
 })
 
-// 3. Strict CORS
+// 3. Dynamic CORS based on configured dashboard and public URLs
+const defaultOrigins = [
+  'https://obd.hon2838.name.my',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:3003',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
+  'http://127.0.0.1:3003'
+]
+const configuredDashboardUrl = (process.env.DASHBOARD_PUBLIC_URL || process.env.PUBLIC_DASHBOARD_URL || '').trim().replace(/\/+$/, '')
+if (configuredDashboardUrl && !defaultOrigins.includes(configuredDashboardUrl)) {
+  defaultOrigins.push(configuredDashboardUrl)
+}
+if (process.env.CORS_ALLOWED_ORIGINS) {
+  process.env.CORS_ALLOWED_ORIGINS.split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean).forEach(orig => {
+    if (!defaultOrigins.includes(orig)) defaultOrigins.push(orig)
+  })
+}
+
 fastify.register(cors, {
-  origin: ['https://obd.hon2838.name.my', 'http://localhost:3001', 'http://localhost:3003']
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true)
+    if (defaultOrigins.includes(origin)) return cb(null, true)
+    if (process.env.NODE_ENV !== 'production') return cb(null, true)
+    return cb(new Error(`Origin ${origin} not allowed by CORS`), false)
+  },
+  credentials: true
 })
 
 const stores = {
@@ -2897,10 +2922,11 @@ fastify.post('/api/auth/device/initiate', {
   pendingPairingsByCode.set(pin, session)
   pendingPairingsByToken.set(pollToken, session)
 
+  const publicDashboardUrl = (process.env.DASHBOARD_PUBLIC_URL || process.env.PUBLIC_DASHBOARD_URL || 'https://obd.hon2838.name.my').trim().replace(/\/+$/, '')
   return reply.send({
     pairingCode,
     pollToken,
-    qrUrl: `https://obd.hon2838.name.my/pair?code=${pairingCode}`,
+    qrUrl: `${publicDashboardUrl}/pair?code=${pairingCode}`,
     expiresInSeconds: 600
   })
 })
@@ -3167,7 +3193,7 @@ fastify.get('/api/agent/latest', async (request, reply) => {
   const info = _readApkVersion();
   if (!info) {
     return reply.status(404).send({
-      error: 'No APK baked into this image. Run `make apk-and-server` to bundle one.',
+      error: 'No APK baked into this image. Run `make apk-bundle` to bundle one.',
     });
   }
   return reply.send({
@@ -3179,7 +3205,7 @@ fastify.get('/api/agent/latest', async (request, reply) => {
 fastify.get('/api/agent/latest.apk', async (request, reply) => {
   if (!fs.existsSync(APK_DOWNLOAD_PATH)) {
     return reply.status(404).send({
-      error: 'No APK baked into this image. Run `make apk-and-server` to bundle one.',
+      error: 'No APK baked into this image. Run `make apk-bundle` to bundle one.',
     });
   }
   const stat = fs.statSync(APK_DOWNLOAD_PATH);
