@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
 import { Activity, Map as MapIcon, Thermometer, Battery, Flame, Navigation, AlertCircle, Clock, Car } from 'lucide-react';
-import { apiFetch } from '../api';
+import { apiFetch, isAbortError } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 
@@ -277,38 +277,79 @@ export default function TelemetryDashboard() {
 
   const pollTelemetry = useCallback(async (signal: AbortSignal) => {
     const generation = generationRef.current;
-    if (!initializedRef.current) {
-      // History and cursor zero are intentionally concurrent. Their union handles
-      // late records around the initial handoff without clearing useful history.
-      // The changes leg is bounded per poll; any remainder converges on later
-      // polls through the persisted cursor.
-      const [historyRes, changePage] = await Promise.all([
-        apiFetch(buildUrl('/api/telemetry/history'), { signal }),
-        fetchChanges(0, generation, signal),
-      ]);
-      if (!historyRes.ok) throw new Error(`Telemetry history HTTP ${historyRes.status}`);
-      const history = await historyRes.json();
-      if (generation !== generationRef.current) return;
-      if (Array.isArray(history)) mergeRecords(history, generation);
-      if (changePage === null) {
-        const latestRes = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
-        if (!latestRes.ok) throw new Error(`Telemetry latest HTTP ${latestRes.status}`);
-        const latest = await latestRes.json();
-        if (latest) mergeRecords([latest], generation);
-      } else if (changePage.records.length) {
-        mergeRecords(changePage.records, generation);
+    try {
+      if (!initializedRef.current) {
+        // Bootstrap: fetch snapshot once from supported server.
+        // Server contract: GET /api/telemetry/snapshot?vehicle=...&limit=2000
+        // returns { records, snapshotCursor } with max limit 2000.
+        const snapshotRes = await apiFetch(buildUrl('/api/telemetry/snapshot', { limit: 2000 }), { signal });
+        if (snapshotRes.status === 404 || snapshotRes.status === 501) {
+          // Compatibility fallback for older servers lacking /api/telemetry/snapshot.
+          // Fetch bounded history without replaying full history from cursor zero.
+          const historyRes = await apiFetch(buildUrl('/api/telemetry/history', { limit: 2000 }), { signal });
+          if (!historyRes.ok) throw new Error(`Telemetry history HTTP ${historyRes.status}`);
+          const history = await historyRes.json();
+          if (generation !== generationRef.current) return;
+          const historyRecords: Array<TelemetryData & { ingestSeq?: number }> = Array.isArray(history) ? history : [];
+          if (historyRecords.length) mergeRecords(historyRecords, generation);
+
+          // If records contain server-assigned ingestSeq, initialize the cursor to max ingestSeq.
+          // This allows polling changes strictly after max ingestSeq without replaying from cursor zero.
+          let maxSeq = 0;
+          for (const r of historyRecords) {
+            if (typeof r.ingestSeq === 'number' && r.ingestSeq > maxSeq) {
+              maxSeq = r.ingestSeq;
+            }
+          }
+          if (maxSeq > 0) {
+            cursorRef.current = maxSeq;
+            changesSupportedRef.current = true;
+          } else if (historyRecords.length === 0) {
+            // Server has no records yet; cursor 0 does not replay history.
+            cursorRef.current = 0;
+          } else {
+            // Older server lacking ingestSeq cannot support cursor-based changes safely without replay.
+            changesSupportedRef.current = false;
+            const latestRes = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
+            if (!latestRes.ok) throw new Error(`Telemetry latest HTTP ${latestRes.status}`);
+            const latest = await latestRes.json();
+            if (latest) mergeRecords([latest], generation);
+          }
+          initializedRef.current = true;
+        } else {
+          if (!snapshotRes.ok) throw new Error(`Telemetry snapshot HTTP ${snapshotRes.status}`);
+          const snapshot = await snapshotRes.json() as { records?: TelemetryData[]; snapshotCursor?: number };
+          if (generation !== generationRef.current) return;
+          const records = Array.isArray(snapshot.records) ? snapshot.records : [];
+          if (records.length) mergeRecords(records, generation);
+          cursorRef.current = typeof snapshot.snapshotCursor === 'number' ? snapshot.snapshotCursor : 0;
+          changesSupportedRef.current = true;
+          initializedRef.current = true;
+        }
+      } else if (changesSupportedRef.current !== false) {
+        // Poll changes strictly after the established cursor
+        const changePage = await fetchChanges(cursorRef.current, generation, signal);
+        if (changePage === null) {
+          const response = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
+          if (!response.ok) throw new Error(`Telemetry latest HTTP ${response.status}`);
+          const record = await response.json();
+          if (record) mergeRecords([record], generation);
+        } else if (changePage.records.length) {
+          mergeRecords(changePage.records, generation);
+        }
+      } else {
+        const response = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
+        if (!response.ok) throw new Error(`Telemetry latest HTTP ${response.status}`);
+        const record = await response.json();
+        if (record) mergeRecords([record], generation);
       }
-      initializedRef.current = true;
-    } else if (changesSupportedRef.current !== false) {
-      const changePage = await fetchChanges(cursorRef.current, generation, signal);
-      if (changePage?.records.length) mergeRecords(changePage.records, generation);
-    } else {
-      const response = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
-      if (!response.ok) throw new Error(`Telemetry latest HTTP ${response.status}`);
-      const record = await response.json();
-      if (record) mergeRecords([record], generation);
+      if (generation === generationRef.current) setConnectionOk(true);
+    } catch (err) {
+      if (generation === generationRef.current && !isAbortError(err)) {
+        setConnectionOk(false);
+      }
+      throw err;
     }
-    if (generation === generationRef.current) setConnectionOk(true);
   }, [buildUrl, fetchChanges, mergeRecords]);
 
   const pollingInterval = useCallback(() => {

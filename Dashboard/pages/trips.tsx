@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Head from 'next/head';
 import { apiFetch, isAbortError } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
@@ -39,12 +39,12 @@ interface LeaderboardData {
   longest_duration: DriveSession[];
 }
 
-const MAX_DETAIL_CHART_POINTS = 750;
+export const MAX_DETAIL_CHART_POINTS = 750;
 
 // Keep the first and last samples, then select evenly spaced samples from the
 // interior. This bounds Recharts' SVG work while preserving the full trip
 // time range and its overall shape for long sessions.
-function decimateChartPoints<T>(points: T[], maxPoints: number): T[] {
+export function decimateChartPoints<T>(points: T[], maxPoints: number): T[] {
   if (points.length <= maxPoints) return points;
   const result = [points[0]];
   const interiorCount = maxPoints - 2;
@@ -70,22 +70,46 @@ export default function TripsDashboard() {
   const [loaded, setLoaded] = useState(false);
   const [selectedDrive, setSelectedDrive] = useState<DriveSession | null>(null);
   const [selectedDrivePoints, setSelectedDrivePoints] = useState<any[]>([]);
+  const driveAbortRef = useRef<AbortController | null>(null);
 
   const handleDriveClick = async (drive: DriveSession) => {
+    driveAbortRef.current?.abort();
+    const controller = new AbortController();
+    driveAbortRef.current = controller;
+
     setSelectedDrive(drive);
     setSelectedDrivePoints([]);
     try {
-      const res = await apiFetch(buildUrl('/api/telemetry/history', { start: drive.startTime, end: drive.endTime }));
+      // First try /api/telemetry/series with points=750 so downsampling happens before transfer and transformation
+      let res = await apiFetch(buildUrl('/api/telemetry/series', {
+        start: drive.startTime,
+        end: drive.endTime,
+        points: MAX_DETAIL_CHART_POINTS
+      }), { signal: controller.signal });
+
+      if (res.status === 404 || res.status === 501) {
+        // Safe fallback for an older server lacking /api/telemetry/series
+        res = await apiFetch(buildUrl('/api/telemetry/history', {
+          start: drive.startTime,
+          end: drive.endTime
+        }), { signal: controller.signal });
+      }
+
       if (!res.ok) throw new Error(`Trip telemetry HTTP ${res.status}`);
       const data = await res.json();
-      const transformed = data.map((d: any) => ({
+      if (controller.signal.aborted) return;
+
+      const rawPoints: any[] = Array.isArray(data) ? data : (Array.isArray(data?.records) ? data.records : []);
+      const transformed = rawPoints.map((d: any) => ({
         time: new Date(d.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         speed: (d.speed !== null && d.speed !== undefined) ? d.speed : (d.gpsSpeed || 0),
         rpm: d.rpm || 0
       }));
       setSelectedDrivePoints(decimateChartPoints(transformed, MAX_DETAIL_CHART_POINTS));
     } catch (err) {
-      console.error(err);
+      if (!isAbortError(err)) {
+        console.error('Failed to load trip telemetry details:', err);
+      }
     }
   };
 
@@ -102,7 +126,18 @@ export default function TripsDashboard() {
     setLoaded(true);
   };
 
-  useEffect(() => { setSelectedDrive(null); }, [activeVehicleId]);
+  useEffect(() => {
+    driveAbortRef.current?.abort();
+    setSelectedDrive(null);
+    setSelectedDrivePoints([]);
+  }, [activeVehicleId]);
+
+  useEffect(() => {
+    return () => {
+      driveAbortRef.current?.abort();
+    };
+  }, []);
+
   useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
 
   // Compute overall stats

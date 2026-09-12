@@ -14,6 +14,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const util = require('util')
+const { Readable } = require('stream')
 const { installAuthorization, canAccessVehicle, vehicleScope, isAdmin } = require('./authorization')
 
 // Read the expected API key from the environment at module load.
@@ -632,8 +633,19 @@ syncTelemetryEventKeySet()
 
 let telemetryRevision = 0
 let vehicleRevision = 0
+let telemetrySequenceIndexValid = telemetryDataStore.every((record, index, records) => {
+  const sequence = Number(record.ingestSeq)
+  return Number.isSafeInteger(sequence) && sequence > 0 &&
+    (index === 0 || sequence > Number(records[index - 1].ingestSeq))
+})
+let telemetrySequenceIndexLength = telemetryDataStore.length
+let telemetrySequenceIndexLast = telemetryDataStore.length > 0
+  ? Number(telemetryDataStore[telemetryDataStore.length - 1].ingestSeq)
+  : 0
+let lastChangesInspectedRows = 0
 const latestCaptureCache = new Map()
 const tripSummaryCache = new Map()
+let allDriveBoundsCache = null
 function cacheKeyContainsVehicle(cacheKey, vehicleId) {
   const scope = String(cacheKey).split('|')[1]
   return scope === 'all' || scope === vehicleId || scope?.split(',').includes(vehicleId)
@@ -643,9 +655,11 @@ function invalidateAnalyticsCaches({ telemetry = false, vehicles = false, vehicl
     vehicleRevision++
     latestCaptureCache.clear()
     tripSummaryCache.clear()
+    allDriveBoundsCache = null
     return
   }
   if (!telemetry) return
+  allDriveBoundsCache = null
   if (vehicleId) {
     for (const key of latestCaptureCache.keys()) {
       if (cacheKeyContainsVehicle(key, vehicleId)) latestCaptureCache.delete(key)
@@ -711,6 +725,212 @@ function filterRecordsByScope(records, auth, requestedVehicleId) {
   const scope = vehicleScope(auth)
   if (scope === null) return records
   return records.filter(r => scope.includes(r.vehicleId || DEFAULT_VEHICLE_ID))
+}
+
+// This predicate is intentionally allocation-free. The change feed can
+// inspect a large inaccessible prefix, so using filterRecordsByScope([r], ...)
+// there would create a short-lived array for every inspected record.
+function recordIsVisibleToScope(record, auth, requestedVehicleId) {
+  const vehicleId = record.vehicleId || DEFAULT_VEHICLE_ID
+  if (requestedVehicleId) return vehicleId === requestedVehicleId
+  const scope = vehicleScope(auth)
+  return scope === null || scope.includes(vehicleId)
+}
+
+function firstIngestSequenceAfter(records, cursor) {
+  let low = 0
+  let high = records.length
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (Number(records[middle].ingestSeq) <= cursor) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+function telemetryCanBinarySeek() {
+  if (telemetryDataStore.length !== telemetrySequenceIndexLength) return false
+  if (!telemetrySequenceIndexValid) return false
+  if (telemetryDataStore.length === 0) return true
+  const last = telemetryDataStore[telemetryDataStore.length - 1]
+  return Number(last.ingestSeq) === telemetrySequenceIndexLast
+}
+
+function refreshTelemetrySequenceIndexForTesting() {
+  telemetrySequenceIndexValid = telemetryDataStore.every((record, index, records) => {
+    const sequence = Number(record.ingestSeq)
+    return Number.isSafeInteger(sequence) && sequence > 0 &&
+      (index === 0 || sequence > Number(records[index - 1].ingestSeq))
+  })
+  telemetrySequenceIndexLength = telemetryDataStore.length
+  telemetrySequenceIndexLast = telemetryDataStore.length > 0
+    ? Number(telemetryDataStore[telemetryDataStore.length - 1].ingestSeq)
+    : 0
+}
+
+function updateTelemetrySequenceIndexAfterAppend(accepted) {
+  if (!telemetrySequenceIndexValid || accepted.length === 0) return
+  if (telemetryDataStore.length - accepted.length !== telemetrySequenceIndexLength) {
+    telemetrySequenceIndexValid = false
+    telemetrySequenceIndexLength = telemetryDataStore.length
+    telemetrySequenceIndexLast = Number(telemetryDataStore[telemetryDataStore.length - 1]?.ingestSeq) || 0
+    return
+  }
+  let expected = telemetrySequenceIndexLast + 1
+  for (const record of accepted) {
+    if (Number(record.ingestSeq) !== expected) {
+      telemetrySequenceIndexValid = false
+      telemetrySequenceIndexLength = telemetryDataStore.length
+      telemetrySequenceIndexLast = Number(record.ingestSeq) || 0
+      return
+    }
+    expected++
+  }
+  telemetrySequenceIndexLength = telemetryDataStore.length
+  telemetrySequenceIndexLast = expected - 1
+}
+
+function chronologicalRecordCompare(a, b) {
+  const timestampDifference = Number(a.timestamp) - Number(b.timestamp)
+  if (timestampDifference !== 0) return timestampDifference
+  return Number(a.ingestSeq || 0) - Number(b.ingestSeq || 0)
+}
+
+function selectChronologicalTail(records, pointLimit, predicate) {
+  const heap = []
+  const swap = (left, right) => {
+    const value = heap[left]
+    heap[left] = heap[right]
+    heap[right] = value
+  }
+  const siftUp = (start) => {
+    let index = start
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2)
+      if (chronologicalRecordCompare(heap[parent], heap[index]) <= 0) break
+      swap(parent, index)
+      index = parent
+    }
+  }
+  const siftDown = (start) => {
+    let index = start
+    while (true) {
+      const left = index * 2 + 1
+      const right = left + 1
+      let smallest = index
+      if (left < heap.length && chronologicalRecordCompare(heap[left], heap[smallest]) < 0) smallest = left
+      if (right < heap.length && chronologicalRecordCompare(heap[right], heap[smallest]) < 0) smallest = right
+      if (smallest === index) break
+      swap(index, smallest)
+      index = smallest
+    }
+  }
+
+  for (const record of records) {
+    if (!predicate(record)) continue
+    if (heap.length < pointLimit) {
+      heap.push(record)
+      siftUp(heap.length - 1)
+    } else if (chronologicalRecordCompare(record, heap[0]) > 0) {
+      heap[0] = record
+      siftDown(0)
+    }
+  }
+  return heap.sort(chronologicalRecordCompare)
+}
+
+function speedValue(record) {
+  return Number(getRecordSpeed(record)) || 0
+}
+
+function rpmValue(record) {
+  return Number(record.rpm) || 0
+}
+
+// Deterministic peak-preserving reduction for chart data. Every bucket offers
+// its speed and RPM extrema, while the global extrema and endpoints are
+// mandatory whenever the requested budget permits them. This is deliberately
+// index-based rather than time-based so equal timestamps remain deterministic.
+function downsampleTelemetrySeries(records, pointLimit) {
+  if (records.length <= pointLimit) return records.slice()
+  if (pointLimit <= 2) return pointLimit === 1 ? [records[0]] : [records[0], records[records.length - 1]]
+
+  const mandatory = new Set([0, records.length - 1])
+  const addExtreme = (valueOf, maximize) => {
+    let selected = 0
+    for (let index = 1; index < records.length; index++) {
+      const selectedValue = valueOf(records[selected])
+      const value = valueOf(records[index])
+      if ((maximize && value > selectedValue) || (!maximize && value < selectedValue)) selected = index
+    }
+    mandatory.add(selected)
+  }
+  addExtreme(speedValue, false)
+  addExtreme(speedValue, true)
+  addExtreme(rpmValue, false)
+  addExtreme(rpmValue, true)
+
+  const selected = Array.from(mandatory)
+  if (selected.length >= pointLimit) {
+    // Endpoints are contractually mandatory. If the budget cannot also hold
+    // every distinct extreme, retain the strongest distinct extremes in a
+    // stable order after reserving both endpoints.
+    const endpointIndexes = [0, records.length - 1]
+    const remainingIndexes = selected
+      .filter(index => !endpointIndexes.includes(index))
+      .sort((a, b) => {
+        const aScore = Math.max(Math.abs(speedValue(records[a])), Math.abs(rpmValue(records[a])))
+        const bScore = Math.max(Math.abs(speedValue(records[b])), Math.abs(rpmValue(records[b])))
+        return bScore - aScore || a - b
+      })
+    return endpointIndexes
+      .concat(remainingIndexes.slice(0, pointLimit - endpointIndexes.length))
+      .sort((a, b) => a - b)
+      .map(index => records[index])
+  }
+
+  const candidates = new Set()
+  const bucketCount = Math.max(1, pointLimit - selected.length)
+  for (let bucket = 0; bucket < bucketCount; bucket++) {
+    const start = Math.floor(bucket * records.length / bucketCount)
+    const end = Math.max(start + 1, Math.floor((bucket + 1) * records.length / bucketCount))
+    let minSpeed = start
+    let maxSpeed = start
+    let minRpm = start
+    let maxRpm = start
+    for (let index = start + 1; index < end; index++) {
+      if (speedValue(records[index]) < speedValue(records[minSpeed])) minSpeed = index
+      if (speedValue(records[index]) > speedValue(records[maxSpeed])) maxSpeed = index
+      if (rpmValue(records[index]) < rpmValue(records[minRpm])) minRpm = index
+      if (rpmValue(records[index]) > rpmValue(records[maxRpm])) maxRpm = index
+    }
+    candidates.add(minSpeed)
+    candidates.add(maxSpeed)
+    candidates.add(minRpm)
+    candidates.add(maxRpm)
+  }
+
+  const remaining = pointLimit - selected.length
+  const ranked = Array.from(candidates)
+    .filter(index => !mandatory.has(index))
+    .sort((a, b) => {
+      const aScore = Math.max(Math.abs(speedValue(records[a])), Math.abs(rpmValue(records[a])))
+      const bScore = Math.max(Math.abs(speedValue(records[b])), Math.abs(rpmValue(records[b])))
+      return bScore - aScore || a - b
+    })
+  selected.push(...ranked.slice(0, remaining))
+  return selected.sort((a, b) => a - b).map(index => records[index])
+}
+
+function parseStrictQueryInteger(raw, name, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) {
+    return { error: `${name} must be an integer` }
+  }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    return { error: `${name} is out of bounds` }
+  }
+  return { value }
 }
 
 // ----- User Accounts & Device Pairing System -----------------------------
@@ -1582,12 +1802,23 @@ fastify.register(cors, {
   credentials: true
 })
 
+// Shared by authorization and export handlers so drive segmentation is not
+// performed twice for one export request.
+const getDriveBounds = (driveId) => {
+  if (telemetryDataStore.length === 0) return null
+  if (!allDriveBoundsCache) allDriveBoundsCache = segmentDrives()
+  const target = String(driveId)
+  return allDriveBoundsCache.find(drive => String(drive.id) === target) || null
+}
+
 const stores = {
   getVehicle: (id) => vehiclesStore.find(v => v.id === id),
   getDevice: (id) => devicesStore.find(d => d.id === id),
   getFuelLog: (id) => fuelLogsStore.find(r => String(r.id) === String(id)),
   getMaintenanceItem: (id) => maintenanceStore.find(r => String(r.id) === String(id)),
-  getDrive: (id) => segmentDrives(null).find(d => String(d.id) === String(id)),
+  // Reuse the same cached bounds lookup as the export handler. The closure is
+  // invoked only after route registration, when getDriveBounds is initialized.
+  getDrive: (id) => getDriveBounds(id),
 }
 installAuthorization(fastify, stores, authenticateRequest)
 
@@ -1729,6 +1960,7 @@ fastify.post('/api/telemetry/batch', {
         if (key) telemetryEventKeySet.add(key);
       }
       nextIngestSeq += accepted.length;
+      updateTelemetrySequenceIndexAfterAppend(accepted);
       const affectedVehicles = new Set(accepted.map(record => record.vehicleId || DEFAULT_VEHICLE_ID));
       for (const vehicleId of affectedVehicles) {
         invalidateAnalyticsCaches({ telemetry: true, vehicleId });
@@ -2058,58 +2290,22 @@ fastify.get('/api/performance/records', async (request, reply) => {
   });
 })
 
-// Helper to calculate drive bounds. Delegates to segmentDrives() so
-// gap logic and id format (now `<vehicleId>-<n>`) can't drift between
-// the listing and export paths.
-const getDriveBounds = (driveId) => {
-  if (telemetryDataStore.length === 0) return null;
-  const target = String(driveId);
-  return segmentDrives().find(d => String(d.id) === target) || null;
+function driveRecords(bounds) {
+  return telemetryDataStore.filter(record =>
+    record.timestamp >= bounds.startTime && record.timestamp <= bounds.endTime &&
+    (record.vehicleId || DEFAULT_VEHICLE_ID) === bounds.vehicleId)
 }
 
-// Drive CSV Exporter
-fastify.get('/api/drives/:id/export/csv', async (request, reply) => {
-  const { id } = request.params;
-  const bounds = getDriveBounds(id);
-  if (!bounds) {
-    return reply.status(404).send({ error: 'Drive session not found' });
+function* driveCsvChunks(records) {
+  yield 'Timestamp,Time,RPM,Speed,CoolantTemp,Latitude,Longitude,Altitude,GPSSpeed,EngineLoad,ThrottlePos,FuelLevel,AmbientTemp,Voltage,AccelTime,AlertCoolant,AlertVoltage\n'
+  for (const record of records) {
+    const timeStr = new Date(record.timestamp).toISOString()
+    yield `${record.timestamp},${timeStr},${record.rpm ?? ''},${record.speed ?? ''},${record.coolantTemp ?? ''},${record.latitude ?? ''},${record.longitude ?? ''},${record.altitude ?? ''},${record.gpsSpeed ?? ''},${record.engineLoad ?? ''},${record.throttlePos ?? ''},${record.fuelLevel ?? ''},${record.ambientTemp ?? ''},${record.voltage ?? ''},${record.accelTime ?? ''},${record.alertCoolant ? 'true' : 'false'},${record.alertVoltage ? 'true' : 'false'}\n`
   }
+}
 
-  // Time window alone could catch another car's points when drives
-  // overlap; scope strictly to the drive's own vehicle.
-  const records = telemetryDataStore.filter(r =>
-    r.timestamp >= bounds.startTime &&
-    r.timestamp <= bounds.endTime &&
-    (r.vehicleId || DEFAULT_VEHICLE_ID) === bounds.vehicleId
-  );
-
-  let csv = 'Timestamp,Time,RPM,Speed,CoolantTemp,Latitude,Longitude,Altitude,GPSSpeed,EngineLoad,ThrottlePos,FuelLevel,AmbientTemp,Voltage,AccelTime,AlertCoolant,AlertVoltage\n';
-
-  records.forEach(r => {
-    const timeStr = new Date(r.timestamp).toISOString();
-    csv += `${r.timestamp},${timeStr},${r.rpm ?? ''},${r.speed ?? ''},${r.coolantTemp ?? ''},${r.latitude},${r.longitude},${r.altitude},${r.gpsSpeed},${r.engineLoad ?? ''},${r.throttlePos ?? ''},${r.fuelLevel ?? ''},${r.ambientTemp ?? ''},${r.voltage ?? ''},${r.accelTime ?? ''},${r.alertCoolant ? 'true' : 'false'},${r.alertVoltage ? 'true' : 'false'}\n`;
-  });
-
-  reply.header('Content-Type', 'text/csv');
-  reply.header('Content-Disposition', `attachment; filename=drive_${id}_telemetry.csv`);
-  return reply.send(csv);
-})
-
-// Drive GPX Route Exporter
-fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
-  const { id } = request.params;
-  const bounds = getDriveBounds(id);
-  if (!bounds) {
-    return reply.status(404).send({ error: 'Drive session not found' });
-  }
-
-  const records = telemetryDataStore.filter(r =>
-    r.timestamp >= bounds.startTime &&
-    r.timestamp <= bounds.endTime &&
-    (r.vehicleId || DEFAULT_VEHICLE_ID) === bounds.vehicleId
-  );
-
-  let gpx = `<?xml version="1.0" encoding="UTF-8"?>
+function* driveGpxChunks(id, bounds, records) {
+  yield `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Axia Telemetry Core" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
     <name>Drive #${id} Telemetry</name>
@@ -2118,30 +2314,53 @@ fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
   <trk>
     <name>Drive #${id}</name>
     <trkseg>
-`;
-
-  records.forEach(r => {
-    if (r.latitude !== 0 && r.longitude !== 0) {
-      const timeStr = new Date(r.timestamp).toISOString();
-      gpx += `      <trkpt lat="${r.latitude}" lon="${r.longitude}">
-        <ele>${r.altitude}</ele>
-        <time>${timeStr}</time>
+`
+  for (const record of records) {
+    const latitude = Number(record.latitude)
+    const longitude = Number(record.longitude)
+    if (Number.isFinite(latitude) && Number.isFinite(longitude) &&
+        latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180 &&
+        (latitude !== 0 || longitude !== 0)) {
+      const timeStr = new Date(record.timestamp).toISOString()
+      const elevation = record.altitude === null || record.altitude === undefined || record.altitude === ''
+        ? null
+        : Number(record.altitude)
+      yield `      <trkpt lat="${latitude}" lon="${longitude}">
+${elevation !== null && Number.isFinite(elevation) ? `        <ele>${elevation}</ele>\n` : ''}        <time>${timeStr}</time>
         <extensions>
-          <rpm>${r.rpm ?? 0}</rpm>
-          <speed>${getRecordSpeed(r)}</speed>
-          <temp>${r.coolantTemp ?? 0}</temp>
+          <rpm>${record.rpm ?? 0}</rpm>
+          <speed>${getRecordSpeed(record)}</speed>
+          <temp>${record.coolantTemp ?? 0}</temp>
         </extensions>
-      </trkpt>\n`;
+      </trkpt>\n`
     }
-  });
-
-  gpx += `    </trkseg>
+  }
+  yield `    </trkseg>
   </trk>
-</gpx>`;
+</gpx>`
+}
 
-  reply.header('Content-Type', 'application/gpx+xml');
-  reply.header('Content-Disposition', `attachment; filename=drive_${id}_route.gpx`);
-  return reply.send(gpx);
+// Drive CSV Exporter. Readable.from applies backpressure and never builds the
+// complete export string in memory.
+fastify.get('/api/drives/:id/export/csv', async (request, reply) => {
+  const { id } = request.params
+  const bounds = getDriveBounds(id)
+  if (!bounds) return reply.status(404).send({ error: 'Drive session not found' })
+  const records = driveRecords(bounds)
+  reply.header('Content-Type', 'text/csv')
+  reply.header('Content-Disposition', `attachment; filename=drive_${id}_telemetry.csv`)
+  return reply.send(Readable.from(driveCsvChunks(records)))
+})
+
+// Drive GPX Route Exporter
+fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
+  const { id } = request.params
+  const bounds = getDriveBounds(id)
+  if (!bounds) return reply.status(404).send({ error: 'Drive session not found' })
+  const records = driveRecords(bounds)
+  reply.header('Content-Type', 'application/gpx+xml')
+  reply.header('Content-Disposition', `attachment; filename=drive_${id}_route.gpx`)
+  return reply.send(Readable.from(driveGpxChunks(id, bounds, records)))
 })
 
 // Endpoint to detect and segment drives
@@ -2193,46 +2412,155 @@ fastify.get('/api/trips/leaderboard', async (request, reply) => {
   });
 })
 
-// Endpoint for the frontend dashboard to fetch data
+// Endpoint for the frontend dashboard to fetch data. Raw pages are capped even
+// when a time range is supplied; clients can use the headers to request another
+// page rather than mistaking a bounded response for a complete range.
+const MAX_HISTORY_PAGE_SIZE = 5000
+const DEFAULT_HISTORY_PAGE_SIZE = 1000
 fastify.get('/api/telemetry/history', async (request, reply) => {
-  const { start, end, minutes, limit } = request.query;
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
+  const { start, end, minutes, limit, offset } = request.query
+  const vehicle = resolveVehicleQuery(request.query)
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
 
-  let records = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
-  if (start && end) {
-    const startTime = parseInt(start);
-    const endTime = parseInt(end);
-    records = records.filter(record => record.timestamp >= startTime && record.timestamp <= endTime);
-    return reply.send(records);
+  const hasStart = start !== undefined
+  const hasEnd = end !== undefined
+  if (hasStart !== hasEnd) {
+    return reply.status(400).send({ error: 'start and end must be supplied together' })
   }
+  if (hasStart && minutes !== undefined) {
+    return reply.status(400).send({ error: 'minutes cannot be combined with start/end' })
+  }
+
+  let startTime = null
+  let endTime = null
+  if (hasStart) {
+    const parsedStart = parseStrictQueryInteger(String(start), 'start')
+    const parsedEnd = parseStrictQueryInteger(String(end), 'end')
+    if (parsedStart.error || parsedEnd.error) {
+      return reply.status(400).send({ error: parsedStart.error || parsedEnd.error })
+    }
+    startTime = parsedStart.value
+    endTime = parsedEnd.value
+    if (startTime > endTime) return reply.status(400).send({ error: 'start must not be after end' })
+  }
+
+  let cutoff = null
   if (minutes !== undefined) {
-    const minutesNum = parseInt(minutes);
-    if (!isNaN(minutesNum) && minutesNum > 0) {
-      const cutoff = Date.now() - minutesNum * 60 * 1000;
-      records = records.filter(record => record.timestamp >= cutoff);
+    const parsedMinutes = parseStrictQueryInteger(String(minutes), 'minutes', { min: 1 })
+    if (parsedMinutes.error) return reply.status(400).send({ error: parsedMinutes.error })
+    cutoff = Date.now() - parsedMinutes.value * 60 * 1000
+  }
+
+  let cap = DEFAULT_HISTORY_PAGE_SIZE
+  if (limit !== undefined) {
+    const parsedLimit = parseStrictQueryInteger(String(limit), 'limit', { min: 1, max: MAX_HISTORY_PAGE_SIZE })
+    if (parsedLimit.error) return reply.status(400).send({ error: parsedLimit.error })
+    cap = parsedLimit.value
+  }
+
+  let pageOffset = 0
+  if (offset !== undefined) {
+    const parsedOffset = parseStrictQueryInteger(String(offset), 'offset')
+    if (parsedOffset.error) return reply.status(400).send({ error: parsedOffset.error })
+    pageOffset = parsedOffset.value
+  }
+
+  // Keep only the requested page while scanning. For the legacy unpaged
+  // view, retain the historical tail semantics; ranged callers get a
+  // forward page and an offset for fetching the remainder.
+  const tailMode = offset === undefined && !hasStart && !hasEnd
+  let records = []
+  const tailRecords = tailMode ? new Array(cap) : null
+  let tailCount = 0
+  let tailWriteIndex = 0
+  let totalMatched = 0
+  for (const record of telemetryDataStore) {
+    if (!recordIsVisibleToScope(record, request.auth, vehicle)) continue
+    if (startTime !== null && (record.timestamp < startTime || record.timestamp > endTime)) continue
+    if (cutoff !== null && record.timestamp < cutoff) continue
+    if (tailMode) {
+      tailRecords[tailWriteIndex] = record
+      tailWriteIndex = (tailWriteIndex + 1) % cap
+      tailCount = Math.min(tailCount + 1, cap)
+    } else if (totalMatched >= pageOffset && records.length < cap) {
+      records.push(record)
+    }
+    totalMatched++
+  }
+  if (tailMode) {
+    records = []
+    const startIndex = tailCount < cap ? 0 : tailWriteIndex
+    for (let index = 0; index < tailCount; index++) {
+      records.push(tailRecords[(startIndex + index) % cap])
     }
   }
-  let cap = 1000;
-  if (limit !== undefined) {
-    const limitNum = parseInt(limit);
-    if (!isNaN(limitNum) && limitNum > 0) cap = limitNum;
+  const complete = tailMode
+    ? totalMatched <= cap
+    : pageOffset + records.length >= totalMatched
+  const nextOffset = pageOffset + records.length
+  reply.header('X-Telemetry-Page-Limit', String(cap))
+  reply.header('X-Telemetry-Page-Offset', String(pageOffset))
+  reply.header('X-Telemetry-Page-Complete', String(complete))
+  reply.header('X-Telemetry-Total-Matched', String(totalMatched))
+  if (!complete && !tailMode) reply.header('X-Telemetry-Next-Offset', String(nextOffset))
+  return reply.send(records)
+})
+
+// Return a consistent bounded chronological tail and the global ingest cursor
+// captured at the same point. Since handlers run synchronously on the event
+// loop, no ingest can interleave between capturing the cursor and selecting it.
+fastify.get('/api/telemetry/snapshot', async (request, reply) => {
+  const vehicle = resolveVehicleQuery(request.query)
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
+  const rawLimit = request.query?.limit === undefined ? String(DEFAULT_HISTORY_PAGE_SIZE) : String(request.query.limit)
+  const parsedLimit = parseStrictQueryInteger(rawLimit, 'limit', { min: 1, max: 2000 })
+  if (parsedLimit.error) return reply.status(400).send({ error: parsedLimit.error })
+
+  const snapshotCursor = nextIngestSeq
+  const records = selectChronologicalTail(
+    telemetryDataStore,
+    parsedLimit.value,
+    record => Number(record.ingestSeq || 0) <= snapshotCursor &&
+      recordIsVisibleToScope(record, request.auth, vehicle)
+  )
+  return reply.send({ records, snapshotCursor })
+})
+
+// Server-side chart series. The result is always chronological and bounded;
+// downsampling keeps global speed/RPM peaks in addition to first and last.
+fastify.get('/api/telemetry/series', async (request, reply) => {
+  const vehicle = resolveVehicleQuery(request.query)
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
+  if (request.query?.start === undefined || request.query?.end === undefined) {
+    return reply.status(400).send({ error: 'start and end are required' })
   }
-  // Return the last `cap` records for rendering
-  return reply.send(records.slice(-cap));
+  const parsedStart = parseStrictQueryInteger(String(request.query.start), 'start')
+  const parsedEnd = parseStrictQueryInteger(String(request.query.end), 'end')
+  if (parsedStart.error || parsedEnd.error) {
+    return reply.status(400).send({ error: parsedStart.error || parsedEnd.error })
+  }
+  if (parsedStart.value > parsedEnd.value) return reply.status(400).send({ error: 'start must not be after end' })
+  const rawPoints = request.query?.points === undefined ? '750' : String(request.query.points)
+  const parsedPoints = parseStrictQueryInteger(rawPoints, 'points', { min: 1, max: 2000 })
+  if (parsedPoints.error) return reply.status(400).send({ error: parsedPoints.error })
+
+  const records = telemetryDataStore.filter(record =>
+    record.timestamp >= parsedStart.value && record.timestamp <= parsedEnd.value &&
+    recordIsVisibleToScope(record, request.auth, vehicle))
+  records.sort(chronologicalRecordCompare)
+  return reply.send(downsampleTelemetrySeries(records, parsedPoints.value))
 })
 
 // Lightweight single-record endpoint for dashboard live polling. Capture time,
 // not array order, defines "latest" so a late-arriving sample is handled correctly.
 fastify.get('/api/telemetry/latest', async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  return reply.send(latestCapture(vehicle, request.auth));
+  const vehicle = resolveVehicleQuery(request.query)
+  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
+  return reply.send(latestCapture(vehicle, request.auth))
 })
 
 // Incremental change feed. The cursor is a server ingest sequence, not a
-// client-supplied sequence. Filtering happens while scanning, so an
-// unauthorized record advances the scan but is never returned.
+// client-supplied sequence. Filtering advances past inaccessible records.
 fastify.get('/api/telemetry/changes', async (request, reply) => {
   const rawCursor = request.query?.cursor === undefined ? '0' : String(request.query.cursor)
   const rawLimit = request.query?.limit === undefined ? '100' : String(request.query.limit)
@@ -2246,17 +2574,20 @@ fastify.get('/api/telemetry/changes', async (request, reply) => {
   }
   const vehicle = resolveVehicleQuery(request.query)
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
-  const scoped = record => filterRecordsByScope([record], request.auth, vehicle).length > 0
+
+  let index = telemetryCanBinarySeek() ? firstIngestSequenceAfter(telemetryDataStore, cursor) : 0
   const records = []
   let nextCursor = cursor
-  let index = 0
+  let inspected = 0
   for (; index < telemetryDataStore.length; index++) {
     const record = telemetryDataStore[index]
-    if (record.ingestSeq <= cursor) continue
-    nextCursor = record.ingestSeq
-    if (scoped(record)) records.push(record)
+    inspected++
+    if (Number(record.ingestSeq) <= cursor) continue
+    nextCursor = Number(record.ingestSeq)
+    if (recordIsVisibleToScope(record, request.auth, vehicle)) records.push(record)
     if (records.length >= limit) { index++; break }
   }
+  lastChangesInspectedRows = inspected
   const hasMore = index < telemetryDataStore.length
   return reply.send({ records, nextCursor, hasMore })
 })
@@ -3392,5 +3723,8 @@ module.exports = {
   DEFAULT_VEHICLE_ID,
   USERS_PATH,
   DEVICES_PATH,
-  VEHICLES_PATH
+  VEHICLES_PATH,
+  downsampleTelemetrySeries,
+  refreshTelemetrySequenceIndexForTesting,
+  getLastChangesInspectedRows: () => lastChangesInspectedRows
 }

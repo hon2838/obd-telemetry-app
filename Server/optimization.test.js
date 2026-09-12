@@ -183,3 +183,145 @@ test('persisted ingest sequences survive a server module restart', async () => {
   const output = execFileSync(process.execPath, ['-e', probe], { encoding: 'utf8' });
   expect(Number(output)).toBe(lastBeforeRestart);
 });
+
+test('snapshot establishes a bounded cursor handoff without replaying prior rows', async () => {
+  const snapshot = await fastify.inject({
+    method: 'GET', url: '/api/telemetry/snapshot?limit=2', headers: auth
+  });
+  expect(snapshot.statusCode).toBe(200);
+  expect(snapshot.json().records).toHaveLength(2);
+  expect(snapshot.json().records.map(record => record.timestamp)).toEqual(
+    [...snapshot.json().records].map(record => record.timestamp).sort((a, b) => a - b)
+  );
+  const cursor = snapshot.json().snapshotCursor;
+  expect(Number.isSafeInteger(cursor)).toBe(true);
+
+  const eventId = 'after-snapshot';
+  const ingest = await fastify.inject({
+    method: 'POST', url: '/api/telemetry/batch', headers: auth,
+    payload: [{ timestamp: VALID_TIMESTAMP + 7000, eventId, speed: 37 }]
+  });
+  expect(ingest.statusCode).toBe(201);
+
+  const changes = await fastify.inject({
+    method: 'GET', url: `/api/telemetry/changes?cursor=${cursor}&limit=100`, headers: auth
+  });
+  expect(changes.statusCode).toBe(200);
+  expect(changes.json().records.map(record => record.eventId)).toEqual([eventId]);
+});
+
+test('snapshot respects the authenticated vehicle scope', async () => {
+  const password = hashPassword('ScopedSnapshotPass123!');
+  usersStore.push({
+    id: 'usr-snapshot-scope', username: 'snapshot-scope', role: 'user',
+    passwordSalt: password.salt, passwordHash: password.hash,
+    vehicles: ['cache-car'], mustChangePassword: false
+  });
+  const login = await fastify.inject({
+    method: 'POST', url: '/api/auth/login',
+    payload: { username: 'snapshot-scope', password: 'ScopedSnapshotPass123!' }
+  });
+  expect(login.statusCode).toBe(200);
+  const cookie = cookieValue(login.headers['set-cookie']);
+
+  const scoped = await fastify.inject({
+    method: 'GET', url: '/api/telemetry/snapshot?limit=20', headers: { cookie }
+  });
+  expect(scoped.statusCode).toBe(200);
+  expect(scoped.json().records.length).toBeGreaterThan(0);
+  expect(scoped.json().records.every(record => record.vehicleId === 'cache-car')).toBe(true);
+  expect((await fastify.inject({
+    method: 'GET', url: '/api/telemetry/snapshot?vehicle=default', headers: { cookie }
+  })).statusCode).toBe(403);
+});
+
+test('history validates limits and exposes actionable bounded pagination', async () => {
+  const excessive = await fastify.inject({
+    method: 'GET', url: '/api/telemetry/history?limit=5001', headers: auth
+  });
+  expect(excessive.statusCode).toBe(400);
+
+  const first = await fastify.inject({
+    method: 'GET', url: '/api/telemetry/history?start=0&end=9999999999999&limit=2&offset=0', headers: auth
+  });
+  expect(first.statusCode).toBe(200);
+  expect(first.json()).toHaveLength(2);
+  expect(first.headers['x-telemetry-page-complete']).toBe('false');
+  expect(first.headers['x-telemetry-next-offset']).toBe('2');
+  const total = Number(first.headers['x-telemetry-total-matched']);
+  expect(total).toBeGreaterThan(2);
+
+  const last = await fastify.inject({
+    method: 'GET', url: `/api/telemetry/history?start=0&end=9999999999999&limit=2&offset=${total - 1}`, headers: auth
+  });
+  expect(last.statusCode).toBe(200);
+  expect(last.json()).toHaveLength(1);
+  expect(last.headers['x-telemetry-page-complete']).toBe('true');
+  expect(last.headers['x-telemetry-next-offset']).toBeUndefined();
+});
+
+test('bounded telemetry series preserves endpoints and speed/RPM peaks', async () => {
+  const start = VALID_TIMESTAMP + 10000;
+  const payload = Array.from({ length: 20 }, (_, index) => ({
+    timestamp: start + index,
+    eventId: `series-${index}`,
+    speed: index === 7 ? 400 : index + 1,
+    rpm: index === 13 ? 19000 : 1000 + index
+  }));
+  expect((await fastify.inject({
+    method: 'POST', url: '/api/telemetry/batch', headers: auth, payload
+  })).statusCode).toBe(201);
+
+  const response = await fastify.inject({
+    method: 'GET',
+    url: `/api/telemetry/series?start=${start}&end=${start + 19}&points=6`,
+    headers: auth
+  });
+  expect(response.statusCode).toBe(200);
+  const records = response.json();
+  expect(records.length).toBeLessThanOrEqual(6);
+  expect(records[0].eventId).toBe('series-0');
+  expect(records.at(-1).eventId).toBe('series-19');
+  expect(records.some(record => record.speed === 400)).toBe(true);
+  expect(records.some(record => record.rpm === 19000)).toBe(true);
+  expect(records.map(record => record.timestamp)).toEqual(
+    [...records].map(record => record.timestamp).sort((a, b) => a - b)
+  );
+});
+
+test('near-tail change lookup uses the maintained sequence index', async () => {
+  const all = await fastify.inject({
+    method: 'GET', url: '/api/telemetry/changes?cursor=0&limit=1000', headers: auth
+  });
+  const latestSequence = all.json().nextCursor;
+  const tail = await fastify.inject({
+    method: 'GET', url: `/api/telemetry/changes?cursor=${latestSequence - 1}&limit=1`, headers: auth
+  });
+  expect(tail.statusCode).toBe(200);
+  expect(tail.json().records).toHaveLength(1);
+  expect(backend.getLastChangesInspectedRows()).toBeLessThanOrEqual(2);
+});
+
+test('drive exports retain their formats while using streamed responses', async () => {
+  const drives = await fastify.inject({ method: 'GET', url: '/api/drives', headers: auth });
+  expect(drives.statusCode).toBe(200);
+  const driveId = drives.json()[0].id;
+
+  const csv = await fastify.inject({
+    method: 'GET', url: `/api/drives/${encodeURIComponent(driveId)}/export/csv`, headers: auth
+  });
+  expect(csv.statusCode).toBe(200);
+  expect(csv.headers['content-type']).toContain('text/csv');
+  expect(csv.payload).toMatch(/^Timestamp,Time,RPM,Speed/);
+  expect(csv.payload).toContain('\n');
+  expect(csv.payload).not.toContain('undefined');
+
+  const gpx = await fastify.inject({
+    method: 'GET', url: `/api/drives/${encodeURIComponent(driveId)}/export/gpx`, headers: auth
+  });
+  expect(gpx.statusCode).toBe(200);
+  expect(gpx.headers['content-type']).toContain('application/gpx+xml');
+  expect(gpx.payload).toContain('<gpx version="1.1"');
+  expect(gpx.payload).toContain('</gpx>');
+  expect(gpx.payload).not.toContain('undefined');
+});
