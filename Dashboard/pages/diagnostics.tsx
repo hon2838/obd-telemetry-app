@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import Head from 'next/head';
 import { apiFetch } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
@@ -42,17 +42,24 @@ export default function DiagnosticsDashboard() {
   
   const [activeDtcDetails, setActiveDtcDetails] = useState<DtcDetails[]>([]);
   const [commandLoading, setCommandLoading] = useState<string | null>(null);
+  const [commandPolling, setCommandPolling] = useState(false);
   const [error, setError] = useState('');
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastDtcCodesRef = useRef('');
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
   }, []);
 
   const fetchDtcDetails = async (codes: string[], signal?: AbortSignal) => {
+    const codeKey = [...codes].sort().join(',');
+    if (codeKey === lastDtcCodesRef.current) return;
     if (codes.length === 0) {
+      lastDtcCodesRef.current = '';
       setActiveDtcDetails([]);
       return;
     }
@@ -62,6 +69,7 @@ export default function DiagnosticsDashboard() {
     });
     if (!res.ok) throw new Error(`DTC lookup HTTP ${res.status}`);
     setActiveDtcDetails(await res.json());
+    lastDtcCodesRef.current = codeKey;
   };
 
   const fetchData = async (signal: AbortSignal) => {
@@ -76,7 +84,17 @@ export default function DiagnosticsDashboard() {
     await fetchDtcDetails(codes, signal);
   };
 
-  useVisibilityPolling(fetchData, 3000, [activeVehicleId, buildUrl]);
+  const pollingInterval = useCallback(() => commandPolling ? 3000 : 30000, [commandPolling]);
+
+  useEffect(() => {
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = null;
+    lastDtcCodesRef.current = '';
+    setActiveDtcDetails([]);
+    setCommandPolling(false);
+  }, [activeVehicleId]);
+
+  useVisibilityPolling(fetchData, pollingInterval, [activeVehicleId, buildUrl, commandPolling, pollingInterval]);
 
   const queueCommand = async (command: 'read_dtc' | 'clear_dtc') => {
     setError('');
@@ -94,6 +112,11 @@ export default function DiagnosticsDashboard() {
       });
       if (res.ok) {
         // Show command was queued. It will poll and update when app returns result
+        setCommandPolling(true);
+        if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = setTimeout(() => {
+          setCommandPolling(false);
+        }, 60000);
         if (timerRef.current) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => {
           setCommandLoading(null);
