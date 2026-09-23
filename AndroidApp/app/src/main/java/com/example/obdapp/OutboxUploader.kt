@@ -51,7 +51,7 @@ object OutboxUploader {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
-    var commandHandler: ((String) -> Unit)? = null
+    var commandHandler: (() -> Unit)? = null
 
     @Volatile
     private var networkCallbackRegistered = false
@@ -111,6 +111,7 @@ object OutboxUploader {
             val telemetryDao = db.telemetryDao()
             val fuelDao = db.fuelLogDao()
             val maintDao = db.maintenanceDao()
+            val commandDao = db.commandInboxDao()
 
             var hadSuccess = false
             var hadNetworkFailures = false
@@ -132,6 +133,16 @@ object OutboxUploader {
                 pendingVehicles.addAll(maintDao.getUnsyncedVehicles())
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to query pending vehicles", e)
+            }
+
+            // Pending commands use their own durable inbox and are synchronized
+            // even when this vehicle has no telemetry or other outbox rows.
+            try {
+                syncPendingCommandAcks(context, commandDao, activeVehicle)
+                pollCommands(context, commandDao, activeVehicle)
+                commandHandler?.invoke()
+            } catch (e: Exception) {
+                Log.w(TAG, "Command synchronization failed; inbox remains queued: ${e.message}")
             }
 
             for (vehicleId in pendingVehicles) {
@@ -352,7 +363,7 @@ object OutboxUploader {
 
         val url = "${getApiBaseUrl(context)}/api/telemetry/batch"
         val response = try {
-            HttpTransport.postJson(url, jsonArray.toString(), context)
+            HttpTransport.postJson(url, jsonArray.toString(), context, commandProtocolV2 = true)
         } catch (e: Exception) {
             Log.e(TAG, "Telemetry upload network error: ${e.message}")
             return BatchResult(UploadBatchStatus.FAILED_NETWORK, 0)
@@ -367,7 +378,15 @@ object OutboxUploader {
             return classifyHttpFailure(vehicleId, "Telemetry", response.statusCode, response.body)
         }
 
-        // Process agreed contract
+        // Persist commands before acknowledging telemetry or starting OBD work.
+        // The v2 server will redeliver until command ACK; legacy strings are
+        // still accepted for older servers and stored locally as best-effort.
+        if (!persistCommandsInResponse(db.commandInboxDao(), response.body, vehicleId)) {
+            return BatchResult(UploadBatchStatus.FAILED_NETWORK, 0)
+        }
+
+        // Process agreed telemetry contract after command envelopes are safe
+        // in Room, so even a malformed event ACK cannot lose a legacy command.
         val ackIds = parseAcknowledgedIds(context, response.body)
             ?: return BatchResult(UploadBatchStatus.INCOMPATIBLE_SERVER, 0)
 
@@ -379,8 +398,7 @@ object OutboxUploader {
             }
         }
 
-        // Check for server commands in response
-        handleCommandsInResponse(response.body)
+        commandHandler?.invoke()
 
         return BatchResult(UploadBatchStatus.SUCCESS_ACKNOWLEDGED, matchingIds.size)
     }
@@ -551,19 +569,102 @@ object OutboxUploader {
         } catch (_: Exception) { }
     }
 
-    private fun handleCommandsInResponse(responseBody: String) {
+    private suspend fun persistCommandsInResponse(dao: CommandInboxDao, responseBody: String, vehicleId: String): Boolean {
         try {
             val json = JSONObject(responseBody)
-            if (json.has("commands")) {
-                val commandsArray = json.getJSONArray("commands")
-                for (i in 0 until commandsArray.length()) {
-                    val cmd = commandsArray.optJSONObject(i)?.optString("command")
-                        ?: commandsArray.optString(i)
-                    if (cmd.isNotEmpty()) {
-                        commandHandler?.invoke(cmd)
+            val commandsArray = json.optJSONArray("commands") ?: return true
+            for (i in 0 until commandsArray.length()) {
+                val item = commandsArray.opt(i)
+                val envelope = when (item) {
+                    is JSONObject -> CommandEnvelopeParser.parse(item)
+                    is String -> CommandEnvelopeParser.parseLegacy(item, vehicleId)
+                    else -> null
+                }
+                if (envelope != null) {
+                    if (envelope.vehicleId != vehicleId) {
+                        Log.w(TAG, "Rejecting command ${envelope.id} scoped to a different vehicle")
+                        continue
                     }
+                    dao.insertIfAbsent(envelope)
+                } else {
+                    Log.w(TAG, "Ignoring malformed or unsupported command at response index $i")
                 }
             }
-        } catch (_: Exception) { }
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to persist commands from telemetry response", e)
+            return false
+        }
+    }
+
+    private suspend fun pollCommands(context: Context, dao: CommandInboxDao, vehicleId: String) {
+        val encodedVehicle = java.net.URLEncoder.encode(vehicleId, "UTF-8")
+        val url = "${getApiBaseUrl(context)}/api/commands/pending?vehicle=$encodedVehicle"
+        val response = try {
+            HttpTransport.getJson(url, context, commandProtocolV2 = true)
+        } catch (e: Exception) {
+            Log.d(TAG, "Command poll unavailable; pending inbox retained: ${e.message}")
+            return
+        }
+        if (response.statusCode == 401 || response.statusCode == 403) {
+            Log.w(TAG, "Command poll denied for vehicle $vehicleId (${response.statusCode})")
+            return
+        }
+        // 404 is expected against older servers. Their telemetry response
+        // strings continue through the legacy compatibility path above.
+        if (response.statusCode == 404) return
+        if (!response.isSuccess) {
+            Log.d(TAG, "Command poll returned HTTP ${response.statusCode}; will retry on the next sync")
+            return
+        }
+        if (!persistCommandsInResponse(dao, response.body, vehicleId)) {
+            Log.w(TAG, "Could not persist polled commands; server will return them again")
+        }
+    }
+
+    private suspend fun syncPendingCommandAcks(context: Context, dao: CommandInboxDao, vehicleId: String) {
+        // Device tokens are vehicle-scoped. Leave other vehicles' ACK rows
+        // queued until their own paired vehicle is active again.
+        val pending = dao.getPendingAcks(vehicleId)
+        for (command in pending) {
+            if (!command.requiresAck) {
+                dao.markAcked(command.id, System.currentTimeMillis())
+                continue
+            }
+            val ackStatus = command.ackStatus ?: continue
+            val payload = JSONObject().apply {
+                put("id", command.id)
+                put("status", ackStatus)
+                if (!command.result.isNullOrEmpty()) {
+                    try { put("result", JSONObject(command.result)) }
+                    catch (_: Exception) { put("result", command.result) }
+                }
+            }
+            val response = try {
+                HttpTransport.postJson(
+                    "${getApiBaseUrl(context)}/api/commands/ack",
+                    payload.toString(),
+                    context,
+                    commandProtocolV2 = true
+                )
+            } catch (e: Exception) {
+                Log.d(TAG, "ACK for ${command.id} unavailable; persisted result will retry: ${e.message}")
+                dao.deferAckRetry(command.id, System.currentTimeMillis())
+                continue
+            }
+            if (response.isSuccess) {
+                dao.markAcked(command.id, System.currentTimeMillis())
+            } else if (response.statusCode == 404) {
+                Log.e(TAG, "Server no longer has command ${command.id}; keeping its result locally and retrying later")
+                dao.deferAckRetry(command.id, System.currentTimeMillis())
+            } else if (response.statusCode == 410) {
+                Log.e(TAG, "Server reports command ${command.id} expired; keeping its result locally and retrying later")
+                dao.deferAckRetry(command.id, System.currentTimeMillis())
+            } else {
+                Log.w(TAG, "ACK for ${command.id} returned HTTP ${response.statusCode}; persisted result will retry")
+                dao.deferAckRetry(command.id, System.currentTimeMillis())
+            }
+        }
+        dao.deleteOldAcked(System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000)
     }
 }

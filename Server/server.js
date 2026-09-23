@@ -16,6 +16,17 @@ const path = require('path')
 const util = require('util')
 const { Readable } = require('stream')
 const { installAuthorization, canAccessVehicle, vehicleScope, isAdmin } = require('./authorization')
+const healthRoutes = require('./routes/health')
+const agentRoutes = require('./routes/agent')
+const commandsRoutes = require('./routes/commands')
+const performanceRoutes = require('./routes/performance')
+const dtcRoutes = require('./routes/dtc')
+const fuelRoutes = require('./routes/fuel')
+const maintenanceRoutes = require('./routes/maintenance')
+const vehiclesRoutes = require('./routes/vehicles')
+const authRoutes = require('./routes/auth')
+const exportRoutes = require('./routes/export')
+const { initSqliteStorage } = require('./sqlite_storage')
 
 // Read the expected API key from the environment at module load.
 // We deliberately do NOT provide a default: shipping a literal
@@ -48,6 +59,11 @@ function constantTimeEquals(a, b) {
 // temp dir instead of polluting real (dev/prod) store files.
 const DB_DIR = process.env.OBD_DATA_DIR || path.join(__dirname, 'data')
 const DB_PATH = path.join(DB_DIR, 'telemetry.json')
+const SQLITE_DB_PATH = path.join(DB_DIR, 'telemetry.sqlite')
+const STORAGE_ENGINE = (process.env.OBD_STORAGE_ENGINE || 'json').toLowerCase()
+if (STORAGE_ENGINE !== 'json' && STORAGE_ENGINE !== 'sqlite') {
+  throw new Error(`Unsupported OBD_STORAGE_ENGINE "${STORAGE_ENGINE}"; expected "json" or "sqlite"`)
+}
 const DIAG_PATH = path.join(DB_DIR, 'diagnostics.json')
 const FUEL_PATH = path.join(DB_DIR, 'fuel_logs.json')
 const DTC_HIST_PATH = path.join(DB_DIR, 'dtc_history.json')
@@ -62,6 +78,7 @@ const INITIAL_ADMIN_SECRET_PATH = path.join(DB_DIR, '.initial_admin_secret')
 // server upgrade never rewrites or orphans history. Clients that don't
 // send a vehicleId (older head units) ingest into 'default' unchanged.
 const DEFAULT_VEHICLE_ID = 'default'
+const COMMAND_TTL_MS = 24 * 60 * 60 * 1000
 const VEHICLE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 
 // Ensure data directory exists
@@ -206,11 +223,15 @@ function isTxnStagingFile(name) {
 // none is; memory must only be updated after this returns. Throws the
 // original error after rolling back (staging failure) or leaving a
 // COMMITTING journal for startup roll-forward (commit failure).
-function runFileTransactionSync(entries) {
+function runFileTransactionSync(entries, sqliteOperation = null) {
   if (isServerPoisoned) {
     throw (serverPoisonError || new Error('Server is poisoned: refusing to run transaction'))
   }
-  if (!Array.isArray(entries) || entries.length === 0) return
+  if (!Array.isArray(entries)) throw new TypeError('Transaction entries must be an array')
+  if (entries.length === 0 && !sqliteOperation) return
+  if (sqliteOperation && !sqliteStorage) {
+    throw new Error('SQLite operation requires the SQLite storage engine')
+  }
   if (fs.existsSync(TXN_JOURNAL_PATH)) {
     const err = new Error(`Cannot start transaction: unresolved journal already exists at ${TXN_JOURNAL_PATH}`)
     poisonServer(err)
@@ -222,6 +243,7 @@ function runFileTransactionSync(entries) {
     id: txnId,
     state: 'PREPARED',
     files: entries.map(([target]) => target),
+    ...(sqliteOperation ? { sqliteOperation } : {}),
     createdAt: Date.now()
   }
   const cleanupStaging = () => {
@@ -257,6 +279,10 @@ function runFileTransactionSync(entries) {
   }
 
   try {
+    // The SQLite operation and its durable txn marker commit together. If a
+    // crash occurs before the staged files land, recovery replays this txn ID
+    // without inserting or reassigning the same rows twice.
+    if (sqliteOperation) sqliteStorage.applyJournalOperation(txnId, sqliteOperation)
     for (let index = 0; index < staging.length; index++) {
       fs.renameSync(staging[index], entries[index][0])
       fsyncDirSync(DB_DIR)
@@ -301,6 +327,12 @@ function recoverPendingTransactionsSync() {
       fs.unlinkSync(TXN_JOURNAL_PATH)
       fsyncDirSync(DB_DIR)
     } else if (journal.state === 'COMMITTING') {
+      if (journal.sqliteOperation) {
+        if (STORAGE_ENGINE !== 'sqlite' || !sqliteStorage) {
+          throw new Error('SQLite transaction journal cannot be recovered without SQLite storage')
+        }
+        sqliteStorage.applyJournalOperation(journal.id, journal.sqliteOperation)
+      }
       // Roll forward: every file reaches its staged content. A staging
       // file that already renamed away counts as done (idempotent).
       for (const target of journal.files) {
@@ -334,12 +366,116 @@ function sweepTxnOrphansSync() {
   }
 }
 
-// Recovery MUST run before any store file is read into memory.
+// Load existing telemetry data or start fresh
+let sqliteStorage = null;
+let sqliteDatabaseAlreadyExisted = false
+if (STORAGE_ENGINE === 'sqlite') {
+  sqliteDatabaseAlreadyExisted = fs.existsSync(SQLITE_DB_PATH)
+  if (!sqliteDatabaseAlreadyExisted && fs.existsSync(TXN_JOURNAL_PATH)) {
+    throw new Error('SQLite database is missing while a transaction journal is pending; refusing to recreate it')
+  }
+  try {
+    sqliteStorage = initSqliteStorage(SQLITE_DB_PATH)
+    const requiredColumns = [
+      'timestamp', 'vehicle_id', 'event_id', 'rpm', 'speed', 'coolant_temp',
+      'latitude', 'longitude', 'altitude', 'gps_speed', 'engine_load',
+      'throttle_pos', 'fuel_level', 'ambient_temp', 'voltage', 'battery_voltage',
+      'accel_time', 'alert_coolant', 'alert_voltage', 'acc_on', 'headlight_on',
+      'volume', 'wifi_ssid', 'bt_connected', 'received_at', 'ingest_seq'
+    ]
+    const existingColumns = new Set(
+      sqliteStorage.db.prepare('PRAGMA table_info(telemetry)').all().map(column => column.name)
+    )
+    const missingColumns = requiredColumns.filter(column => !existingColumns.has(column))
+    if (missingColumns.length > 0) {
+      throw new Error(`telemetry table is missing required columns: ${missingColumns.join(', ')}`)
+    }
+    const integrityResult = sqliteStorage.db.prepare('PRAGMA quick_check').all()
+    if (integrityResult.length !== 1 || integrityResult[0].quick_check !== 'ok') {
+      throw new Error(`SQLite database integrity check failed: ${integrityResult.map(row => row.quick_check).join('; ')}`)
+    }
+    if (typeof sqliteStorage.ensureIngestSequences !== 'function') {
+      throw new Error('SQLite storage does not support durable ingest sequence repair')
+    }
+    sqliteStorage.ensureIngestSequences()
+  } catch (err) {
+    sqliteStorage?.close()
+    throw new Error(`SQLite storage initialization failed; refusing to start: ${err.message}`, { cause: err })
+  }
+}
+
+// The selected SQLite participant must be open before a mixed transaction can
+// be recovered, but no store may be read into memory until recovery finishes.
 recoverPendingTransactionsSync()
 
-// Load existing telemetry data or start fresh
 let telemetryDataStore = []
-if (fs.existsSync(DB_PATH)) {
+if (sqliteStorage) {
+  try {
+    telemetryDataStore = sqliteStorage.loadAllRecords();
+    if (!Array.isArray(telemetryDataStore)) {
+      throw new Error('SQLite telemetry load did not return an array')
+    }
+    for (let index = 0; index < telemetryDataStore.length; index++) {
+      const record = telemetryDataStore[index]
+      if (!record || typeof record !== 'object' || !Number.isFinite(Number(record.timestamp))) {
+        throw new Error(`SQLite telemetry row ${index} has an invalid timestamp or record shape`)
+      }
+    }
+    if (typeof sqliteStorage.isLegacyImportComplete !== 'function' ||
+        typeof sqliteStorage.importLegacyJson !== 'function' ||
+        typeof sqliteStorage.markLegacyImportComplete !== 'function') {
+      throw new Error('SQLite storage does not support durable legacy import tracking')
+    }
+    const legacyJsonExists = fs.existsSync(DB_PATH)
+    if (!sqliteStorage.isLegacyImportComplete()) {
+      if (!sqliteDatabaseAlreadyExisted) {
+        // The row import and marker are one SQLite transaction, so a crash
+        // cannot leave a newly-created empty DB that looks like a completed
+        // migration on the next boot.
+        const legacy = legacyJsonExists ? JSON.parse(fs.readFileSync(DB_PATH, 'utf8')) : []
+        if (!Array.isArray(legacy)) {
+          throw new Error('Legacy JSON telemetry store is not an array')
+        }
+        for (let index = 0; index < legacy.length; index++) {
+          const record = legacy[index]
+          if (!record || typeof record !== 'object' || !Number.isFinite(Number(record.timestamp))) {
+            throw new Error(`Legacy JSON telemetry row ${index} has an invalid timestamp or record shape`)
+          }
+        }
+        // Give legacy rows without a usable sequence a durable SQLite
+        // sequence before the import is committed. Keep valid unique values.
+        const assignedSequences = new Set()
+        let maxSequence = 0
+        for (const record of legacy) {
+          if (Number.isSafeInteger(record?.ingestSeq) && record.ingestSeq > 0) {
+            maxSequence = Math.max(maxSequence, record.ingestSeq)
+          }
+        }
+        for (const record of legacy) {
+          if (!Number.isSafeInteger(record?.ingestSeq) || record.ingestSeq <= 0 || assignedSequences.has(record.ingestSeq)) {
+            if (!Number.isSafeInteger(maxSequence + 1)) {
+              throw new Error('Cannot assign a durable ingest sequence beyond the safe integer range')
+            }
+            record.ingestSeq = ++maxSequence
+          }
+          assignedSequences.add(record.ingestSeq)
+        }
+        sqliteStorage.importLegacyJson(legacy)
+        telemetryDataStore = sqliteStorage.loadAllRecords()
+      } else if (telemetryDataStore.length === 0 && legacyJsonExists) {
+        throw new Error('SQLite is empty while legacy JSON exists and no completed-import marker is present; refusing to guess which store is authoritative')
+      } else {
+        // A populated existing SQLite database is authoritative after the
+        // integrity and row checks above. Ignore stale JSON and record that
+        // decision durably for subsequent startups.
+        sqliteStorage.markLegacyImportComplete()
+      }
+    }
+  } catch (err) {
+    sqliteStorage.close()
+    throw new Error(`SQLite telemetry load failed; refusing to start: ${err.message}`, { cause: err })
+  }
+} else if (fs.existsSync(DB_PATH)) {
   try {
     telemetryDataStore = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'))
   } catch (err) {
@@ -459,6 +595,7 @@ const _writeChains = new Map();
 // guarantees every queued atomic rename lands before the process exits.
 fastify.addHook('onClose', async () => {
   await Promise.allSettled([..._writeChains.values()]);
+  sqliteStorage?.close()
 });
 function persist(targetPath, data) {
   if (isServerPoisoned) {
@@ -605,8 +742,13 @@ for (const record of telemetryDataStore) {
   }
 }
 if (telemetryMigrationNeeded) {
-  // persistStartupMigration makes a backup before rewriting legacy data.
-  persistStartupMigration(DB_PATH, telemetryDataStore)
+  if (STORAGE_ENGINE === 'json') {
+    // persistStartupMigration makes a backup before rewriting legacy data.
+    persistStartupMigration(DB_PATH, telemetryDataStore)
+  }
+}
+if (STORAGE_ENGINE === 'sqlite') {
+  telemetryDataStore.sort((a, b) => Number(a.ingestSeq) - Number(b.ingestSeq))
 }
 
 function eventIdOf(record) {
@@ -1246,28 +1388,59 @@ async function authenticateRequest(request) {
   return null
 }
 
-// Initialize command queue from disk (if present) so a
-// container restart doesn't drop pending DTC commands.
-// Entries are { command, vehicleId } so a queued command only
-// drains to head units syncing that same vehicle; legacy plain
-// string entries load as targeting the default vehicle.
+// Load the durable command inbox. Legacy queue entries receive stable IDs
+// exactly once so clients can retry delivery and acknowledgment after restart.
 let pendingCommands = [];
 if (fs.existsSync(COMMANDS_QUEUE_PATH)) {
   try {
     const loaded = JSON.parse(fs.readFileSync(COMMANDS_QUEUE_PATH, 'utf8'));
-    if (Array.isArray(loaded)) {
-      pendingCommands = loaded.map(entry =>
-        typeof entry === 'string'
+    if (!Array.isArray(loaded)) throw new Error('Command queue must be a JSON array');
+    {
+      let migrated = false;
+      const now = Date.now();
+      pendingCommands = loaded.map(entry => {
+        if (typeof entry !== 'string' && (!entry || typeof entry !== 'object' || Array.isArray(entry))) {
+          throw new Error('Invalid command queue entry');
+        }
+        const command = typeof entry === 'string'
           ? { command: entry, vehicleId: DEFAULT_VEHICLE_ID }
-          : entry
-      );
+          : { ...entry };
+        if (!['read_dtc', 'clear_dtc'].includes(command.command)) throw new Error('Invalid command in command queue');
+        if (typeof command.id !== 'string' || !command.id) { command.id = crypto.randomUUID(); migrated = true; }
+        if (!command.vehicleId) { command.vehicleId = DEFAULT_VEHICLE_ID; migrated = true; }
+        if (typeof command.vehicleId !== 'string') throw new Error('Invalid command vehicle in command queue');
+        if (!command.status) { command.status = 'pending'; migrated = true; }
+        if (!['pending', 'completed', 'failed', 'unknown', 'expired'].includes(command.status)) {
+          throw new Error('Invalid command status in command queue');
+        }
+        if (!Number.isFinite(command.createdAt)) { command.createdAt = now; migrated = true; }
+        if (!Number.isFinite(command.updatedAt)) { command.updatedAt = command.createdAt; migrated = true; }
+        if (!Number.isFinite(command.expiresAt)) { command.expiresAt = command.createdAt + COMMAND_TTL_MS; migrated = true; }
+        if (command.status === 'pending' && command.expiresAt <= now) {
+          command.status = 'expired';
+          command.updatedAt = now;
+          command.result = { reason: 'command_expired' };
+          migrated = true;
+        }
+        return command;
+      });
+      if (new Set(pendingCommands.map(command => command.id)).size !== pendingCommands.length) {
+        throw new Error('Duplicate command IDs in command queue');
+      }
+      if (migrated) {
+        const pending = pendingCommands.filter(command => command.status === 'pending');
+        const completed = pendingCommands.filter(command => command.status !== 'pending')
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 100);
+        pendingCommands = [...pending, ...completed];
+        persistStartupMigration(COMMANDS_QUEUE_PATH, pendingCommands);
+      }
       if (pendingCommands.length > 0) {
-        fastify.log.info(`Restored ${pendingCommands.length} pending command(s) from disk`);
+        fastify.log.info(`Restored ${pendingCommands.filter(c => c.status === 'pending').length} pending command(s) from disk`);
       }
     }
   } catch (err) {
-    fastify.log.error(`Failed to load ${COMMANDS_QUEUE_PATH}, starting empty: ${err}`);
-    fs.renameSync(COMMANDS_QUEUE_PATH, `${COMMANDS_QUEUE_PATH}.bak.${Date.now()}`);
+    fastify.log.error(`Failed to load ${COMMANDS_QUEUE_PATH}: ${err}`);
+    throw err;
   }
 }
 
@@ -1288,126 +1461,7 @@ const saveMaintenance = () => persist(MAINT_PATH, maintenanceStore);
 
 
 // === Module Helpers & Business Logic ===
-const DTC_DATABASE = {
-  // P0xxx codes (Powertrain)
-  "P0001": { description: "Fuel Volume Regulator Control Circuit Open", severity: "severe", system: "Fuel" },
-  "P0002": { description: "Fuel Volume Regulator Control Circuit Range/Performance", severity: "severe", system: "Fuel" },
-  "P0030": { description: "O2 Sensor Heater Control Circuit (Bank 1 Sensor 1)", severity: "moderate", system: "Emissions" },
-  "P0036": { description: "O2 Sensor Heater Control Circuit (Bank 1 Sensor 2)", severity: "moderate", system: "Emissions" },
-  "P0100": { description: "Mass or Volume Air Flow Circuit Malfunction", severity: "moderate", system: "Engine" },
-  "P0101": { description: "Mass or Volume Air Flow Circuit Range/Performance Problem", severity: "moderate", system: "Engine" },
-  "P0102": { description: "Mass or Volume Air Flow Circuit Low Input", severity: "moderate", system: "Engine" },
-  "P0103": { description: "Mass or Volume Air Flow Circuit High Input", severity: "moderate", system: "Engine" },
-  "P0104": { description: "Mass or Volume Air Flow Circuit Intermittent", severity: "moderate", system: "Engine" },
-  "P0110": { description: "Intake Air Temperature Sensor 1 Circuit Malfunction", severity: "moderate", system: "Engine" },
-  "P0115": { description: "Engine Coolant Temperature Circuit Malfunction", severity: "severe", system: "Engine" },
-  "P0116": { description: "Engine Coolant Temperature Circuit Range/Performance Problem", severity: "severe", system: "Engine" },
-  "P0117": { description: "Engine Coolant Temperature Circuit Low Input", severity: "severe", system: "Engine" },
-  "P0118": { description: "Engine Coolant Temperature Circuit High Input", severity: "severe", system: "Engine" },
-  "P0120": { description: "Throttle/Pedal Position Sensor/Switch A Circuit Malfunction", severity: "moderate", system: "Engine" },
-  "P0121": { description: "Throttle/Pedal Position Sensor/Switch A Circuit Range/Performance Problem", severity: "moderate", system: "Engine" },
-  "P0125": { description: "Insufficient Coolant Temperature for Closed Loop Fuel Control", severity: "severe", system: "Engine" },
-  "P0128": { description: "Coolant Thermostat (Coolant Temp Below Thermostat Regulating Temperature)", severity: "moderate", system: "Engine" },
-  "P0130": { description: "O2 Sensor Circuit Malfunction (Bank 1 Sensor 1)", severity: "moderate", system: "Emissions" },
-  "P0131": { description: "O2 Sensor Circuit Low Voltage (Bank 1 Sensor 1)", severity: "moderate", system: "Emissions" },
-  "P0132": { description: "O2 Sensor Circuit High Voltage (Bank 1 Sensor 1)", severity: "moderate", system: "Emissions" },
-  "P0133": { description: "O2 Sensor Circuit Slow Response (Bank 1 Sensor 1)", severity: "moderate", system: "Emissions" },
-  "P0134": { description: "O2 Sensor Circuit No Activity Detected (Bank 1 Sensor 1)", severity: "moderate", system: "Emissions" },
-  "P0135": { description: "O2 Sensor Heater Circuit Malfunction (Bank 1 Sensor 1)", severity: "moderate", system: "Emissions" },
-  "P0171": { description: "System Too Lean (Bank 1)", severity: "severe", system: "Fuel" },
-  "P0172": { description: "System Too Rich (Bank 1)", severity: "severe", system: "Fuel" },
-  "P0201": { description: "Cylinder 1 Injector Circuit Malfunction", severity: "severe", system: "Fuel" },
-  "P0202": { description: "Cylinder 2 Injector Circuit Malfunction", severity: "severe", system: "Fuel" },
-  "P0203": { description: "Cylinder 3 Injector Circuit Malfunction", severity: "severe", system: "Fuel" },
-  "P0204": { description: "Cylinder 4 Injector Circuit Malfunction", severity: "severe", system: "Fuel" },
-  "P0300": { description: "Random/Multiple Cylinder Misfire Detected", severity: "severe", system: "Engine" },
-  "P0301": { description: "Cylinder 1 Misfire Detected", severity: "severe", system: "Engine" },
-  "P0302": { description: "Cylinder 2 Misfire Detected", severity: "severe", system: "Engine" },
-  "P0303": { description: "Cylinder 3 Misfire Detected", severity: "severe", system: "Engine" },
-  "P0304": { description: "Cylinder 4 Misfire Detected", severity: "severe", system: "Engine" },
-  "P0325": { description: "Knock Sensor 1 Circuit Malfunction (Bank 1 or Single Sensor)", severity: "moderate", system: "Engine" },
-  "P0335": { description: "Crankshaft Position Sensor A Circuit Malfunction", severity: "severe", system: "Engine" },
-  "P0340": { description: "Camshaft Position Sensor A Circuit Malfunction (Bank 1 or Single Sensor)", severity: "severe", system: "Engine" },
-  "P0420": { description: "Catalyst System Efficiency Below Threshold (Bank 1)", severity: "moderate", system: "Emissions" },
-  "P0440": { description: "Evaporative Emission Control System Malfunction", severity: "moderate", system: "Emissions" },
-  "P0442": { description: "Evaporative Emission Control System Leak Detected (Small Leak)", severity: "moderate", system: "Emissions" },
-  "P0500": { description: "Vehicle Speed Sensor Malfunction", severity: "severe", system: "Chassis" },
-  "P0505": { description: "Idle Control System Malfunction", severity: "moderate", system: "Engine" },
-  "P0600": { description: "Serial Communication Link Malfunction", severity: "severe", system: "Network" },
-  "P0700": { description: "Transmission Control System Malfunction (MIL Request)", severity: "severe", system: "Transmission" }
-};
-
-function parseDtcCodes(dtcString) {
-  if (!dtcString) return [];
-  return dtcString
-    .split(/[,\s]+/)
-    .map(c => c.trim().toUpperCase())
-    .filter(c => /^[PBUC]\d{4}$/.test(c));
-}
-
-function getDtcInfo(code) {
-  const normalized = code.trim().toUpperCase();
-  if (DTC_DATABASE[normalized]) {
-    return { code: normalized, ...DTC_DATABASE[normalized] };
-  }
-
-  const first = normalized.charAt(0);
-  const second = normalized.charAt(1);
-  const third = normalized.charAt(2);
-
-  let system = "Unknown";
-  let description = `OBD-II Diagnostic Trouble Code ${normalized}`;
-  let severity = "moderate";
-
-  if (first === 'P') {
-    system = "Powertrain (Engine/Transmission)";
-    if (second === '0') {
-      if (third === '1' || third === '2') {
-        description = `Generic Fuel & Air Metering error (${normalized})`;
-      } else if (third === '3') {
-        description = `Generic Ignition System or Misfire error (${normalized})`;
-        severity = "severe";
-      } else if (third === '4') {
-        description = `Generic Auxiliary Emissions Control error (${normalized})`;
-      } else if (third === '5') {
-        description = `Generic Vehicle Speed or Idle Control error (${normalized})`;
-      } else if (third === '6') {
-        description = `Generic Computer or Output Circuit error (${normalized})`;
-        severity = "severe";
-      } else if (third === '7' || third === '8' || third === '9') {
-        description = `Generic Transmission control error (${normalized})`;
-        severity = "severe";
-      }
-    } else {
-      description = `Manufacturer-controlled Powertrain error (${normalized})`;
-    }
-  } else if (first === 'B') {
-    system = "Body (Airbags, AC, Locking)";
-    description = `Body System trouble code (${normalized})`;
-    if (normalized.startsWith("B0001") || normalized.startsWith("B0002") || normalized.startsWith("B0028")) {
-      description = "Airbag/Supplemental Restraint System (SRS) Malfunction";
-      severity = "severe";
-    }
-  } else if (first === 'C') {
-    system = "Chassis (ABS, Steering, Brakes)";
-    description = `Chassis trouble code (${normalized})`;
-    if (normalized.startsWith("C0035") || normalized.startsWith("C0040")) {
-      description = "Wheel Speed Sensor Circuit Malfunction";
-      severity = "severe";
-    }
-  } else if (first === 'U') {
-    system = "Network Communication (CAN Bus)";
-    description = `Network Communication error (${normalized})`;
-    severity = "severe";
-  }
-
-  return {
-    code: normalized,
-    description,
-    severity,
-    system
-  };
-}
+const { parseDtcCodes, getDtcInfo } = dtcRoutes;
 
 function getRecordSpeed(record) {
   return record.speed !== null && record.speed !== undefined
@@ -1648,73 +1702,11 @@ function latestCapture(vehicleId, auth) {
   return latestCaptureCache.get(key)
 }
 
-function getMaintenanceItems(vehicleId = null, auth = null) {
-  const scopedLogs = filterRecordsByScope(fuelLogsStore, auth, vehicleId);
-  const sortedLogs = [...scopedLogs].sort((a, b) => b.odometer - a.odometer);
-  const currentOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
-
-  return filterRecordsByScope(maintenanceStore, auth, vehicleId).map(item => {
-    const kmSinceService = item.lastServiceOdo !== null && item.lastServiceOdo !== undefined
-      ? Math.max(0, currentOdometer - item.lastServiceOdo)
-      : 0;
-
-    const daysSinceService = item.lastServiceDate !== null && item.lastServiceDate !== undefined
-      ? Math.max(0, (Date.now() - item.lastServiceDate) / (1000 * 60 * 60 * 24))
-      : 0;
-
-    let kmUntilDue = null;
-    if (item.intervalKm) {
-      kmUntilDue = item.intervalKm - kmSinceService;
-    }
-
-    let daysUntilDue = null;
-    if (item.intervalDays) {
-      daysUntilDue = item.intervalDays - daysSinceService;
-    }
-
-    let status = 'ok';
-    if ((kmUntilDue !== null && kmUntilDue <= 0) || (daysUntilDue !== null && daysUntilDue <= 0)) {
-      status = 'overdue';
-    } else if ((kmUntilDue !== null && kmUntilDue <= item.intervalKm * 0.1) || (daysUntilDue !== null && daysUntilDue <= item.intervalDays * 0.1)) {
-      status = 'due_soon';
-    }
-
-    return {
-      ...item,
-      currentOdometer: parseFloat(currentOdometer.toFixed(1)),
-      kmSinceService: parseFloat(kmSinceService.toFixed(1)),
-      daysSinceService: Math.round(daysSinceService),
-      kmUntilDue: kmUntilDue !== null ? parseFloat(kmUntilDue.toFixed(1)) : null,
-      daysUntilDue: daysUntilDue !== null ? Math.round(daysUntilDue) : null,
-      status
-    };
-  });
-}
-
-function getMaintenanceStatus(items = getMaintenanceItems()) {
-  let okCount = 0;
-  let dueSoonCount = 0;
-  let overdueCount = 0;
-  let nextUpcoming = null;
-  let minKmRemaining = Infinity;
-
-  items.forEach(item => {
-    if (item.status === 'overdue') overdueCount++;
-    else if (item.status === 'due_soon') dueSoonCount++;
-    else okCount++;
-
-    if (item.kmUntilDue !== null && item.kmUntilDue > 0 && item.kmUntilDue < minKmRemaining) {
-      minKmRemaining = item.kmUntilDue;
-      nextUpcoming = {
-        name: item.name,
-        kmRemaining: item.kmUntilDue,
-        daysRemaining: item.daysUntilDue
-      };
-    }
-  });
-
-  return { okCount, dueSoonCount, overdueCount, nextUpcoming };
-}
+const { getMaintenanceItems, getMaintenanceStatus } = maintenanceRoutes.createMaintenanceHelpers({
+  fuelLogsStore,
+  maintenanceStore,
+  filterRecordsByScope
+});
 
 
 function isValidVehicleName(name) {
@@ -1945,15 +1937,39 @@ fastify.post('/api/telemetry/batch', {
       const candidate = telemetryDataStore.concat(accepted);
 
       const batchVehicles = new Set(normalized.map(r => r.vehicleId));
-      const commandsToSend = pendingCommands.filter(c => batchVehicles.has(c.vehicleId));
-      const remainingCommands = pendingCommands.filter(c => !batchVehicles.has(c.vehicleId));
+      const protocolV2 = request.headers['x-obd-command-protocol'] === '2';
+      const now = Date.now();
+      const expiredAny = pendingCommands.some(command => command.status === 'pending' && command.expiresAt <= now);
+      const liveCommands = expiredAny ? pendingCommands.map(command =>
+        command.status === 'pending' && command.expiresAt <= now
+          ? { ...command, status: 'expired', updatedAt: now, result: { reason: 'command_expired' } }
+          : command
+      ) : pendingCommands;
+      const commandsToSend = liveCommands.filter(c => c.status === 'pending' && batchVehicles.has(c.vehicleId));
+      const remainingCommands = protocolV2 ? liveCommands : liveCommands.map(command =>
+        commandsToSend.some(sent => sent.id === command.id)
+          ? { ...command, status: 'unknown', updatedAt: now, result: { reason: 'legacy_delivery_unacknowledged' } }
+          : command
+      );
+      const commandQueueChanged = expiredAny || (!protocolV2 && commandsToSend.length > 0);
 
-      // Telemetry rows and the command-queue drain commit as one
-      // transaction so a failed write leaves both the store and dedupe
-      // state untouched and is explicitly retryable.
-      const ingestEntries = [[DB_PATH, candidate]];
-      if (commandsToSend.length !== 0) ingestEntries.push([COMMANDS_QUEUE_PATH, remainingCommands]);
-      runFileTransactionSync(ingestEntries);
+      // Legacy clients retain one-shot delivery. V2 clients get stable IDs
+      // and commands remain pending until an explicit device acknowledgment.
+      // Legacy delivery and telemetry still commit together so a failed write
+      // cannot cause the command to be sent twice.
+      if (sqliteStorage) {
+        if (commandQueueChanged) {
+          runFileTransactionSync([[COMMANDS_QUEUE_PATH, remainingCommands]], {
+            type: 'append', records: accepted
+          });
+        } else {
+          sqliteStorage.appendBatch(accepted);
+        }
+      } else {
+        const ingestEntries = [[DB_PATH, candidate]];
+        if (commandQueueChanged) ingestEntries.push([COMMANDS_QUEUE_PATH, remainingCommands]);
+        runFileTransactionSync(ingestEntries);
+      }
       telemetryDataStore.push(...accepted);
       for (const record of accepted) {
         const key = telemetryEventKey(record);
@@ -1966,17 +1982,19 @@ fastify.post('/api/telemetry/batch', {
         invalidateAnalyticsCaches({ telemetry: true, vehicleId });
       }
 
-      if (commandsToSend.length !== 0) {
+      if (commandQueueChanged) {
         pendingCommands = remainingCommands;
       }
-      const commandStrings = commandsToSend.map(c => (typeof c === 'string') ? c : c.command);
+      const commandsForResponse = protocolV2
+        ? commandsToSend.map(({ id, command, vehicleId, expiresAt }) => ({ id, command, vehicleId, expiresAt }))
+        : commandsToSend.map(c => c.command);
 
       return reply.status(201).send({
         success: true,
         message: `Ingested ${accepted.length} records successfully.`,
         acceptedIds,
         duplicateIds,
-        commands: commandStrings
+        commands: commandsForResponse
       });
     } catch (err) {
       return retryablePersistenceError(reply, request, err);
@@ -1996,372 +2014,64 @@ fastify.post('/api/telemetry/batch', {
 // header (same secret the agent uses for telemetry) and a
 // per-IP rate limit via @fastify/rate-limit.
 //
-// Queue: a container restart used to drop pending commands.
-// They now persist to commands_queue.json (see persist() above)
-// so a SIGKILL mid-flight doesn't lose queued work. The cap
-// of 10 prevents an attacker (or a buggy loop) from filling
-// the disk.
-const MAX_PENDING_COMMANDS = 10;
-fastify.post('/api/commands', {
-  config: {
-    rateLimit: {
-      max: 30,
-      timeWindow: '15 minutes',
-    },
-  },
-}, async (request, reply) => {
-  const auth = request.auth;
-  const { command, vehicleId } = request.body || {};
-  if (!command || (command !== 'read_dtc' && command !== 'clear_dtc')) {
-    return reply.status(400).send({ error: 'Invalid command. Must be read_dtc or clear_dtc' });
-  }
-  const targetVehicleId = vehicleId || DEFAULT_VEHICLE_ID;
-
-  return serializeMutation(async () => {
-    if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
-      return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
-    }
-    if (pendingCommands.length >= MAX_PENDING_COMMANDS) {
-      return reply.status(429).send({
-        error: 'Command queue is full. The head unit will drain it on next sync; retry shortly.',
-        queue_size: pendingCommands.length,
-      });
-    }
-    const candidateQueue = pendingCommands.concat({ command, vehicleId: targetVehicleId });
-    try {
-      await persist(COMMANDS_QUEUE_PATH, candidateQueue);
-      pendingCommands = candidateQueue;
-      return reply.send({ success: true, message: `Command ${command} queued.`, queue_size: pendingCommands.length });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
+// V2 commands keep stable IDs and remain pending until the paired device
+// acknowledges a durable result. Legacy clients keep one-shot delivery, with
+// the result recorded as unknown because their response cannot be correlated.
+// Pending commands expire after 24 hours and only the 100 newest terminal
+// entries are retained for status and idempotent acknowledgment retries.
+  fastify.register(commandsRoutes, {
+    DEFAULT_VEHICLE_ID,
+    COMMANDS_QUEUE_PATH,
+    vehicleExists,
+    getPendingCommands: () => pendingCommands,
+    setPendingCommands: (nextQueue) => { pendingCommands = nextQueue; },
+    canAccessVehicle,
+    vehicleScope,
+    vehiclesStore,
+    getDiagnosticsStore: () => diagnosticsStore,
+    setDiagnosticsStore: (next) => { diagnosticsStore = next; },
+    dtcHistoryStore,
+    DIAG_PATH,
+    DTC_HIST_PATH,
+    runFileTransactionSync,
+    parseDtcCodes: require('./routes/dtc').parseDtcCodes,
+    serializeMutation,
+    persist,
+    retryablePersistenceError
   });
-})
 
-// Handler to ingest DTC reads
-const handleDtcPost = async (request, reply) => {
-  const { dtc, timestamp, vehicleId } = request.body || {};
-  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
-    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
-  }
-  const vid = request.auth?.type === 'device' ? request.auth.vehicleId : (vehicleId || DEFAULT_VEHICLE_ID);
-  const time = timestamp || Date.now();
-  const rawCodeStr = dtc || "No trouble codes found";
-
-  return serializeMutation(async () => {
-    try {
-      const nextDiagnostics = JSON.parse(JSON.stringify(diagnosticsStore));
-      if (!nextDiagnostics.byVehicle[vid]) {
-        nextDiagnostics.byVehicle[vid] = {
-          latestDtc: { code: '', timestamp: null },
-          latestClearStatus: { success: null, timestamp: null }
-        };
-      }
-      nextDiagnostics.byVehicle[vid].latestDtc = { code: rawCodeStr, timestamp: time };
-      const historyEntry = {
-        id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-        vehicleId: vid,
-        timestamp: time,
-        type: 'read',
-        codes: parseDtcCodes(rawCodeStr),
-        success: true
-      };
-      const nextHistory = dtcHistoryStore.concat(historyEntry);
-      runFileTransactionSync([[DIAG_PATH, nextDiagnostics], [DTC_HIST_PATH, nextHistory]]);
-      diagnosticsStore = nextDiagnostics;
-      dtcHistoryStore.push(historyEntry);
-      return reply.send({ success: true });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
+  fastify.register(dtcRoutes, {
+    vehicleExists,
+    DEFAULT_VEHICLE_ID,
+    serializeMutation,
+    getDiagnosticsStore: () => diagnosticsStore,
+    setDiagnosticsStore: (d) => { diagnosticsStore = d; },
+    dtcHistoryStore,
+    DIAG_PATH,
+    DTC_HIST_PATH,
+    runFileTransactionSync,
+    retryablePersistenceError,
+    resolveVehicleQuery,
+    filterRecordsByScope,
+    vehicleScope
   });
-};
-fastify.post('/api/telemetry/dtc', handleDtcPost);
-fastify.post('/api/dtc', handleDtcPost);
-
-// Handler to ingest DTC clears
-const handleDtcClearPost = async (request, reply) => {
-  const { success, timestamp, vehicleId } = request.body || {};
-  if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
-    return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
-  }
-  const vid = request.auth?.type === 'device' ? request.auth.vehicleId : (vehicleId || DEFAULT_VEHICLE_ID);
-  const time = timestamp || Date.now();
-  const clearSuccess = success ?? false;
-
-  return serializeMutation(async () => {
-    try {
-      const nextDiagnostics = JSON.parse(JSON.stringify(diagnosticsStore));
-      if (!nextDiagnostics.byVehicle[vid]) {
-        nextDiagnostics.byVehicle[vid] = {
-          latestDtc: { code: '', timestamp: null },
-          latestClearStatus: { success: null, timestamp: null }
-        };
-      }
-      nextDiagnostics.byVehicle[vid].latestClearStatus = { success: clearSuccess, timestamp: time };
-      const historyEntry = {
-        id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-        vehicleId: vid,
-        timestamp: time,
-        type: 'clear',
-        codes: [],
-        success: clearSuccess
-      };
-      const nextHistory = dtcHistoryStore.concat(historyEntry);
-      runFileTransactionSync([[DIAG_PATH, nextDiagnostics], [DTC_HIST_PATH, nextHistory]]);
-      diagnosticsStore = nextDiagnostics;
-      dtcHistoryStore.push(historyEntry);
-      return reply.send({ success: true });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
-  });
-};
-fastify.post('/api/telemetry/dtc/clear', handleDtcClearPost);
-fastify.post('/api/dtc/clear', handleDtcClearPost);
-
-// Fetch diagnostics status. `?vehicle=` scopes to one vehicle.
-const handleDtcGet = async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-
-  const history = filterRecordsByScope(dtcHistoryStore, request.auth, vehicle);
-
-  let latest;
-  if (vehicle) {
-    latest = diagnosticsStore.byVehicle[vehicle] || {
-      latestDtc: { code: "", timestamp: null },
-      latestClearStatus: { success: null, timestamp: null }
-    };
-  } else {
-    const scope = vehicleScope(request.auth);
-    const candidateEntries = Object.entries(diagnosticsStore.byVehicle)
-      .filter(([vid]) => scope === null || scope.includes(vid))
-      .map(([, diag]) => diag);
-
-    latest = candidateEntries
-      .filter(d => (d.latestDtc && d.latestDtc.timestamp) || (d.latestClearStatus && d.latestClearStatus.timestamp))
-      .sort((a, b) => (Math.max(b.latestDtc?.timestamp || 0, b.latestClearStatus?.timestamp || 0))
-                     - Math.max(a.latestDtc?.timestamp || 0, a.latestClearStatus?.timestamp || 0))[0] || {
-        latestDtc: { code: "", timestamp: null },
-        latestClearStatus: { success: null, timestamp: null }
-      };
-  }
-
-  return reply.send({
-    latest,
-    history
-  });
-};
-fastify.get('/api/telemetry/dtc', handleDtcGet);
-fastify.get('/api/dtc', handleDtcGet);
-
-// Batch lookup DTC descriptions
-fastify.post('/api/dtc/lookup', async (request, reply) => {
-  const { codes } = request.body || {};
-  if (!Array.isArray(codes)) {
-    return reply.status(400).send({ error: "Body must contain 'codes' array" });
-  }
-  const details = codes.map(code => getDtcInfo(code));
-  return reply.send(details);
-})
-
-// Single lookup DTC description
-fastify.get('/api/dtc/lookup/:code', async (request, reply) => {
-  const { code } = request.params;
-  return reply.send(getDtcInfo(code));
-})
 
 // GET all acceleration runs
-fastify.get('/api/performance/runs', async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-
-  const drives = cachedDrives(vehicle, request.auth);
-  const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
-  const sortedRuns = scopedStore
-    .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0)
-    .sort((a, b) => a.timestamp - b.timestamp);
-
-  const runs = [];
-  let dIndex = 0;
-  for (const r of sortedRuns) {
-    const rVehicle = r.vehicleId || DEFAULT_VEHICLE_ID;
-    while (dIndex < drives.length && drives[dIndex].endTime < r.timestamp) dIndex++;
-    let drive = null;
-    if (dIndex < drives.length && drives[dIndex].startTime <= r.timestamp && drives[dIndex].endTime >= r.timestamp
-        && drives[dIndex].vehicleId === rVehicle) {
-      drive = drives[dIndex];
-    }
-    runs.push({
-      id: `${r.timestamp}-${Math.floor(r.accelTime * 100)}`,
-      timestamp: r.timestamp,
-      accelTime: r.accelTime,
-      driveId: drive ? drive.id : null,
-      maxSpeedReached: drive ? drive.summary.maxSpeed : 100
-    });
-  }
-  return reply.send(runs.reverse());
-})
-
-// GET performance personal records
-fastify.get('/api/performance/records', async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-
-  const drives = cachedDrives(vehicle, request.auth);
-  const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
-
-  const findDrive = (record) => {
-    // Match on both time window and vehicle so concurrent drives from
-    // different cars never lend each other their ids.
-    const ts = record.timestamp;
-    const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
-    return drives.find(d => ts >= d.startTime && ts <= d.endTime && d.vehicleId === vid);
-  };
-
-  // 1. Find all runs with non-null accelTime
-  const runs = scopedStore
-    .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0);
-
-  let bestRun = null;
-  if (runs.length > 0) {
-    const sortedRuns = [...runs].sort((a, b) => a.accelTime - b.accelTime);
-    const r = sortedRuns[0];
-    const drive = findDrive(r);
-    bestRun = {
-      time: r.accelTime,
-      timestamp: r.timestamp,
-      driveId: drive ? drive.id : null
-    };
-  }
-
-  // 2. Top speed ever
-  let topSpeed = null;
-  const speedRecords = scopedStore
-    .filter(r => getRecordSpeed(r) > 0)
-    .sort((a, b) => getRecordSpeed(b) - getRecordSpeed(a));
-  if (speedRecords.length > 0) {
-    const r = speedRecords[0];
-    const drive = findDrive(r);
-    topSpeed = {
-      speed: getRecordSpeed(r),
-      timestamp: r.timestamp,
-      driveId: drive ? drive.id : null
-    };
-  }
-
-  // 3. Highest RPM ever
-  let highestRpm = null;
-  const rpmRecords = scopedStore
-    .filter(r => r.rpm !== null && r.rpm !== undefined)
-    .sort((a, b) => b.rpm - a.rpm);
-  if (rpmRecords.length > 0 && rpmRecords[0].rpm > 0) {
-    const r = rpmRecords[0];
-    const drive = findDrive(r);
-    highestRpm = {
-      rpm: r.rpm,
-      timestamp: r.timestamp,
-      driveId: drive ? drive.id : null
-    };
-  }
-
-  // 4. Longest Drive
-  let longestDrive = null;
-  if (drives.length > 0) {
-    const sortedDrives = [...drives].sort((a, b) => b.summary.durationMin - a.summary.durationMin);
-    const d = sortedDrives[0];
-    longestDrive = {
-      durationMin: d.summary.durationMin,
-      driveId: d.id,
-      date: new Date(d.startTime).toLocaleDateString()
-    };
-  }
-
-  const totalDrivingTime = drives.reduce((acc, d) => acc + d.summary.durationMin, 0);
-
-  return reply.send({
-    best0to100: bestRun,
-    topSpeed,
-    highestRpm,
-    longestDrive,
-    totalDrivingTime,
-    totalDrives: drives.length
+  fastify.register(performanceRoutes, {
+    resolveVehicleQuery,
+    cachedDrives,
+    filterRecordsByScope,
+    telemetryDataStore,
+    DEFAULT_VEHICLE_ID,
+    getRecordSpeed
   });
-})
 
-function driveRecords(bounds) {
-  return telemetryDataStore.filter(record =>
-    record.timestamp >= bounds.startTime && record.timestamp <= bounds.endTime &&
-    (record.vehicleId || DEFAULT_VEHICLE_ID) === bounds.vehicleId)
-}
-
-function* driveCsvChunks(records) {
-  yield 'Timestamp,Time,RPM,Speed,CoolantTemp,Latitude,Longitude,Altitude,GPSSpeed,EngineLoad,ThrottlePos,FuelLevel,AmbientTemp,Voltage,AccelTime,AlertCoolant,AlertVoltage\n'
-  for (const record of records) {
-    const timeStr = new Date(record.timestamp).toISOString()
-    yield `${record.timestamp},${timeStr},${record.rpm ?? ''},${record.speed ?? ''},${record.coolantTemp ?? ''},${record.latitude ?? ''},${record.longitude ?? ''},${record.altitude ?? ''},${record.gpsSpeed ?? ''},${record.engineLoad ?? ''},${record.throttlePos ?? ''},${record.fuelLevel ?? ''},${record.ambientTemp ?? ''},${record.voltage ?? ''},${record.accelTime ?? ''},${record.alertCoolant ? 'true' : 'false'},${record.alertVoltage ? 'true' : 'false'}\n`
-  }
-}
-
-function* driveGpxChunks(id, bounds, records) {
-  yield `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Axia Telemetry Core" xmlns="http://www.topografix.com/GPX/1/1">
-  <metadata>
-    <name>Drive #${id} Telemetry</name>
-    <time>${new Date(bounds.startTime).toISOString()}</time>
-  </metadata>
-  <trk>
-    <name>Drive #${id}</name>
-    <trkseg>
-`
-  for (const record of records) {
-    const latitude = Number(record.latitude)
-    const longitude = Number(record.longitude)
-    if (Number.isFinite(latitude) && Number.isFinite(longitude) &&
-        latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180 &&
-        (latitude !== 0 || longitude !== 0)) {
-      const timeStr = new Date(record.timestamp).toISOString()
-      const elevation = record.altitude === null || record.altitude === undefined || record.altitude === ''
-        ? null
-        : Number(record.altitude)
-      yield `      <trkpt lat="${latitude}" lon="${longitude}">
-${elevation !== null && Number.isFinite(elevation) ? `        <ele>${elevation}</ele>\n` : ''}        <time>${timeStr}</time>
-        <extensions>
-          <rpm>${record.rpm ?? 0}</rpm>
-          <speed>${getRecordSpeed(record)}</speed>
-          <temp>${record.coolantTemp ?? 0}</temp>
-        </extensions>
-      </trkpt>\n`
-    }
-  }
-  yield `    </trkseg>
-  </trk>
-</gpx>`
-}
-
-// Drive CSV Exporter. Readable.from applies backpressure and never builds the
-// complete export string in memory.
-fastify.get('/api/drives/:id/export/csv', async (request, reply) => {
-  const { id } = request.params
-  const bounds = getDriveBounds(id)
-  if (!bounds) return reply.status(404).send({ error: 'Drive session not found' })
-  const records = driveRecords(bounds)
-  reply.header('Content-Type', 'text/csv')
-  reply.header('Content-Disposition', `attachment; filename=drive_${id}_telemetry.csv`)
-  return reply.send(Readable.from(driveCsvChunks(records)))
-})
-
-// Drive GPX Route Exporter
-fastify.get('/api/drives/:id/export/gpx', async (request, reply) => {
-  const { id } = request.params
-  const bounds = getDriveBounds(id)
-  if (!bounds) return reply.status(404).send({ error: 'Drive session not found' })
-  const records = driveRecords(bounds)
-  reply.header('Content-Type', 'application/gpx+xml')
-  reply.header('Content-Disposition', `attachment; filename=drive_${id}_route.gpx`)
-  return reply.send(Readable.from(driveGpxChunks(id, bounds, records)))
-})
+  fastify.register(exportRoutes, {
+    getDriveBounds,
+    telemetryDataStore,
+    DEFAULT_VEHICLE_ID,
+    getRecordSpeed
+  });
 
 // Endpoint to detect and segment drives
 fastify.get('/api/drives', async (request, reply) => {
@@ -2592,968 +2302,113 @@ fastify.get('/api/telemetry/changes', async (request, reply) => {
   return reply.send({ records, nextCursor, hasMore })
 })
 
-// POST /api/fuel-logs - Add one or more fuel log entries
-fastify.post('/api/fuel-logs', async (request, reply) => {
-  const auth = request.auth;
-  const payload = request.body;
-  if (!payload) return reply.status(400).send({ error: 'Missing request body' });
-  const logsToAdd = Array.isArray(payload) ? payload : [payload];
-
-  return serializeMutation(async () => {
-    try {
-      // Validate every row before mutation. Invalid rows are no longer
-      // silently dropped, which makes retry behavior deterministic.
-      for (const item of logsToAdd) {
-        if (!item || typeof item !== 'object' || !validateEventId(item)) {
-          return reply.status(400).send({ error: 'Invalid fuel log' });
-        }
-        if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
-          return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
-        }
-        const litres = Number(item.litres);
-        const odometer = Number(item.odometer);
-        if (!Number.isFinite(litres) || !Number.isFinite(odometer)) {
-          return reply.status(400).send({ error: 'litres and odometer must be numbers' });
-        }
-      }
-
-      const normalized = logsToAdd.map((item, index) => ({
-        id: item.id || `${Date.now()}-${index}-${crypto.randomBytes(4).toString('hex')}`,
-        vehicleId: item.vehicleId || (auth?.type === 'device' ? auth.vehicleId : DEFAULT_VEHICLE_ID),
-        ...(item.eventId !== undefined ? { eventId: item.eventId } : {}),
-        timestamp: Number.isFinite(Number(item.timestamp)) ? Number(item.timestamp) : Date.now(),
-        litres: Number(item.litres),
-        odometer: Number(item.odometer),
-        source: item.source || (auth?.type === 'device' ? 'app' : 'web')
-      }));
-      const classified = classifyEventIds(fuelLogsStore, normalized);
-      const candidate = fuelLogsStore.concat(classified.accepted).sort((a, b) => b.timestamp - a.timestamp);
-      await persist(FUEL_PATH, candidate);
-      replaceArrayContents(fuelLogsStore, candidate);
-      invalidateAnalyticsCaches({ telemetry: classified.accepted.length > 0 });
-
-      return reply.status(201).send({
-        success: true,
-        message: `Added ${classified.accepted.length} fuel logs.`,
-        acceptedIds: classified.accepted.flatMap(item => eventIdOf(item) ? [eventIdOf(item)] : []),
-        duplicateIds: classified.duplicate
-      });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
+  fastify.register(fuelRoutes, {
+    serializeMutation,
+    validateEventId,
+    vehicleExists,
+    DEFAULT_VEHICLE_ID,
+    classifyEventIds,
+    fuelLogsStore,
+    FUEL_PATH,
+    persist,
+    replaceArrayContents,
+    invalidateAnalyticsCaches,
+    eventIdOf,
+    retryablePersistenceError,
+    resolveVehicleQuery,
+    filterRecordsByScope
   });
-});
 
-// GET /api/fuel-logs - Fetch all fuel log entries
-fastify.get('/api/fuel-logs', async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-
-  const sortedLogs = [...filterRecordsByScope(fuelLogsStore, request.auth, vehicle)].sort((a, b) => b.odometer - a.odometer);
-  return reply.send(sortedLogs);
-});
-
-// DELETE /api/fuel-logs/:id - Delete a fuel log entry
-fastify.delete('/api/fuel-logs/:id', async (request, reply) => {
-  const { id } = request.params;
-  const idNum = parseInt(id);
-  return serializeMutation(async () => {
-    try {
-      const candidate = fuelLogsStore.filter(log => log.id !== id && log.id !== idNum);
-      if (candidate.length === fuelLogsStore.length) {
-        return reply.status(404).send({ error: 'Fuel log not found' });
-      }
-      await persist(FUEL_PATH, candidate);
-      replaceArrayContents(fuelLogsStore, candidate);
-      invalidateAnalyticsCaches({ telemetry: true });
-      return reply.send({ success: true, message: 'Fuel log deleted successfully' });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
+  fastify.register(maintenanceRoutes, {
+    serializeMutation,
+    validateEventId,
+    vehicleExists,
+    DEFAULT_VEHICLE_ID,
+    classifyEventIds,
+    maintenanceStore,
+    fuelLogsStore,
+    MAINT_PATH,
+    persist,
+    replaceArrayContents,
+    invalidateAnalyticsCaches,
+    eventIdOf,
+    retryablePersistenceError,
+    resolveVehicleQuery,
+    filterRecordsByScope,
+    filterByVehicle
   });
-});
 
-// GET /api/fuel-stats - Get calculated fuel stats (average km/L, total litres, total distance)
-fastify.get('/api/fuel-stats', async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-
-  const scopedLogs = filterRecordsByScope(fuelLogsStore, request.auth, vehicle);
-  if (scopedLogs.length < 2) {
-    return reply.send({
-      averageKmPerLitre: 0,
-      bestKmPerLitre: 0,
-      worstKmPerLitre: 0,
-      totalLitres: scopedLogs.reduce((acc, log) => acc + log.litres, 0),
-      totalDistance: 0,
-      logCount: scopedLogs.length
-    });
-  }
-
-  const sorted = [...scopedLogs].sort((a, b) => a.odometer - b.odometer);
-
-  let totalLitresIntervals = 0;
-  let totalDistanceIntervals = 0;
-  const economies = [];
-
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const curr = sorted[i];
-    const distance = curr.odometer - prev.odometer;
-    const litres = curr.litres;
-
-    if (distance > 0 && litres > 0) {
-      const kmPerL = distance / litres;
-      economies.push(kmPerL);
-      totalDistanceIntervals += distance;
-      totalLitresIntervals += litres;
-    }
-  }
-
-  const minOdo = sorted[0].odometer;
-  const maxOdo = sorted[sorted.length - 1].odometer;
-  const totalDistance = maxOdo - minOdo;
-  const totalLitres = scopedLogs.reduce((acc, log) => acc + log.litres, 0);
-
-  const averageKmPerLitre = totalLitresIntervals > 0 ? (totalDistanceIntervals / totalLitresIntervals) : 0;
-  const bestKmPerLitre = economies.length > 0 ? Math.max(...economies) : 0;
-  const worstKmPerLitre = economies.length > 0 ? Math.min(...economies) : 0;
-
-  return reply.send({
-    averageKmPerLitre: parseFloat(averageKmPerLitre.toFixed(2)),
-    bestKmPerLitre: parseFloat(bestKmPerLitre.toFixed(2)),
-    worstKmPerLitre: parseFloat(worstKmPerLitre.toFixed(2)),
-    totalLitres: parseFloat(totalLitres.toFixed(1)),
-    totalDistance: parseFloat(totalDistance.toFixed(1)),
-    logCount: scopedLogs.length
+  fastify.register(vehiclesRoutes, {
+    vehicleScope,
+    vehiclesStore,
+    telemetryDataStore,
+    fuelLogsStore,
+    maintenanceStore,
+    dtcHistoryStore,
+    getDiagnosticsStore: () => diagnosticsStore,
+    setDiagnosticsStore: (d) => { diagnosticsStore = d; },
+    getPendingCommands: () => pendingCommands,
+    setPendingCommands: (nextQueue) => { pendingCommands = nextQueue; },
+    devicesStore,
+    usersStore,
+    DEFAULT_VEHICLE_ID,
+    VEHICLE_ID_PATTERN,
+    isValidVehicleName,
+    vehicleExists,
+    serializeMutation,
+    runFileTransactionSync,
+    persist,
+    replaceArrayContents,
+    invalidateAnalyticsCaches,
+    syncTelemetryEventKeySet,
+    retryablePersistenceError,
+    VEHICLES_PATH,
+    USERS_PATH,
+    DB_PATH,
+    FUEL_PATH,
+    MAINT_PATH,
+    DTC_HIST_PATH,
+    DIAG_PATH,
+    COMMANDS_QUEUE_PATH,
+    DEVICES_PATH,
+    sqliteStorage
   });
-});
 
-// GET all maintenance items with status. `vehicleId` scopes both the
-// items list and the current-odometer baseline (highest fuel-log
-// odometer of that vehicle) to one car.
-fastify.get('/api/maintenance', async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  const items = getMaintenanceItems(vehicle, request.auth);
-  return reply.send(items);
-})
-
-// POST a new maintenance item
-fastify.post('/api/maintenance', async (request, reply) => {
-  const auth = request.auth;
-  const payload = request.body || {};
-  const itemsToAdd = Array.isArray(payload) ? payload : [payload];
-
-  return serializeMutation(async () => {
-    try {
-      for (const item of itemsToAdd) {
-        if (!item || typeof item !== 'object' || !item.name || !validateEventId(item)) {
-          return reply.status(400).send({ error: 'Each maintenance item requires a name' });
-        }
-        if (item.vehicleId !== undefined && !vehicleExists(item.vehicleId)) {
-          return reply.status(400).send({ error: `Unknown vehicleId: ${item.vehicleId}` });
-        }
-        if (item.intervalKm !== undefined && item.intervalKm !== null && !Number.isFinite(Number(item.intervalKm))) {
-          return reply.status(400).send({ error: 'intervalKm must be a number' });
-        }
-        if (item.intervalDays !== undefined && item.intervalDays !== null && !Number.isFinite(Number(item.intervalDays))) {
-          return reply.status(400).send({ error: 'intervalDays must be a number' });
-        }
-      }
-
-      const normalized = itemsToAdd.map((item, index) => {
-        const vid = item.vehicleId || (auth?.type === 'device' ? auth.vehicleId : DEFAULT_VEHICLE_ID);
-        const vehicleLogs = filterByVehicle(fuelLogsStore, vid);
-        const currentOdometer = vehicleLogs.length ? Math.max(...vehicleLogs.map(log => Number(log.odometer) || 0)) : 0;
-        return {
-          id: item.id || `${Date.now()}-${index}-${crypto.randomBytes(4).toString('hex')}`,
-          vehicleId: vid,
-          ...(item.eventId !== undefined ? { eventId: item.eventId } : {}),
-          name: item.name,
-          intervalKm: item.intervalKm ? Number(item.intervalKm) : null,
-          intervalDays: item.intervalDays ? Number(item.intervalDays) : null,
-          lastServiceOdo: item.lastServiceOdo !== undefined && item.lastServiceOdo !== null ? Number(item.lastServiceOdo) : currentOdometer,
-          lastServiceDate: item.lastServiceDate !== undefined && item.lastServiceDate !== null ? Number(item.lastServiceDate) : Date.now(),
-          notes: item.notes || '',
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        };
-      });
-      const classified = classifyEventIds(maintenanceStore, normalized);
-      const candidate = maintenanceStore.concat(classified.accepted);
-      await persist(MAINT_PATH, candidate);
-      replaceArrayContents(maintenanceStore, candidate);
-      invalidateAnalyticsCaches({ telemetry: classified.accepted.length > 0 });
-
-      return reply.status(201).send({
-        success: true,
-        message: `Added ${classified.accepted.length} maintenance items.`,
-        acceptedIds: classified.accepted.flatMap(item => eventIdOf(item) ? [eventIdOf(item)] : []),
-        duplicateIds: classified.duplicate
-      });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
+  fastify.register(authRoutes, {
+    OBD_API_KEY,
+    usersStore,
+    vehiclesStore,
+    devicesStore,
+    sessionsStore,
+    pendingPairingsByCode,
+    pendingPairingsByToken,
+    cleanExpiredPairings,
+    constantTimeEquals,
+    newSession,
+    setSessionCookie,
+    clearSessionCookie,
+    parseCookies,
+    SESSION_COOKIE,
+    verifyPassword,
+    hashPasswordAsync,
+    authenticateRequest,
+    canAccessVehicle,
+    isAdmin,
+    vehicleScope,
+    vehicleExists,
+    serializeMutation,
+    runFileTransactionSync,
+    persist,
+    replaceArrayContents,
+    retryablePersistenceError,
+    invalidateAnalyticsCaches,
+    getIsPoisoned: () => isServerPoisoned,
+    DEFAULT_VEHICLE_ID,
+    USERS_PATH,
+    VEHICLES_PATH,
+    DEVICES_PATH,
+    INITIAL_ADMIN_SECRET_PATH
   });
-})
-
-// PUT to edit/update a maintenance item (e.g. log a service event or edit settings)
-fastify.put('/api/maintenance/:id', async (request, reply) => {
-  const { id } = request.params;
-  const body = request.body || {};
-  return serializeMutation(async () => {
-    try {
-      const index = maintenanceStore.findIndex(item => String(item.id) === String(id));
-      if (index === -1) return reply.status(404).send({ error: 'Maintenance item not found' });
-
-      const candidate = maintenanceStore.map(item => ({ ...item }));
-      const item = candidate[index];
-      if (body.markServiced) {
-        const vehicleLogs = filterByVehicle(fuelLogsStore, item.vehicleId || DEFAULT_VEHICLE_ID);
-        const currentOdometer = vehicleLogs.length
-          ? Math.max(...vehicleLogs.map(log => Number(log.odometer) || 0))
-          : 0;
-        item.lastServiceOdo = currentOdometer;
-        item.lastServiceDate = Date.now();
-      } else {
-        if (body.name !== undefined) item.name = body.name;
-        if (body.intervalKm !== undefined) item.intervalKm = body.intervalKm ? Number(body.intervalKm) : null;
-        if (body.intervalDays !== undefined) item.intervalDays = body.intervalDays ? Number(body.intervalDays) : null;
-        if (body.lastServiceOdo !== undefined) item.lastServiceOdo = body.lastServiceOdo !== null ? Number(body.lastServiceOdo) : null;
-        if (body.lastServiceDate !== undefined) item.lastServiceDate = body.lastServiceDate !== null ? Number(body.lastServiceDate) : null;
-        if (body.notes !== undefined) item.notes = body.notes || '';
-      }
-      item.updatedAt = Date.now();
-      await persist(MAINT_PATH, candidate);
-      replaceArrayContents(maintenanceStore, candidate);
-      invalidateAnalyticsCaches({ telemetry: true });
-      return reply.send({ success: true, message: 'Maintenance item updated successfully' });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
-  });
-})
-
-// DELETE a maintenance item
-fastify.delete('/api/maintenance/:id', async (request, reply) => {
-  const { id } = request.params;
-  return serializeMutation(async () => {
-    try {
-      const candidate = maintenanceStore.filter(item => String(item.id) !== String(id));
-      if (candidate.length === maintenanceStore.length) {
-        return reply.status(404).send({ error: 'Maintenance item not found' });
-      }
-      await persist(MAINT_PATH, candidate);
-      replaceArrayContents(maintenanceStore, candidate);
-      invalidateAnalyticsCaches({ telemetry: true });
-      return reply.send({ success: true, message: 'Maintenance item deleted successfully' });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
-  });
-})
-
-// GET maintenance summary status
-fastify.get('/api/maintenance/status', async (request, reply) => {
-  const vehicle = resolveVehicleQuery(request.query);
-  if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
-  return reply.send(getMaintenanceStatus(getMaintenanceItems(vehicle, request.auth)));
-});
-
-// ----- Vehicle registry CRUD ----------------------------------------------
-//
-// Vehicles are a small, rarely-changed config list, so writes are
-// guarded by the same shared API key as other mutating endpoints
-// (absent header is tolerated for dashboard parity, but a wrong key
-// is always rejected). Deleting a vehicle that still owns data is
-// refused with 409 unless ?reassign=default explicitly re-homes the
-// records — this prevents accidental history loss.
-
-fastify.get('/api/vehicles', async (request, reply) => {
-  const scope = vehicleScope(request.auth);
-  const scopedVehicles = scope === null ? vehiclesStore : vehiclesStore.filter(v => scope.includes(v.id));
-  return reply.send(scopedVehicles.map(v => ({
-    ...v,
-    recordCount: {
-      telemetry: telemetryDataStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
-      fuelLogs: fuelLogsStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
-      maintenance: maintenanceStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
-    }
-  })));
-})
-
-fastify.post('/api/vehicles', async (request, reply) => {
-  const auth = request.auth;
-  const { name, vehicleId, tankLitres } = request.body || {};
-  if (!isValidVehicleName(name)) {
-    return reply.status(400).send({ error: 'Body must include a name (1-64 chars)' });
-  }
-
-  let id = vehicleId;
-  if (id !== undefined) {
-    if (typeof id !== 'string' || !VEHICLE_ID_PATTERN.test(id)) {
-      return reply.status(400).send({ error: 'vehicleId must match [A-Za-z0-9_-]{1,64}' });
-    }
-    if (id === DEFAULT_VEHICLE_ID) {
-      return reply.status(400).send({ error: `'${DEFAULT_VEHICLE_ID}' is reserved` });
-    }
-    if (vehicleExists(id)) {
-      return reply.status(409).send({ error: `Vehicle already exists: ${id}` });
-    }
-  } else {
-    do {
-      id = `veh-${crypto.randomBytes(4).toString('hex')}`;
-    } while (vehicleExists(id));
-  }
-
-  const vehicle = { id, name: name.trim(), createdAt: Date.now() };
-  if (tankLitres !== undefined) {
-    const tank = Number(tankLitres);
-    if (!Number.isFinite(tank) || tank <= 0 || tank > 500) {
-      return reply.status(400).send({ error: 'tankLitres must be a positive number (<= 500)' });
-    }
-    vehicle.tankLitres = tank;
-  }
-
-  const candidateVehicle = { ...vehicle };
-  if (auth && auth.type === 'user' && auth.user) {
-    return serializeMutation(async () => {
-      try {
-        const candidateUsers = usersStore.map(user => {
-          if (user.id !== auth.user.id) return user;
-          const assigned = Array.isArray(user.vehicles) ? [...user.vehicles] : [];
-          if (!assigned.includes(id)) assigned.push(id);
-          return { ...user, vehicles: assigned };
-        });
-        // Registry and assignment commit as one transaction so a failed
-        // user write cannot leave a vehicle on disk that no one owns.
-        const txnEntries = [[VEHICLES_PATH, [...vehiclesStore, candidateVehicle]]];
-        if (!auth.user.vehicles?.includes(id)) txnEntries.push([USERS_PATH, candidateUsers]);
-        runFileTransactionSync(txnEntries);
-        vehiclesStore.push(candidateVehicle);
-        if (!Array.isArray(auth.user.vehicles)) auth.user.vehicles = [];
-        if (!auth.user.vehicles.includes(id)) auth.user.vehicles.push(id);
-      } catch (err) {
-        return retryablePersistenceError(reply, request, err);
-      }
-      invalidateAnalyticsCaches({ vehicles: true });
-      return reply.status(201).send(candidateVehicle);
-    });
-  }
-  return serializeMutation(async () => {
-    try {
-      runFileTransactionSync([[VEHICLES_PATH, [...vehiclesStore, candidateVehicle]]]);
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
-    vehiclesStore.push(candidateVehicle);
-    invalidateAnalyticsCaches({ vehicles: true });
-    return reply.status(201).send(candidateVehicle);
-  });
-})
-
-fastify.put('/api/vehicles/:id', async (request, reply) => {
-  const vehicle = vehiclesStore.find(v => v.id === request.params.id);
-  if (!vehicle) {
-    return reply.status(404).send({ error: 'Vehicle not found' });
-  }
-
-  const { name, tankLitres } = request.body || {};
-  const updatedVehicle = { ...vehicle };
-  if (name !== undefined) {
-    if (!isValidVehicleName(name)) {
-      return reply.status(400).send({ error: 'name must be 1-64 chars' });
-    }
-    updatedVehicle.name = name.trim();
-  }
-  if (tankLitres !== undefined) {
-    const tank = Number(tankLitres);
-    if (!Number.isFinite(tank) || tank <= 0 || tank > 500) {
-      return reply.status(400).send({ error: 'tankLitres must be a positive number (<= 500)' });
-    }
-    updatedVehicle.tankLitres = tank;
-  }
-
-  const candidateVehicles = vehiclesStore.map(item => item.id === vehicle.id ? updatedVehicle : item);
-  return serializeMutation(async () => {
-    try {
-      await persist(VEHICLES_PATH, candidateVehicles);
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
-    Object.assign(vehicle, updatedVehicle);
-    invalidateAnalyticsCaches({ vehicles: true });
-    return reply.send(vehicle);
-  });
-})
-
-fastify.delete('/api/vehicles/:id', async (request, reply) => {
-  const id = request.params.id;
-  if (id === DEFAULT_VEHICLE_ID) {
-    return reply.status(400).send({ error: 'The default vehicle cannot be deleted' });
-  }
-  if (!vehicleExists(id)) {
-    return reply.status(404).send({ error: 'Vehicle not found' });
-  }
-
-  return serializeMutation(async () => {
-    try {
-      const reassign = request.query.reassign === DEFAULT_VEHICLE_ID;
-      const ownsData = records => records.some(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === id);
-      if (!reassign && (ownsData(telemetryDataStore) || ownsData(fuelLogsStore) || ownsData(maintenanceStore) || ownsData(dtcHistoryStore))) {
-        return reply.status(409).send({
-          error: 'Vehicle still owns records. Pass ?reassign=default to move them to the default vehicle.'
-        });
-      }
-
-      const move = record => reassign && (record.vehicleId || DEFAULT_VEHICLE_ID) === id
-        ? { ...record, vehicleId: DEFAULT_VEHICLE_ID }
-        : { ...record };
-      const telemetryCandidate = reassign ? telemetryDataStore.map(move) : telemetryDataStore.slice();
-      const fuelCandidate = reassign ? fuelLogsStore.map(move) : fuelLogsStore.slice();
-      const maintenanceCandidate = reassign ? maintenanceStore.map(move) : maintenanceStore.slice();
-      const dtcHistoryCandidate = reassign ? dtcHistoryStore.map(move) : dtcHistoryStore.slice();
-      const diagnosticsCandidate = JSON.parse(JSON.stringify(diagnosticsStore));
-      const diagnosticChanged = Boolean(diagnosticsCandidate.byVehicle[id]);
-      if (diagnosticChanged) {
-        const slot = diagnosticsCandidate.byVehicle[id];
-        if (reassign) {
-          const existing = diagnosticsCandidate.byVehicle[DEFAULT_VEHICLE_ID];
-          if (existing) {
-            if (!existing.latestDtc?.timestamp && slot.latestDtc?.timestamp) existing.latestDtc = slot.latestDtc;
-            if (!existing.latestClearStatus?.timestamp && slot.latestClearStatus?.timestamp) existing.latestClearStatus = slot.latestClearStatus;
-          } else {
-            diagnosticsCandidate.byVehicle[DEFAULT_VEHICLE_ID] = slot;
-          }
-        }
-        delete diagnosticsCandidate.byVehicle[id];
-      }
-      const commandsChanged = pendingCommands.some(c => c.vehicleId === id);
-      const commandsCandidate = reassign
-        ? pendingCommands.map(c => c.vehicleId === id ? { ...c, vehicleId: DEFAULT_VEHICLE_ID } : { ...c })
-        : pendingCommands.filter(c => c.vehicleId !== id);
-      const vehiclesCandidate = vehiclesStore.filter(v => v.id !== id);
-      const devicesCandidate = devicesStore.filter(d => d.vehicleId !== id);
-      const usersCandidate = usersStore.map(user => ({
-        ...user,
-        ...(Array.isArray(user.vehicles) ? { vehicles: user.vehicles.filter(v => v !== id) } : {})
-      }));
-
-      // Every affected file commits as one durable transaction: either
-      // all staged snapshots reach their final paths (with startup
-      // roll-forward if we crash mid-commit) or a staging failure rolls
-      // back before any final path is touched. Memory is only updated
-      // after the transaction returns, so a 503 never leaves memory
-      // disagreeing with disk.
-      const txnEntries = []
-      if (reassign) {
-        txnEntries.push([DB_PATH, telemetryCandidate])
-        txnEntries.push([FUEL_PATH, fuelCandidate])
-        txnEntries.push([MAINT_PATH, maintenanceCandidate])
-        txnEntries.push([DTC_HIST_PATH, dtcHistoryCandidate])
-      }
-      if (diagnosticChanged) txnEntries.push([DIAG_PATH, diagnosticsCandidate])
-      if (commandsChanged) txnEntries.push([COMMANDS_QUEUE_PATH, commandsCandidate])
-      txnEntries.push([VEHICLES_PATH, vehiclesCandidate])
-      if (devicesCandidate.length !== devicesStore.length) txnEntries.push([DEVICES_PATH, devicesCandidate])
-      const usersChanged = usersCandidate.some((user, index) => JSON.stringify(user) !== JSON.stringify(usersStore[index]))
-      if (usersChanged) txnEntries.push([USERS_PATH, usersCandidate])
-      runFileTransactionSync(txnEntries)
-
-      replaceArrayContents(vehiclesStore, vehiclesCandidate);
-      if (reassign) {
-        replaceArrayContents(telemetryDataStore, telemetryCandidate);
-        syncTelemetryEventKeySet();
-        replaceArrayContents(fuelLogsStore, fuelCandidate);
-        replaceArrayContents(maintenanceStore, maintenanceCandidate);
-        replaceArrayContents(dtcHistoryStore, dtcHistoryCandidate);
-      }
-      if (diagnosticChanged) diagnosticsStore = diagnosticsCandidate;
-      if (commandsChanged) pendingCommands = commandsCandidate;
-      if (devicesCandidate.length !== devicesStore.length) replaceArrayContents(devicesStore, devicesCandidate);
-      if (usersCandidate.some((user, index) => JSON.stringify(user) !== JSON.stringify(usersStore[index]))) replaceArrayContents(usersStore, usersCandidate);
-      invalidateAnalyticsCaches({ telemetry: reassign, vehicles: true });
-      return reply.send({ success: true, message: reassign ? 'Vehicle deleted; records reassigned to default.' : 'Vehicle deleted.' });
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err);
-    }
-  });
-})
-
-// ----- User Authentication & Account Management -------------------------
-
-fastify.post('/api/auth/login', {
-  config: {
-    rateLimit: {
-      max: 15,
-      timeWindow: '1 minute'
-    }
-  }
-}, async (request, reply) => {
-  const { username, password } = request.body || {}
-  if (!username || typeof username !== 'string' || !password || typeof password !== 'string') {
-    return reply.status(400).send({ error: 'Username and password are required' })
-  }
-
-  // Master key login support
-  if (constantTimeEquals(password, OBD_API_KEY)) {
-    const { token: sessionToken, session } = newSession({ userId: 'usr-admin', username: 'admin', type: 'master' })
-    setSessionCookie(reply, sessionToken)
-    return reply.send({
-      token: sessionToken,
-      csrfToken: session.csrfToken,
-      user: {
-        id: 'usr-admin',
-        username: 'admin',
-        role: 'admin',
-        mustChangePassword: false,
-        vehicles: vehiclesStore.map(v => v.id)
-      }
-    })
-  }
-
-  const user = usersStore.find(u => u.username.toLowerCase() === username.toLowerCase().trim())
-  if (!user || !(await verifyPassword(password, user.passwordSalt, user.passwordHash))) {
-    return reply.status(401).send({ error: 'Invalid username or password' })
-  }
-
-  const { token: sessionToken, session } = newSession({ userId: user.id, username: user.username })
-  setSessionCookie(reply, sessionToken)
-
-  const userRole = user.role || ((user.username === 'admin' || user.id === 'usr-admin') ? 'admin' : 'user')
-  const userVehicles = isAdmin({ type: 'user', user: { ...user, role: userRole } })
-    ? vehiclesStore.map(v => v.id)
-    : (user.vehicles || [DEFAULT_VEHICLE_ID])
-
-  return reply.send({
-    token: sessionToken,
-    csrfToken: session.csrfToken,
-    user: {
-      id: user.id,
-      username: user.username,
-      role: userRole,
-      mustChangePassword: !!user.mustChangePassword,
-      vehicles: userVehicles
-    }
-  })
-})
-
-fastify.post('/api/auth/change-password', async (request, reply) => {
-  const auth = request.auth || (await authenticateRequest(request))
-  const { currentPassword, newPassword, username } = request.body || {}
-  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
-    return reply.status(400).send({ error: 'New password must be at least 8 characters long' })
-  }
-
-  let targetUser = null
-  if (auth && auth.type === 'user') {
-    targetUser = auth.user
-    if (!targetUser.mustChangePassword) {
-      if (!currentPassword || !(await verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash))) {
-        return reply.status(400).send({ error: 'Current password is incorrect' })
-      }
-    }
-  } else if (auth && auth.type === 'master') {
-    const searchName = (username || 'admin').toLowerCase().trim()
-    targetUser = usersStore.find(u => u.username.toLowerCase() === searchName)
-    if (!targetUser) {
-      return reply.status(404).send({ error: 'User not found' })
-    }
-  } else {
-    const searchName = (username || 'admin').toLowerCase().trim()
-    targetUser = usersStore.find(u => u.username.toLowerCase() === searchName)
-    if (!targetUser) {
-      return reply.status(404).send({ error: 'User not found' })
-    }
-    if (!currentPassword || !(await verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash))) {
-      return reply.status(400).send({ error: 'Current password is incorrect' })
-    }
-  }
-
-  const { salt, hash } = await hashPasswordAsync(newPassword)
-  const updatedUser = {
-    ...targetUser,
-    passwordSalt: salt,
-    passwordHash: hash,
-    mustChangePassword: false,
-    updatedAt: Date.now()
-  }
-  // Serialized so two concurrent rotations cannot interleave read-modify-write.
-  return serializeMutation(async () => {
-    if (!usersStore.some(user => user.id === targetUser.id)) {
-      return reply.status(404).send({ error: 'User not found' })
-    }
-    const liveCandidates = usersStore.map(user => user.id === targetUser.id ? updatedUser : user)
-    try {
-      await persist(USERS_PATH, liveCandidates)
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err)
-    }
-    replaceArrayContents(usersStore, liveCandidates)
-
-  if (targetUser.id === 'usr-admin' && fs.existsSync(INITIAL_ADMIN_SECRET_PATH)) {
-    try {
-      fs.unlinkSync(INITIAL_ADMIN_SECRET_PATH)
-    } catch (err) {
-      request.log.warn(`Password changed, but the temporary admin secret could not be removed: ${err}`)
-    }
-  }
-
-  // Invalidate all older sessions for this user
-  for (const [token, sess] of sessionsStore.entries()) {
-    if (sess.userId === targetUser.id) {
-      sessionsStore.delete(token)
-    }
-  }
-
-  const { token: sessionToken, session } = newSession({
-    userId: targetUser.id,
-    username: targetUser.username
-  })
-  setSessionCookie(reply, sessionToken)
-
-  return reply.send({
-    success: true,
-    message: 'Password updated successfully',
-    token: sessionToken,
-    csrfToken: session.csrfToken,
-    user: {
-      id: targetUser.id,
-      username: targetUser.username,
-      role: targetUser.role || (targetUser.username === 'admin' ? 'admin' : 'user'),
-      mustChangePassword: false,
-      vehicles: targetUser.vehicles || [DEFAULT_VEHICLE_ID]
-    }
-  })
-  })
-})
-
-fastify.post('/api/auth/logout', async (request, reply) => {
-  const authHeader = request.headers['authorization']
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    sessionsStore.delete(authHeader.slice(7).trim())
-  }
-  const cookies = parseCookies(request.headers.cookie)
-  if (cookies[SESSION_COOKIE]) {
-    sessionsStore.delete(cookies[SESSION_COOKIE])
-  }
-  const devToken = request.headers['x-device-token']
-  if (devToken) sessionsStore.delete(devToken)
-  clearSessionCookie(reply)
-  return reply.send({ success: true, message: 'Logged out successfully' })
-})
-
-fastify.get('/api/auth/me', async (request, reply) => {
-  const auth = request.auth || (await authenticateRequest(request))
-  if (!auth) {
-    return reply.status(401).send({ error: 'Unauthorized' })
-  }
-
-  if (auth.type === 'user') {
-    const userRole = auth.user.role || ((auth.user.username === 'admin' || auth.user.id === 'usr-admin') ? 'admin' : 'user')
-    const userVehicles = isAdmin({ type: 'user', user: { ...auth.user, role: userRole } })
-      ? vehiclesStore.map(v => v.id)
-      : (auth.user.vehicles || [DEFAULT_VEHICLE_ID])
-    const userDevices = devicesStore.filter(d => d.userId === auth.user.id || userVehicles.includes(d.vehicleId))
-    return reply.send({
-      id: auth.user.id,
-      username: auth.user.username,
-      role: userRole,
-      mustChangePassword: !!auth.user.mustChangePassword,
-      vehicles: userVehicles,
-      deviceCount: userDevices.length,
-      ...(auth.session?.csrfToken ? { csrfToken: auth.session.csrfToken } : {})
-    })
-  }
-
-  if (auth.type === 'device') {
-    return reply.send({
-      id: auth.device.id,
-      name: auth.device.name,
-      role: 'device',
-      vehicleId: auth.vehicleId,
-      mustChangePassword: false,
-      vehicles: [auth.vehicleId],
-      deviceCount: 1
-    })
-  }
-
-  return reply.send({
-    id: 'master',
-    username: 'master-admin',
-    role: 'admin',
-    mustChangePassword: false,
-    vehicles: vehiclesStore.map(v => v.id),
-    deviceCount: devicesStore.length,
-    ...(auth.session?.csrfToken ? { csrfToken: auth.session.csrfToken } : {})
-  })
-})
-
-// ----- Device Pairing (QR & PIN flow) ------------------------------------
-
-fastify.post('/api/auth/device/initiate', {
-  config: {
-    rateLimit: {
-      max: 10,
-      timeWindow: '10 minutes'
-    }
-  }
-}, async (request, reply) => {
-  cleanExpiredPairings()
-  if (pendingPairingsByToken.size >= 50) {
-    return reply.status(429).send({ error: 'Too many pending pairings. Please wait and try again.' })
-  }
-
-  let pin
-  do {
-    pin = crypto.randomInt(100000, 1000000).toString()
-  } while (pendingPairingsByCode.has(pin))
-
-  const pairingCode = `${pin.slice(0, 3)}-${pin.slice(3)}`
-  const pollToken = `poll_${crypto.randomBytes(24).toString('hex')}`
-
-  const session = {
-    code: pairingCode,
-    normalizedCode: pin,
-    pollToken,
-    fingerprint: request.body?.fingerprint || {},
-    status: 'pending',
-    createdAt: Date.now(),
-    expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes
-  }
-
-  pendingPairingsByCode.set(pairingCode, session)
-  pendingPairingsByCode.set(pin, session)
-  pendingPairingsByToken.set(pollToken, session)
-
-  const publicDashboardUrl = (process.env.DASHBOARD_PUBLIC_URL || process.env.PUBLIC_DASHBOARD_URL || 'https://obd.hon2838.name.my').trim().replace(/\/+$/, '')
-  return reply.send({
-    pairingCode,
-    pollToken,
-    qrUrl: `${publicDashboardUrl}/pair?code=${pairingCode}`,
-    expiresInSeconds: 600
-  })
-})
-
-fastify.get('/api/auth/device/poll', {
-  config: {
-    rateLimit: {
-      max: 500,
-      timeWindow: '15 minutes'
-    }
-  }
-}, async (request, reply) => {
-  const token = request.query?.token
-  if (!token || typeof token !== 'string') {
-    return reply.status(400).send({ error: 'token query parameter is required' })
-  }
-
-  // Reject if passing a PIN or code — poll only accepts unguessable pollToken!
-  const session = pendingPairingsByToken.get(token)
-  if (!session || session.expiresAt < Date.now()) {
-    return reply.status(404).send({ error: 'Invalid or expired poll token', status: 'expired' })
-  }
-
-  if (session.status === 'approved') {
-    pendingPairingsByToken.delete(token)
-    return reply.send({
-      status: 'approved',
-      deviceToken: session.deviceToken,
-      vehicleId: session.vehicleId,
-      vehicleName: session.vehicleName
-    })
-  }
-
-  return reply.send({ status: 'pending' })
-})
-
-fastify.post('/api/auth/device/claim', {
-  config: {
-    rateLimit: {
-      max: 10,
-      timeWindow: '10 minutes'
-    }
-  }
-}, async (request, reply) => {
-  const auth = request.auth || (await authenticateRequest(request))
-  if (!auth) {
-    return reply.status(401).send({ error: 'Authentication required: Sign in or provide API key to pair vehicle' })
-  }
-
-  const { pairingCode, vehicleId, newVehicleName, tankLitres } = request.body || {}
-  if (!pairingCode || typeof pairingCode !== 'string') {
-    return reply.status(400).send({ error: 'pairingCode is required' })
-  }
-
-  const normalized = pairingCode.replace(/[^0-9]/g, '')
-  const session = pendingPairingsByCode.get(normalized) || pendingPairingsByCode.get(pairingCode.trim())
-  if (!session || session.expiresAt < Date.now()) {
-    return reply.status(404).send({ error: 'Invalid or expired pairing code' })
-  }
-
-  // Single-use check: must be pending. Atomically transition state before any async await
-  if (session.status !== 'pending') {
-    return reply.status(409).send({ error: 'Pairing session is no longer pending' })
-  }
-  session.status = 'claiming'
-
-  // Serialized with every other store mutation so a concurrent vehicle
-  // delete cannot interleave this claim's multi-file commit.
-  return serializeMutation(async () => {
-    try {
-      let targetVehicleId = vehicleId
-      let newVeh = null
-      let candidateUsers = null
-      if (newVehicleName && typeof newVehicleName === 'string' && newVehicleName.trim().length > 0) {
-        const trimmedName = newVehicleName.trim()
-        if (trimmedName.length > 64) {
-          session.status = 'pending'
-          return reply.status(400).send({ error: 'Vehicle name cannot exceed 64 characters' })
-        }
-        const litres = typeof tankLitres === 'number' && tankLitres > 0 && tankLitres <= 2000 ? tankLitres : 40
-        targetVehicleId = 'veh-' + crypto.randomBytes(4).toString('hex')
-        newVeh = {
-          id: targetVehicleId,
-          name: trimmedName,
-          tankLitres: litres,
-          ownerId: auth.type === 'user' ? auth.user.id : 'usr-admin',
-          createdAt: Date.now()
-        }
-        candidateUsers = usersStore.map(user => {
-          if (auth.type !== 'user' || user.id !== auth.user.id) return user
-          const assigned = Array.isArray(user.vehicles) ? [...user.vehicles] : []
-          if (!assigned.includes(targetVehicleId)) assigned.push(targetVehicleId)
-          return { ...user, vehicles: assigned }
-        })
-      } else {
-        // Existing vehicle: caller must have authorized access
-        if (!targetVehicleId || !vehicleExists(targetVehicleId)) {
-          targetVehicleId = DEFAULT_VEHICLE_ID
-        }
-        if (!canAccessVehicle(auth, targetVehicleId)) {
-          session.status = 'pending'
-          return reply.status(403).send({ error: 'Vehicle access denied: Not authorized to pair this vehicle' })
-        }
-      }
-
-      const rawDeviceToken = `obd_dev_${crypto.randomBytes(24).toString('hex')}`
-      const tokenHash = crypto.createHash('sha256').update(rawDeviceToken).digest('hex')
-      const device = {
-        id: `dev-${crypto.randomBytes(4).toString('hex')}`,
-        name: session.fingerprint?.deviceModel || 'Car Head Unit',
-        tokenHash,
-        tokenPrefix: rawDeviceToken.slice(0, 12),
-        tokenSuffix: rawDeviceToken.slice(-4),
-        vehicleId: targetVehicleId,
-        userId: auth.type === 'user' ? auth.user.id : 'usr-admin',
-        fingerprint: session.fingerprint,
-        createdAt: Date.now(),
-        lastSeenAt: Date.now()
-      }
-
-      // Vehicle registry, user assignment and device issuance commit as
-      // one durable transaction: a failed write leaves no orphan vehicle
-      // or token on disk, and memory is only updated afterwards.
-      const claimEntries = []
-      if (newVeh) claimEntries.push([VEHICLES_PATH, vehiclesStore.concat(newVeh)])
-      if (newVeh && auth.type === 'user' && !(auth.user.vehicles || []).includes(targetVehicleId)) {
-        claimEntries.push([USERS_PATH, candidateUsers])
-      }
-      claimEntries.push([DEVICES_PATH, devicesStore.concat(device)])
-      runFileTransactionSync(claimEntries)
-
-      if (newVeh) {
-        vehiclesStore.push(newVeh)
-        if (auth.type === 'user') {
-          if (!auth.user.vehicles) auth.user.vehicles = []
-          if (!auth.user.vehicles.includes(targetVehicleId)) {
-            auth.user.vehicles.push(targetVehicleId)
-          }
-        }
-        invalidateAnalyticsCaches({ vehicles: true })
-      }
-      devicesStore.push(device)
-
-      // Remove pairing code from pending map so it cannot be claimed again
-      pendingPairingsByCode.delete(session.code)
-      pendingPairingsByCode.delete(session.normalizedCode)
-
-      const vehName = vehiclesStore.find(v => v.id === targetVehicleId)?.name || 'Default Vehicle'
-      session.status = 'approved'
-      session.deviceToken = rawDeviceToken
-      session.vehicleId = targetVehicleId
-      session.vehicleName = vehName
-
-      return reply.send({
-        success: true,
-        deviceId: device.id,
-        vehicleId: targetVehicleId,
-        vehicleName: vehName,
-        deviceToken: rawDeviceToken
-      })
-    } catch (err) {
-      if (!isServerPoisoned) {
-        session.status = 'pending'
-      }
-      return retryablePersistenceError(reply, request, err)
-    }
-  })
-})
-
-// ----- Paired Devices Management -----------------------------------------
-
-fastify.get('/api/devices', async (request, reply) => {
-  const auth = request.auth || (await authenticateRequest(request))
-  let list = devicesStore
-  if (!isAdmin(auth)) {
-    const scope = vehicleScope(auth)
-    list = devicesStore.filter(d => d.userId === auth?.user?.id || (scope && scope.includes(d.vehicleId)))
-  }
-  const result = list.map(d => ({
-    id: d.id,
-    name: d.name,
-    vehicleId: d.vehicleId,
-    vehicleName: vehiclesStore.find(v => v.id === d.vehicleId)?.name || 'Unknown',
-    fingerprint: d.fingerprint,
-    createdAt: d.createdAt,
-    lastSeenAt: d.lastSeenAt,
-    tokenMasked: d.tokenPrefix ? `${d.tokenPrefix}...${d.tokenSuffix}` : (d.deviceToken ? `${d.deviceToken.slice(0, 12)}...${d.deviceToken.slice(-4)}` : 'N/A')
-  }))
-  return reply.send(result)
-})
-
-fastify.delete('/api/devices/:id', async (request, reply) => {
-  const auth = request.auth || (await authenticateRequest(request))
-  const idx = devicesStore.findIndex(d => d.id === request.params.id)
-  if (idx === -1) {
-    return reply.status(404).send({ error: 'Device not found' })
-  }
-
-  const device = devicesStore[idx]
-  const isOwner = auth?.type === 'user' && (device.userId === auth.user.id || (auth.user.vehicles || []).includes(device.vehicleId))
-  if (!isAdmin(auth) && !isOwner) {
-    return reply.status(403).send({ error: 'Device access denied' })
-  }
-
-  // Token revocation is a single-file atomic persist, serialized with the
-  // device-claim transaction so a concurrent claim cannot interleave and
-  // resurrect or lose a revocation.
-  return serializeMutation(async () => {
-    const liveIdx = devicesStore.findIndex(d => d.id === request.params.id)
-    if (liveIdx === -1) {
-      return reply.status(404).send({ error: 'Device not found' })
-    }
-    const candidateDevices = devicesStore.filter((_, index) => index !== liveIdx)
-    try {
-      await persist(DEVICES_PATH, candidateDevices)
-    } catch (err) {
-      return retryablePersistenceError(reply, request, err)
-    }
-    replaceArrayContents(devicesStore, candidateDevices)
-    return reply.send({ success: true, message: 'Device revoked successfully' })
-  })
-})
 
 // Liveness + readiness probe. Used by the container HEALTHCHECK
 // and external uptime monitors. Returns 200 with build identity
@@ -3562,94 +2417,19 @@ fastify.delete('/api/devices/:id', async (request, reply) => {
 // an external probe (k8s, compose, an uptime monitor) can call
 // it without credentials. We deliberately do NOT include any
 // secrets in the response.
-const PACKAGE_VERSION = require('./package.json').version;
 let SERVER_STARTED_AT = null;
 
-fastify.get('/healthz', async (request, reply) => {
-  return reply.send({
-    status: 'ok',
-    service: 'obd-telemetry-server',
-    version: PACKAGE_VERSION,
-    uptime_seconds: SERVER_STARTED_AT ? Math.floor((Date.now() - SERVER_STARTED_AT) / 1000) : 0,
-    telemetry_records: telemetryDataStore.length,
-    fuel_logs: fuelLogsStore.length,
-    maintenance_items: maintenanceStore.length,
+  // Register modular domain route plugins
+  fastify.register(healthRoutes, {
+    stores: { telemetryDataStore, fuelLogsStore, maintenanceStore },
+    getStartedAt: () => SERVER_STARTED_AT
   });
-});
 
-// ----- Android APK distribution ----------------------------------------
-//
-// The head unit downloads the latest APK from these endpoints.
-// The APK is baked into the image at /app/agent/app-debug.apk by
-// the build pipeline (see Makefile `make apk-and-server`).
-// The version.json sidecar carries the version code/name and a
-// SHA-256 so the head unit's installer can verify the download
-// before installing.
-//
-// Routes:
-//   GET /api/agent/latest         — JSON {versionCode, versionName,
-//                                     size_bytes, sha256, download_url}
-//   GET /api/agent/latest.apk     — the binary APK itself
-//
-// Both are unauthenticated on purpose: the APK contains the
-// public-facing client and the URL is on the public dashboard
-// subdomain. The HMAC for telemetry ingest is unrelated.
-fastify.get('/api/agent/latest', async (request, reply) => {
-  const info = _readApkVersion();
-  if (!info) {
-    return reply.status(404).send({
-      error: 'No APK baked into this image. Run `make apk-bundle` to bundle one.',
-    });
-  }
-  return reply.send({
-    download_url: '/api/agent/latest.apk',
-    ...info,
+  fastify.register(agentRoutes, {
+    apkDownloadPath: APK_DOWNLOAD_PATH,
+    installScriptPath: INSTALL_SCRIPT_PATH,
+    readApkVersion: _readApkVersion
   });
-});
-
-fastify.get('/api/agent/latest.apk', async (request, reply) => {
-  if (!fs.existsSync(APK_DOWNLOAD_PATH)) {
-    return reply.status(404).send({
-      error: 'No APK baked into this image. Run `make apk-bundle` to bundle one.',
-    });
-  }
-  const stat = fs.statSync(APK_DOWNLOAD_PATH);
-  const info = _readApkVersion() || {};
-  // Use the version code in the filename so the URL is
-  // cache-busted; HTTP caches will then re-check with HEAD
-  // requests on subsequent visits.
-  const filename = `obd-telemetry-agent-${info.versionName || 'unknown'}.apk`;
-  reply.header('Content-Type', 'application/vnd.android.package-archive');
-  reply.header('Content-Length', stat.size);
-  reply.header('Content-Disposition', `attachment; filename="${filename}"`);
-  // Short cache so a freshly-deployed APK is picked up within
-  // a minute; long enough that frequent polling isn't a DOS
-  // vector.
-  reply.header('Cache-Control', 'public, max-age=60');
-  return reply.send(fs.createReadStream(APK_DOWNLOAD_PATH));
-});
-
-// ----- Installer script --------------------------------------------------
-//
-// `curl -sSL https://obd-api.hon2838.name.my/install.sh | sudo bash -s -- --api-key ...`
-// is the one-liner the operator runs on the head unit. The
-// script is baked into the image at /app/install.sh by the
-// Dockerfile (or it can be overridden via OBD_INSTALL_SCRIPT).
-// If absent (e.g. developer build), the route returns a stub
-// shell script that prints a clear error.
-fastify.get('/install.sh', async (request, reply) => {
-  if (!fs.existsSync(INSTALL_SCRIPT_PATH)) {
-    return reply.status(404).send(
-      '#!/bin/sh\n' +
-      'echo "install.sh is not bundled in this server image."\n' +
-      'echo "See https://github.com/hon2838/obd-telemetry-app for the script."\n' +
-      'exit 1\n'
-    );
-  }
-  reply.header('Content-Type', 'text/x-shellscript');
-  reply.header('Cache-Control', 'no-store');
-  return reply.send(fs.createReadStream(INSTALL_SCRIPT_PATH));
-});
 
 }); // end apiRoutes
 
@@ -3726,5 +2506,7 @@ module.exports = {
   VEHICLES_PATH,
   downsampleTelemetrySeries,
   refreshTelemetrySequenceIndexForTesting,
-  getLastChangesInspectedRows: () => lastChangesInspectedRows
+  getLastChangesInspectedRows: () => lastChangesInspectedRows,
+  sqliteStorage,
+  getStorageEngine: () => STORAGE_ENGINE
 }

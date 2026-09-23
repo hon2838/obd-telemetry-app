@@ -30,6 +30,14 @@ interface DiagnosticsData {
   history: HistoryItem[];
 }
 
+interface DiagnosticCommand {
+  id: string;
+  command: 'read_dtc' | 'clear_dtc';
+  status: 'pending' | 'completed' | 'failed' | 'unknown' | 'expired';
+  createdAt: number;
+  updatedAt: number;
+}
+
 export default function DiagnosticsDashboard() {
   const { activeVehicleId, buildUrl } = useVehicle();
   const [data, setData] = useState<DiagnosticsData>({
@@ -43,6 +51,7 @@ export default function DiagnosticsDashboard() {
   const [activeDtcDetails, setActiveDtcDetails] = useState<DtcDetails[]>([]);
   const [commandLoading, setCommandLoading] = useState<string | null>(null);
   const [commandPolling, setCommandPolling] = useState(false);
+  const [recentCommands, setRecentCommands] = useState<DiagnosticCommand[]>([]);
   const [error, setError] = useState('');
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -73,8 +82,15 @@ export default function DiagnosticsDashboard() {
   };
 
   const fetchData = async (signal: AbortSignal) => {
-    const res = await apiFetch(buildUrl('/api/telemetry/dtc'), { signal });
+    const [res, commandRes] = await Promise.all([
+      apiFetch(buildUrl('/api/telemetry/dtc'), { signal }),
+      apiFetch(buildUrl('/api/commands/status'), { signal }),
+    ]);
     if (!res.ok) throw new Error(`Diagnostics HTTP ${res.status}`);
+    if (commandRes.ok) {
+      const commandData = await commandRes.json();
+      setRecentCommands(Array.isArray(commandData.commands) ? commandData.commands : []);
+    }
     const d = await res.json();
     setData(d || { latest: { latestDtc: { code: "", timestamp: null }, latestClearStatus: { success: null, timestamp: null } }, history: [] });
     const currentCodeStr = d.latest?.latestDtc?.code || "";
@@ -91,6 +107,7 @@ export default function DiagnosticsDashboard() {
     pollTimerRef.current = null;
     lastDtcCodesRef.current = '';
     setActiveDtcDetails([]);
+    setRecentCommands([]);
     setCommandPolling(false);
   }, [activeVehicleId]);
 
@@ -199,6 +216,24 @@ export default function DiagnosticsDashboard() {
           {error && <div style={styles.errorAlert}>{error}</div>}
 
           <div style={styles.statusSection}>
+            {recentCommands.length > 0 && (
+              <div style={{ marginBottom: '16px' }}>
+                <div style={styles.statusLabel}>Recent commands</div>
+                {recentCommands.slice(0, 5).map(item => (
+                  <div key={item.id} style={styles.statusRow}>
+                    <span style={styles.statusLabel}>
+                      {item.command === 'clear_dtc' ? 'Clear codes' : 'Read codes'}
+                      {' · '}{new Date(item.createdAt).toLocaleTimeString()}
+                    </span>
+                    <span style={styles.statusValue}>
+                      {item.status === 'unknown' ? 'Outcome unknown — check vehicle before retrying'
+                        : item.status === 'expired' ? 'Expired — device outcome unconfirmed'
+                        : item.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={styles.statusRow}>
               <span style={styles.statusLabel}>Latest Poll Result:</span>
               <span style={styles.statusValue}>

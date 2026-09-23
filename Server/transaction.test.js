@@ -255,7 +255,7 @@ test('mixed concurrent mutations serialize without lost updates', async () => {
   expect(backend.vehiclesStore.filter(v => /^Mixed Car /.test(v.name))).toHaveLength(5);
 });
 
-test('command enqueue cannot race a telemetry command drain into resurrecting a delivered command', async () => {
+test('command enqueue cannot race legacy telemetry delivery into resurrecting a command', async () => {
   let writeStartedResolver;
   const writeStartedPromise = new Promise(resolve => { writeStartedResolver = resolve; });
   let releaseWriteResolver;
@@ -294,11 +294,13 @@ test('command enqueue cannot race a telemetry command drain into resurrecting a 
     expect(telemetryRes.json().commands).toEqual(['clear_dtc']);
 
     const diskQueue = readDisk('commands_queue.json') || [];
-    expect(diskQueue).toEqual([]);
-    expect(backend.getPendingCommands()).toEqual([]);
+    expect(diskQueue).toHaveLength(1);
+    expect(diskQueue[0].status).toBe('unknown');
+    expect(diskQueue[0].result.reason).toBe('legacy_delivery_unacknowledged');
+    expect(backend.getPendingCommands()).toEqual(diskQueue);
 
     const diskQueueAfterRestart = readDiskAfterRestart(TEST_DATA_DIR, 'commands_queue.json') || [];
-    expect(diskQueueAfterRestart).toEqual([]);
+    expect(diskQueueAfterRestart).toEqual(diskQueue);
   } finally {
     fs.promises.writeFile = originalWriteFile;
   }

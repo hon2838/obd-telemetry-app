@@ -109,14 +109,27 @@ function installAuthorization(fastify, stores, authenticate) {
         routeUrl.startsWith('/api/trips/') ||
         routeUrl.startsWith('/api/dtc/lookup') ||
         routeUrl.startsWith('/api/maintenance') ||
+        routeUrl === '/api/commands/pending' ||
         ['/api/fuel-logs', '/api/fuel-stats', '/api/vehicles'].includes(routeUrl);
 
       const isAllowedPost =
-        request.method === 'POST' && (ingestBatchRoutes.has(routeUrl) || routeUrl === '/api/dtc/lookup');
+        request.method === 'POST' && (ingestBatchRoutes.has(routeUrl) || routeUrl === '/api/dtc/lookup' || routeUrl === '/api/commands/ack');
 
       if (!(isGetOrHead && allowedReads) && !isAllowedPost) {
         return reply.code(403).send({ error: 'Device credentials cannot perform this action' });
       }
+    }
+
+    if (routeUrl === '/api/commands/pending' || routeUrl === '/api/commands/ack') {
+      if (request.headers['x-obd-command-protocol'] !== '2') {
+        return reply.code(426).send({ error: 'Command protocol v2 is required' });
+      }
+      if (auth.type !== 'device') {
+        return reply.code(403).send({ error: 'Only paired devices can deliver or acknowledge commands' });
+      }
+    }
+    if (routeUrl === '/api/commands/status' && auth.type === 'device') {
+      return reply.code(403).send({ error: 'Device credentials cannot view command status' });
     }
 
     // Vehicle query parameter scoping (?vehicle=vid)

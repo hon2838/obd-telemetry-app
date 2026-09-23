@@ -220,16 +220,7 @@ export default function PairVehiclePage() {
                 <select
                   value={selectedVehicleId}
                   onChange={(e) => setSelectedVehicleId(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.75rem 1rem',
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--surface-inset)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text-primary)',
-                    fontSize: '0.9rem',
-                    outline: 'none',
-                  }}
+                  className="form-select"
                 >
                   {vehicles.map((v) => (
                     <option key={v.id} value={v.id} style={{ background: '#121820', color: '#fff' }}>
@@ -248,7 +239,7 @@ export default function PairVehiclePage() {
                   gap: '0.85rem'
                 }}>
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.775rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+                    <label className="form-label" style={{ fontSize: '0.775rem' }}>
                       Vehicle Name / Model
                     </label>
                     <input
@@ -256,36 +247,18 @@ export default function PairVehiclePage() {
                       placeholder="e.g. Perodua Axia SE 2024"
                       value={newVehicleName}
                       onChange={(e) => setNewVehicleName(e.target.value)}
-                      style={{
-                        width: '100%',
-                        padding: '0.6rem 0.75rem',
-                        borderRadius: 'var(--radius-sm)',
-                        background: 'rgba(11, 15, 20, 0.8)',
-                        border: '1px solid var(--border)',
-                        color: 'var(--text-primary)',
-                        fontSize: '0.875rem',
-                        outline: 'none',
-                      }}
+                      className="form-input"
                     />
                   </div>
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.775rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+                    <label className="form-label" style={{ fontSize: '0.775rem' }}>
                       Fuel Tank Capacity (Litres)
                     </label>
                     <input
                       type="number"
                       value={newTankLitres}
                       onChange={(e) => setNewTankLitres(Number(e.target.value))}
-                      style={{
-                        width: '100%',
-                        padding: '0.6rem 0.75rem',
-                        borderRadius: 'var(--radius-sm)',
-                        background: 'rgba(11, 15, 20, 0.8)',
-                        border: '1px solid var(--border)',
-                        color: 'var(--text-primary)',
-                        fontSize: '0.875rem',
-                        outline: 'none',
-                      }}
+                      className="form-input"
                     />
                   </div>
                 </div>
@@ -296,22 +269,13 @@ export default function PairVehiclePage() {
             <button
               type="submit"
               disabled={loading || !pinCode.trim()}
+              className="btn-primary"
               style={{
                 padding: '0.9rem',
                 borderRadius: 'var(--radius-md)',
-                background: 'linear-gradient(135deg, var(--accent-cyan), #3b82f6)',
-                color: '#000',
-                fontWeight: 700,
                 fontSize: '0.95rem',
-                border: 'none',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '0.5rem',
-                boxShadow: '0 4px 16px rgba(94, 215, 208, 0.3)',
-                opacity: loading || !pinCode.trim() ? 0.5 : 1,
-                transition: 'all 0.2s',
+                width: '100%',
+                marginTop: '1.25rem'
               }}
             >
               {loading ? (

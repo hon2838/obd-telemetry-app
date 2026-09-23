@@ -29,6 +29,7 @@ class HttpTransportTest {
     fun postJson_completesSuccessfullyOnValidServerResponse() = runBlocking {
         val server = ServerSocket(0)
         val port = server.localPort
+        val commandProtocolHeaderSeen = java.util.concurrent.atomic.AtomicBoolean(false)
 
         val serverThread = thread {
             val client = server.accept()
@@ -39,6 +40,7 @@ class HttpTransportTest {
                 if (line.isNullOrEmpty()) break
                 lines.add(line!!)
             }
+            commandProtocolHeaderSeen.set(lines.any { it.equals("X-OBD-Command-Protocol: 2", ignoreCase = true) })
             // Read body
             val contentLength = lines.find { it.startsWith("Content-Length:", ignoreCase = true) }
                 ?.substringAfter(":")?.trim()?.toIntOrNull() ?: 0
@@ -66,13 +68,15 @@ class HttpTransportTest {
             context = context(),
             connectTimeoutMs = 2000,
             readTimeoutMs = 2000,
-            overallTimeoutMs = 5000L
+            overallTimeoutMs = 5000L,
+            commandProtocolV2 = true
         )
 
         serverThread.join(3000)
         assertTrue(resp.isSuccess)
         assertEquals(200, resp.statusCode)
         assertTrue(resp.body.contains(""""status":"ok""""))
+        assertTrue("v2 capability header must be sent", commandProtocolHeaderSeen.get())
     }
 
     @Test

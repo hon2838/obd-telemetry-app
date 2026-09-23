@@ -347,22 +347,22 @@ export default function Garage() {
 
       {/* Modal: Add Vehicle */}
       {isAddModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
-          <div className="glass-panel" style={{ width: '100%', maxWidth: '440px', padding: '1.75rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-glow)' }}>
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ border: '1px solid var(--border-glow)' }}>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Plus size={20} color="var(--accent-cyan)" />
               Add New Vehicle
             </h3>
 
             {errorMsg && (
-              <div style={{ padding: '0.6rem 0.8rem', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--accent-red)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-red)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+              <div className="form-error">
                 {errorMsg}
               </div>
             )}
 
             <form onSubmit={handleCreateVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   Vehicle Name (e.g. Proton X50, Perodua Myvi) *
                 </label>
                 <input
@@ -371,12 +371,12 @@ export default function Garage() {
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                   placeholder="e.g. Proton X50"
-                  style={{ width: '100%', padding: '0.65rem 0.85rem', background: 'var(--surface-inset)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', outline: 'none' }}
+                  className="form-input"
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   Fuel Tank Capacity (Litres)
                 </label>
                 <input
@@ -387,12 +387,12 @@ export default function Garage() {
                   value={formTank}
                   onChange={(e) => setFormTank(e.target.value)}
                   placeholder="36"
-                  style={{ width: '100%', padding: '0.65rem 0.85rem', background: 'var(--surface-inset)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', outline: 'none' }}
+                  className="form-input"
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   Custom Vehicle ID (Optional)
                 </label>
                 <input
@@ -400,7 +400,7 @@ export default function Garage() {
                   value={formId}
                   onChange={(e) => setFormId(e.target.value)}
                   placeholder="Auto-generated if blank"
-                  style={{ width: '100%', padding: '0.65rem 0.85rem', background: 'var(--surface-inset)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', outline: 'none' }}
+                  className="form-input"
                 />
               </div>
 
@@ -408,14 +408,16 @@ export default function Garage() {
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  style={{ flex: 1, padding: '0.65rem', background: 'transparent', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                  className="btn-secondary"
+                  style={{ flex: 1 }}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
-                  style={{ flex: 1, padding: '0.65rem', background: 'var(--accent-cyan)', border: 'none', borderRadius: 'var(--radius-md)', color: '#0b0d11', fontWeight: 600, cursor: 'pointer' }}
+                  className="btn-primary"
+                  style={{ flex: 1 }}
                 >
                   {loading ? 'Creating...' : 'Create Vehicle'}
                 </button>
@@ -427,22 +429,22 @@ export default function Garage() {
 
       {/* Modal: Edit Vehicle */}
       {editingVehicle && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
-          <div className="glass-panel" style={{ width: '100%', maxWidth: '440px', padding: '1.75rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-glow)' }}>
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ border: '1px solid var(--border-glow)' }}>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Edit3 size={20} color="var(--accent-cyan)" />
               Edit {editingVehicle.name}
             </h3>
 
             {errorMsg && (
-              <div style={{ padding: '0.6rem 0.8rem', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--accent-red)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-red)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+              <div className="form-error">
                 {errorMsg}
               </div>
             )}
 
             <form onSubmit={handleUpdateVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   Vehicle Name
                 </label>
                 <input
@@ -450,12 +452,12 @@ export default function Garage() {
                   required
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
-                  style={{ width: '100%', padding: '0.65rem 0.85rem', background: 'var(--surface-inset)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', outline: 'none' }}
+                  className="form-input"
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   Fuel Tank Capacity (Litres)
                 </label>
                 <input
@@ -465,7 +467,7 @@ export default function Garage() {
                   max="500"
                   value={formTank}
                   onChange={(e) => setFormTank(e.target.value)}
-                  style={{ width: '100%', padding: '0.65rem 0.85rem', background: 'var(--surface-inset)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', outline: 'none' }}
+                  className="form-input"
                 />
               </div>
 
@@ -473,14 +475,16 @@ export default function Garage() {
                 <button
                   type="button"
                   onClick={() => setEditingVehicle(null)}
-                  style={{ flex: 1, padding: '0.65rem', background: 'transparent', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                  className="btn-secondary"
+                  style={{ flex: 1 }}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
-                  style={{ flex: 1, padding: '0.65rem', background: 'var(--accent-cyan)', border: 'none', borderRadius: 'var(--radius-md)', color: '#0b0d11', fontWeight: 600, cursor: 'pointer' }}
+                  className="btn-primary"
+                  style={{ flex: 1 }}
                 >
                   {loading ? 'Saving...' : 'Save Changes'}
                 </button>
@@ -492,8 +496,8 @@ export default function Garage() {
 
       {/* Modal: Delete Vehicle Confirmation */}
       {deletingVehicle && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
-          <div className="glass-panel" style={{ width: '100%', maxWidth: '440px', padding: '1.75rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--accent-red)' }}>
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content modal-content-danger">
             <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <ShieldAlert size={22} color="var(--accent-red)" />
               Delete Vehicle Profile
@@ -504,19 +508,19 @@ export default function Garage() {
             </p>
 
             {errorMsg && (
-              <div style={{ padding: '0.6rem 0.8rem', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--accent-red)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-red)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+              <div className="form-error">
                 {errorMsg}
               </div>
             )}
 
             <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+              <label className="form-label">
                 Reassign existing records to:
               </label>
               <select
                 value={reassignTarget}
                 onChange={(e) => setReassignTarget(e.target.value)}
-                style={{ width: '100%', padding: '0.65rem', background: 'var(--surface-inset)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)' }}
+                className="form-select"
               >
                 <option value="default">Default Vehicle</option>
               </select>
@@ -526,7 +530,8 @@ export default function Garage() {
               <button
                 type="button"
                 onClick={() => setDeletingVehicle(null)}
-                style={{ flex: 1, padding: '0.65rem', background: 'transparent', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                className="btn-secondary"
+                style={{ flex: 1 }}
               >
                 Cancel
               </button>
@@ -534,7 +539,8 @@ export default function Garage() {
                 type="button"
                 onClick={handleDeleteVehicle}
                 disabled={loading}
-                style={{ flex: 1, padding: '0.65rem', background: 'var(--accent-red)', border: 'none', borderRadius: 'var(--radius-md)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}
+                className="btn-danger"
+                style={{ flex: 1 }}
               >
                 {loading ? 'Deleting...' : 'Confirm Delete'}
               </button>

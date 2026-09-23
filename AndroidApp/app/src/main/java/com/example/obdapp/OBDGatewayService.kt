@@ -145,6 +145,8 @@ class OBDGatewayService : Service(), LocationListener {
     private var bluetoothSocket: BluetoothSocket? = null
     private var obdConnection: ObdDeviceConnection? = null
     private val obdMutex = Mutex()
+    private val commandMutex = Mutex()
+    private var commandRecoveryJob: Job? = null
 
     // Owned singleton lifecycle jobs
     private var connectionJob: Job? = null
@@ -171,6 +173,10 @@ class OBDGatewayService : Service(), LocationListener {
     private val VOLTAGE_REFRESH_MS = 20_000L
     private val FUEL_REFRESH_MS = 60_000L
     private val AMBIENT_REFRESH_MS = 60_000L
+
+    @Volatile private var cachedFallbackWifiSsid: String? = null
+    @Volatile private var lastFallbackWifiSsidTimestamp: Long = 0L
+    private val FALLBACK_WIFI_SSID_REFRESH_MS = 60_000L
 
     // Location fields
     private var locationManager: LocationManager? = null
@@ -208,8 +214,20 @@ class OBDGatewayService : Service(), LocationListener {
         OutboxUploader.registerConnectivityCallback(applicationContext) {
             triggerSyncWakeup()
         }
-        OutboxUploader.commandHandler = { cmd ->
-            handleIncomingCommand(cmd)
+        commandRecoveryJob = serviceScope.launch {
+            val dao = AppDatabase.getDatabase(applicationContext).commandInboxDao()
+            val now = System.currentTimeMillis()
+            dao.recoverInterruptedReads(now)
+            val interruptedClears = dao.markInterruptedClearsUnknown(now)
+            if (interruptedClears > 0) {
+                triggerLocalAlertNotification(
+                    "DTC Clear Outcome Unknown",
+                    "The app stopped during a clear attempt. Check the vehicle before retrying."
+                )
+            }
+        }
+        OutboxUploader.commandHandler = {
+            processPendingCommands()
         }
     }
 
@@ -292,27 +310,78 @@ class OBDGatewayService : Service(), LocationListener {
         }
     }
 
-    private fun handleIncomingCommand(cmd: String) {
+    private fun processPendingCommands() {
         serviceScope.launch {
-            if (obdConnection == null) return@launch
-            try {
-                if (cmd == "read_dtc") {
-                    var dtcRaw = ""
-                    obdMutex.withLock {
-                        val dtcResp = obdConnection?.run(com.github.eltonvs.obd.command.control.TroubleCodesCommand())
-                        dtcRaw = dtcResp?.formattedValue ?: ""
+            commandRecoveryJob?.join()
+            commandMutex.withLock {
+                val vehicleId = VehiclePrefs.getActiveVehicleId(this@OBDGatewayService)
+                val dao = AppDatabase.getDatabase(applicationContext).commandInboxDao()
+                for (command in dao.getReady(vehicleId)) {
+                    // Never claim a command while the adapter is disconnected:
+                    // the same durable inbox row will be revisited after reconnect.
+                    if (obdConnection == null) return@withLock
+                    val now = System.currentTimeMillis()
+                    if (command.expiresAt != null && command.expiresAt <= now) {
+                        dao.markExpired(command.id, now)
+                        continue
                     }
-                    uploadDtcResult(dtcRaw)
-                } else if (cmd == "clear_dtc") {
-                    obdMutex.withLock {
-                        obdConnection?.run(ResetTroubleCodesCommand())
+                    if (dao.claim(command.id, now) != 1) {
+                        dao.markExpired(command.id, System.currentTimeMillis())
+                        continue
                     }
-                    uploadDtcClearStatus(true)
+
+                    var status: String
+                    var result: JSONObject
+                    try {
+                        when (command.command) {
+                            "read_dtc" -> {
+                                val raw = obdMutex.withLock {
+                                    checkNotNull(obdConnection) { "OBD adapter disconnected" }
+                                        .run(com.github.eltonvs.obd.command.control.TroubleCodesCommand())
+                                        ?.formattedValue ?: ""
+                                }
+                                status = "completed"
+                                result = JSONObject().put("dtc", raw)
+                                if (!command.requiresAck) uploadDtcResult(raw)
+                            }
+                            "clear_dtc" -> {
+                                obdMutex.withLock {
+                                    checkNotNull(obdConnection) { "OBD adapter disconnected" }
+                                        .run(ResetTroubleCodesCommand())
+                                }
+                                status = "completed"
+                                result = JSONObject().put("success", true)
+                                if (!command.requiresAck) uploadDtcClearStatus(true)
+                            }
+                            else -> {
+                                status = "failed"
+                                result = JSONObject().put("error", "Unsupported command")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Command ${command.id} (${command.command}) failed: ${e.message}", e)
+                        if (command.command == "clear_dtc") {
+                            // The adapter may have received mode 04 before the
+                            // connection failed. Never replay this physical action.
+                            status = "unknown"
+                            result = JSONObject().put("reason", e.message ?: "Adapter outcome is uncertain")
+                            triggerLocalAlertNotification(
+                                "DTC Clear Outcome Unknown",
+                                "Check the vehicle before retrying; codes may already be cleared."
+                            )
+                            if (!command.requiresAck) uploadDtcClearStatus(false)
+                        } else {
+                            status = "failed"
+                            result = JSONObject().put("error", e.message ?: "OBD read failed")
+                            if (!command.requiresAck) uploadDtcResult("Error: ${e.message}")
+                        }
+                    }
+
+                    val saved = dao.saveResult(command.id, result.toString(), status, System.currentTimeMillis())
+                    if (saved == 1 && !command.requiresAck) {
+                        dao.markAcked(command.id, System.currentTimeMillis())
+                    }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "handleIncomingCommand error for $cmd: ${e.message}", e)
-                if (cmd == "read_dtc") uploadDtcResult("Error: ${e.message}")
-                else if (cmd == "clear_dtc") uploadDtcClearStatus(false)
             }
         }
     }
@@ -412,6 +481,7 @@ class OBDGatewayService : Service(), LocationListener {
                         }
                         val activeName = VehiclePrefs.getActiveVehicle(this@OBDGatewayService).name
                         updateNotification("OBD Connected ($activeName)")
+                        processPendingCommands()
                         reconnectDelay = 5000L
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -796,11 +866,19 @@ class OBDGatewayService : Service(), LocationListener {
         }
 
         if (!wifiSsidFromManager.isNullOrEmpty()) {
+            cachedFallbackWifiSsid = null
             return wifiSsidFromManager
         }
 
-        // Fallback to ROCO/QF head unit system properties
-        return try {
+        // Fallback to ROCO/QF head unit system properties with a 60s TTL cache
+        // to avoid expensive shell process spawning (getprop) on every loop tick
+        val now = System.currentTimeMillis()
+        if (now - lastFallbackWifiSsidTimestamp < FALLBACK_WIFI_SSID_REFRESH_MS) {
+            return cachedFallbackWifiSsid
+        }
+        lastFallbackWifiSsidTimestamp = now
+
+        cachedFallbackWifiSsid = try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod = systemPropertiesClass.getMethod("get", String::class.java)
             val propSsid = getMethod.invoke(null, "persist.sys.last.wifi.ssid") as? String
@@ -814,6 +892,8 @@ class OBDGatewayService : Service(), LocationListener {
         } catch (e: Exception) {
             null
         }
+
+        return cachedFallbackWifiSsid
     }
 
     private fun isBtConnected(): Boolean? {

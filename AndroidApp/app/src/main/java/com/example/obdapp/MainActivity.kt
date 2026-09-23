@@ -193,7 +193,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // API Server Config card — persists the backend origin and ingest key
-        // used by the gateway service, fuel sync, and TelemetrySyncWorker.
+        // used by the gateway service and fuel sync.
         etApiUrl.setText(getApiBaseUrl(this))
         etApiKey.setText(getApiKey(this))
         btnApiSave.setOnClickListener {

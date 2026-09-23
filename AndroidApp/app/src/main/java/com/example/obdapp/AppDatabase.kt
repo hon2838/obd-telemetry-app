@@ -8,11 +8,12 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import java.util.UUID
 
-@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class], version = 8, exportSchema = true)
+@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class, CommandInboxEntity::class], version = 9, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun telemetryDao(): TelemetryDao
     abstract fun fuelLogDao(): FuelLogDao
     abstract fun maintenanceDao(): MaintenanceDao
+    abstract fun commandInboxDao(): CommandInboxDao
 
     companion object {
         @Volatile
@@ -138,6 +139,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `command_inbox` (`id` TEXT NOT NULL, `command` TEXT NOT NULL, `vehicleId` TEXT NOT NULL, `state` TEXT NOT NULL, `result` TEXT, `ackStatus` TEXT, `expiresAt` INTEGER, `requiresAck` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_command_inbox_vehicleId_state` ON `command_inbox` (`vehicleId`, `state`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -152,7 +160,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_4_5,
                     MIGRATION_5_6,
                     MIGRATION_6_7,
-                    MIGRATION_7_8
+                    MIGRATION_7_8,
+                    MIGRATION_8_9
                 )
                 .build()
                 INSTANCE = instance

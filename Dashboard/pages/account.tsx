@@ -251,7 +251,7 @@ export default function AccountSecurityPage() {
 
             <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   Current / Setup Password
                 </label>
                 <input
@@ -259,21 +259,12 @@ export default function AccountSecurityPage() {
                   placeholder="e.g. admin12345"
                   value={currentPassword}
                   onChange={(e) => setCurrentPassword(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.65rem 0.85rem',
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--surface-inset)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text-primary)',
-                    fontSize: '0.9rem',
-                    outline: 'none',
-                  }}
+                  className="form-input"
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   New Password (min 8 characters)
                 </label>
                 <input
@@ -282,21 +273,12 @@ export default function AccountSecurityPage() {
                   placeholder="Enter new strong password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.65rem 0.85rem',
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--surface-inset)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text-primary)',
-                    fontSize: '0.9rem',
-                    outline: 'none',
-                  }}
+                  className="form-input"
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <label className="form-label">
                   Confirm New Password
                 </label>
                 <input
@@ -305,35 +287,15 @@ export default function AccountSecurityPage() {
                   placeholder="Re-enter new password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.65rem 0.85rem',
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--surface-inset)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text-primary)',
-                    fontSize: '0.9rem',
-                    outline: 'none',
-                  }}
+                  className="form-input"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={pwdLoading || !newPassword}
-                style={{
-                  marginTop: '0.5rem',
-                  padding: '0.75rem',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'linear-gradient(135deg, var(--accent-cyan), #3b82f6)',
-                  color: '#000',
-                  fontWeight: 700,
-                  fontSize: '0.9rem',
-                  border: 'none',
-                  cursor: 'pointer',
-                  opacity: pwdLoading || !newPassword ? 0.6 : 1,
-                  transition: 'opacity 0.2s',
-                }}
+                className="btn-primary"
+                style={{ width: '100%', marginTop: '0.5rem' }}
               >
                 {pwdLoading ? 'Updating Password...' : 'Save New Password'}
               </button>
