@@ -38,7 +38,28 @@ object HttpTransport {
         context: Context,
         connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
         readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
-        overallTimeoutMs: Long = DEFAULT_OVERALL_TIMEOUT_MS
+        overallTimeoutMs: Long = DEFAULT_OVERALL_TIMEOUT_MS,
+        commandProtocolV2: Boolean = false
+    ): HttpResponse = request("POST", urlString, jsonPayload, context, connectTimeoutMs, readTimeoutMs, overallTimeoutMs, commandProtocolV2)
+
+    suspend fun getJson(
+        urlString: String,
+        context: Context,
+        connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
+        readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
+        overallTimeoutMs: Long = DEFAULT_OVERALL_TIMEOUT_MS,
+        commandProtocolV2: Boolean = false
+    ): HttpResponse = request("GET", urlString, null, context, connectTimeoutMs, readTimeoutMs, overallTimeoutMs, commandProtocolV2)
+
+    private suspend fun request(
+        method: String,
+        urlString: String,
+        jsonPayload: String?,
+        context: Context,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        overallTimeoutMs: Long,
+        commandProtocolV2: Boolean
     ): HttpResponse = withTimeout(overallTimeoutMs) {
         suspendCancellableCoroutine { continuation ->
             val connectionRef = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
@@ -48,11 +69,12 @@ object HttpTransport {
                 try {
                     val url = URL(urlString)
                     val conn = (url.openConnection() as HttpURLConnection).apply {
-                        requestMethod = "POST"
-                        setRequestProperty("Content-Type", "application/json")
+                        requestMethod = method
+                        if (jsonPayload != null) setRequestProperty("Content-Type", "application/json")
                         setRequestProperty("Accept", "application/json")
+                        if (commandProtocolV2) setRequestProperty("X-OBD-Command-Protocol", "2")
                         applyAuthHeader(this, context)
-                        doOutput = true
+                        doOutput = jsonPayload != null
                         connectTimeout = connectTimeoutMs
                         readTimeout = readTimeoutMs
                     }
@@ -65,9 +87,11 @@ object HttpTransport {
                         return@launch
                     }
 
-                    OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { writer ->
-                        writer.write(jsonPayload)
-                        writer.flush()
+                    if (jsonPayload != null) {
+                        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { writer ->
+                            writer.write(jsonPayload)
+                            writer.flush()
+                        }
                     }
 
                     if (!continuation.isActive || isCompleted.get()) {

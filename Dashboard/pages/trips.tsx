@@ -418,7 +418,7 @@ export default function TripsDashboard() {
 
       {/* Drive Details Modal */}
       {selectedDrive && (
-        <div style={styles.modalOverlay}>
+        <div className="modal-overlay">
           <div className="glass-panel-static" style={styles.modalContent}>
             <div style={styles.modalHeader}>
               <h2 style={styles.modalTitle}>Trip Details - Drive #{selectedDrive.id}</h2>
@@ -631,19 +631,6 @@ const styles: Record<string, React.CSSProperties> = {
   td: {
     padding: '12px',
     color: 'var(--text-primary)'
-  },
-  modalOverlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1000,
-    backdropFilter: 'blur(5px)'
   },
   modalContent: {
     width: '90%',

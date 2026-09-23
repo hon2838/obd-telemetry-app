@@ -1,0 +1,24 @@
+// Health check routes plugin
+const PACKAGE_VERSION = require('../package.json').version;
+
+async function healthRoutes(fastify, options) {
+  const { stores, getStartedAt } = options;
+
+  const handleHealth = async (request, reply) => {
+    const startedAt = getStartedAt ? getStartedAt() : null;
+    return reply.send({
+      status: 'ok',
+      service: 'obd-telemetry-server',
+      version: PACKAGE_VERSION,
+      uptime_seconds: startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0,
+      telemetry_records: stores.telemetryDataStore ? stores.telemetryDataStore.length : 0,
+      fuel_logs: stores.fuelLogsStore ? stores.fuelLogsStore.length : 0,
+      maintenance_items: stores.maintenanceStore ? stores.maintenanceStore.length : 0,
+    });
+  };
+
+  fastify.get('/healthz', handleHealth);
+  fastify.get('/api/healthz', handleHealth);
+}
+
+module.exports = healthRoutes;

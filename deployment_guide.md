@@ -17,6 +17,7 @@ Copy `.env.example` to `.env` on the workstation and production host. Keep `.env
 
 ```env
 OBD_API_KEY=<at-least-32-random-characters>
+OBD_STORAGE_ENGINE=json
 OBD_INITIAL_ADMIN_PASSWORD=
 OBD_TRUST_PROXY=false
 NEXT_PUBLIC_API_URL=https://obd-api.example.com
@@ -107,6 +108,28 @@ Validate the following on actual hardware before promoting an APK:
 3. The backlog uploads after internet access returns.
 4. Records are marked synced only after an HTTP 2xx response.
 5. Read and clear DTC commands target the paired vehicle.
+6. A command received while the adapter is disconnected remains queued until it can be handled.
+7. A lost command response or acknowledgment does not lose the command or repeat a completed clear request.
+
+### Durable diagnostic commands
+
+Deploy the API and dashboard before installing the updated Android APK. The API
+uses the existing command behavior for older Android clients; the updated APK
+opts into command protocol v2. Until a head unit runs the updated APK, its
+legacy command delivery still has the lost-response limitation.
+
+In v2, pending commands have stable IDs and remain on the server until the
+paired device acknowledges an outcome. The head unit saves each command in its
+local database before attempting it and can poll for commands independently of
+telemetry uploads. A read can be retried after interruption. If a clear request
+was started but its result is uncertain after a crash, the dashboard reports
+**Outcome unknown**; inspect the vehicle before requesting another clear.
+
+Before promoting an APK, test offline delivery, an unavailable OBD adapter,
+app restart, a lost upload response, and a lost acknowledgment response on a
+test vehicle. Back up the server volume before the API upgrade because command
+queue entries are migrated to stable IDs. The API refuses to start if the
+command queue file is malformed, preserving it for repair or restore.
 
 ## Operations and backup
 
@@ -120,3 +143,22 @@ docker run --rm \
 ```
 
 Keep the backup and the release images until the new containers have passed health, authentication, pairing, ingestion, dashboard, and offline catch-up checks.
+
+### Optional SQLite telemetry rollout
+
+SQLite removes the full `telemetry.json` rewrite from each ingest. It remains
+opt-in for existing installations. Stop the API and take the volume backup
+above before changing `OBD_STORAGE_ENGINE` from `json` to `sqlite`. On its
+first SQLite startup, the server imports `telemetry.json` into
+`telemetry.sqlite` as one transaction and marks the import complete. It refuses
+to start if an existing database is incompatible or its import state is
+ambiguous; investigate the data directory rather than deleting either store.
+
+After startup, compare the `telemetry_records` value from `/healthz` with the
+pre-migration count and check history, a recent snapshot, and an Android
+offline catch-up. The JSON file is retained as a rollback source, but becomes
+stale once SQLite accepts new telemetry. To return to JSON after that point,
+stop the API and export the SQLite database with
+`node Server/scripts/export_sqlite_to_json.js <path-to-telemetry.sqlite> <path-to-telemetry.json>`
+before setting `OBD_STORAGE_ENGINE=json`. Keep the volume backup until this
+validation is complete.

@@ -20,6 +20,7 @@ services:
       # refuses to start if OBD_API_KEY is missing or
       # < 32 chars. Set in .env at the repo root.
       - OBD_API_KEY=${OBD_API_KEY}
+      - OBD_STORAGE_ENGINE=${OBD_STORAGE_ENGINE:-json}
       - OBD_INITIAL_ADMIN_PASSWORD=${OBD_INITIAL_ADMIN_PASSWORD:-}
       - OBD_TRUST_PROXY=${OBD_TRUST_PROXY:-false}
       - DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL:-https://obd.hon2838.name.my}

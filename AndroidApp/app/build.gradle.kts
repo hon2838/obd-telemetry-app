@@ -63,9 +63,6 @@ dependencies {
   implementation("androidx.room:room-ktx:$roomVersion")
   kapt("androidx.room:room-compiler:$roomVersion")
 
-  // WorkManager
-  val workVersion = "2.7.0"
-  implementation("androidx.work:work-runtime-ktx:$workVersion")
 
   // Coroutines
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.5.0")
