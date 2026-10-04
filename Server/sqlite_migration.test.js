@@ -69,6 +69,30 @@ describe('SQLite telemetry migration and integrity', () => {
     ]);
   });
 
+  test('migration handles 150000 records without exceeding the function argument limit', () => {
+    const jsonPath = path.join(tempDir, 'large.json');
+    const sqlitePath = path.join(tempDir, 'large.sqlite');
+    const count = 150000;
+    const start = 1700000000000;
+    fs.writeFileSync(jsonPath, JSON.stringify(Array.from({ length: count }, (_, index) => ({
+      timestamp: start + (count - index) * 2,
+      vehicleId: 'default',
+      ingestSeq: index + 1
+    }))));
+
+    expect(migrateJsonToSqlite(jsonPath, sqlitePath)).toMatchObject({
+      sourceCount: count, insertedCount: count, finalDbCount: count,
+      minTimestamp: start + 2, maxTimestamp: start + count * 2
+    });
+    const db = new DatabaseSync(sqlitePath);
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS n FROM telemetry').get().n).toBe(count);
+      expect(db.prepare('PRAGMA integrity_check').get().integrity_check).toBe('ok');
+    } finally {
+      db.close();
+    }
+  }, 30000);
+
   test('migration preserves a non-empty destination and removes a newly created DB on failure', () => {
     const jsonPath = path.join(tempDir, 'telemetry.json');
     const sqlitePath = path.join(tempDir, 'telemetry.sqlite');

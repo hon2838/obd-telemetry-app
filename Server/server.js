@@ -1814,6 +1814,7 @@ const stores = {
 }
 installAuthorization(fastify, stores, authenticateRequest)
 
+let SERVER_STARTED_AT = Date.now();
 fastify.register(async function apiRoutes(fastify) {
 
 // Schema for telemetry items
@@ -1934,7 +1935,6 @@ fastify.post('/api/telemetry/batch', {
       }));
       const acceptedIds = accepted.flatMap(record => eventIdOf(record) ? [eventIdOf(record)] : []);
       const duplicateIds = classified.duplicate;
-      const candidate = telemetryDataStore.concat(accepted);
 
       const batchVehicles = new Set(normalized.map(r => r.vehicleId));
       const protocolV2 = request.headers['x-obd-command-protocol'] === '2';
@@ -1965,7 +1965,8 @@ fastify.post('/api/telemetry/batch', {
         } else {
           sqliteStorage.appendBatch(accepted);
         }
-      } else {
+      } else if (accepted.length > 0 || commandQueueChanged) {
+        const candidate = telemetryDataStore.concat(accepted);
         const ingestEntries = [[DB_PATH, candidate]];
         if (commandQueueChanged) ingestEntries.push([COMMANDS_QUEUE_PATH, remainingCommands]);
         runFileTransactionSync(ingestEntries);
@@ -2417,8 +2418,6 @@ fastify.get('/api/telemetry/changes', async (request, reply) => {
 // an external probe (k8s, compose, an uptime monitor) can call
 // it without credentials. We deliberately do NOT include any
 // secrets in the response.
-let SERVER_STARTED_AT = null;
-
   // Register modular domain route plugins
   fastify.register(healthRoutes, {
     stores: { telemetryDataStore, fuelLogsStore, maintenanceStore },

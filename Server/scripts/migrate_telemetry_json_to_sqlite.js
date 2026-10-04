@@ -82,8 +82,12 @@ function migrateJsonToSqlite(jsonFilePath, sqliteDbPath) {
     if (canonicalRecords(loaded) !== canonicalRecords(expected)) {
       throw new Error('Migration fidelity check failed: SQLite records differ from normalized source records');
     }
-    const minTimestamp = normalizedRecords.length ? Math.min(...normalizedRecords.map(r => r.timestamp)) : null;
-    const maxTimestamp = normalizedRecords.length ? Math.max(...normalizedRecords.map(r => r.timestamp)) : null;
+    let minTimestamp = null;
+    let maxTimestamp = null;
+    for (const record of normalizedRecords) {
+      minTimestamp = minTimestamp === null ? record.timestamp : Math.min(minTimestamp, record.timestamp);
+      maxTimestamp = maxTimestamp === null ? record.timestamp : Math.max(maxTimestamp, record.timestamp);
+    }
     return {
       sourceCount: records.length,
       insertedCount: finalDbCount,

@@ -97,12 +97,18 @@ object OutboxUploader {
     suspend fun drainOutbox(context: Context): OutboxDrainReport {
         // Serialized execution: only one drain runs across the entire application
         return uploadMutex.withLock {
+            val statusVehicle = VehiclePrefs.getActiveVehicleId(context)
+            fun publishStatus(state: GatewaySyncState) = GatewayStatusStore.recordSync(
+                statusVehicle, state, android.os.SystemClock.elapsedRealtime()
+            )
             if (!isDeviceConfigured(context)) {
+                publishStatus(GatewaySyncState.SETUP_REQUIRED)
                 Log.d(TAG, "Device not configured with API credentials; skipping outbox drain")
                 return@withLock OutboxDrainReport(hadSuccess = false, hadNetworkFailures = false, hadIncompatibleServer = false)
             }
 
             if (!isNetworkAvailable(context)) {
+                publishStatus(GatewaySyncState.OFFLINE)
                 Log.d(TAG, "Network not available; preserving outbox in SQLite")
                 return@withLock OutboxDrainReport(hadSuccess = false, hadNetworkFailures = false, hadIncompatibleServer = false)
             }
@@ -112,10 +118,14 @@ object OutboxUploader {
             val fuelDao = db.fuelLogDao()
             val maintDao = db.maintenanceDao()
             val commandDao = db.commandInboxDao()
+            publishStatus(GatewaySyncState.UPLOADING)
 
             var hadSuccess = false
             var hadNetworkFailures = false
             var hadIncompatibleServer = false
+            // The report/backoff spans all vehicles; the displayed status is
+            // scoped to the vehicle captured when this drain started.
+            val vehiclesWithFailures = mutableSetOf<String>()
             val blockedVehicles = mutableSetOf<String>()
             val quarantinedVehicles = mutableSetOf<String>()
             var quarantinedCount = 0
@@ -168,6 +178,7 @@ object OutboxUploader {
                         else telemetryDao.getUnsyncedRecordsForVehicle(vehicleId, TELEMETRY_PAGE_LIMIT)
                     if (telemetryBatch.isNotEmpty()) {
                         val result = uploadTelemetryBatch(context, db, telemetryDao, vehicleId, telemetryBatch)
+                        if (result.status != UploadBatchStatus.SUCCESS_ACKNOWLEDGED) vehiclesWithFailures.add(vehicleId)
                         when (result.status) {
                             UploadBatchStatus.SUCCESS_ACKNOWLEDGED -> {
                                 hadSuccess = true
@@ -207,6 +218,7 @@ object OutboxUploader {
                         else fuelDao.getUnsyncedLogsForVehicle(vehicleId, FUEL_PAGE_LIMIT)
                     if (fuelBatch.isNotEmpty()) {
                         val result = uploadFuelBatch(context, db, fuelDao, vehicleId, fuelBatch)
+                        if (result.status != UploadBatchStatus.SUCCESS_ACKNOWLEDGED) vehiclesWithFailures.add(vehicleId)
                         when (result.status) {
                             UploadBatchStatus.SUCCESS_ACKNOWLEDGED -> {
                                 hadSuccess = true
@@ -245,6 +257,7 @@ object OutboxUploader {
                         else maintDao.getUnsyncedItemsForVehicle(vehicleId, MAINT_PAGE_LIMIT)
                     if (maintBatch.isNotEmpty()) {
                         val result = uploadMaintenanceBatch(context, db, maintDao, vehicleId, maintBatch)
+                        if (result.status != UploadBatchStatus.SUCCESS_ACKNOWLEDGED) vehiclesWithFailures.add(vehicleId)
                         when (result.status) {
                             UploadBatchStatus.SUCCESS_ACKNOWLEDGED -> {
                                 hadSuccess = true
@@ -290,6 +303,13 @@ object OutboxUploader {
                 }
             }
 
+            val hasPending = telemetryDao.countUnsyncedForVehicle(statusVehicle) > 0 ||
+                fuelDao.countUnsyncedForVehicle(statusVehicle) > 0 || maintDao.countUnsyncedForVehicle(statusVehicle) > 0
+            publishStatus(when {
+                statusVehicle in vehiclesWithFailures -> GatewaySyncState.ERROR
+                hasPending -> GatewaySyncState.QUEUED
+                else -> GatewaySyncState.SYNCED
+            })
             OutboxDrainReport(
                 hadSuccess = hadSuccess,
                 hadNetworkFailures = hadNetworkFailures,

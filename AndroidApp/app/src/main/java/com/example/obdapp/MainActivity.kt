@@ -65,7 +65,10 @@ class MainActivity : AppCompatActivity() {
                     val lat = it.getDoubleExtra("lat", 0.0)
                     val lon = it.getDoubleExtra("lon", 0.0)
                     val alt = it.getDoubleExtra("alt", 0.0)
-                    val speed = it.getFloatExtra("speed", 0.0f)
+                    val speed = it.getFloatExtra("speed", -1.0f)
+                    val speedSource = it.getStringExtra("speed_source") ?: "GPS"
+                    val hasGpsFix = it.getBooleanExtra("gps_fix", lat != 0.0 || lon != 0.0)
+                    val hasAltitude = it.getBooleanExtra("gps_altitude_valid", hasGpsFix)
                     val obdStatus = it.getStringExtra("obd_status") ?: "N/A"
                     val rpm = it.getIntExtra("rpm", -1)
                     val coolant = it.getIntExtra("coolant", -1)
@@ -79,9 +82,9 @@ class MainActivity : AppCompatActivity() {
                     val ts = it.getLongExtra("timestamp", 0L)
                     if (ts > 0) lastTelemetryAt = ts
 
-                    tvGpsPosition.text = String.format("%.6f, %.6f", lat, lon)
-                    tvGpsSpeed.text = String.format("%.1f km/h", speed)
-                    tvAltitude.text = String.format("%.0f m", alt)
+                    tvGpsPosition.text = if (hasGpsFix) String.format("%.6f, %.6f", lat, lon) else "Waiting for GPS fix"
+                    tvGpsSpeed.text = if (speed >= 0f) String.format("%.1f km/h (%s)", speed, speedSource) else "N/A"
+                    tvAltitude.text = if (hasAltitude) String.format("%.0f m", alt) else "N/A"
                     tvObdStatus.text = obdStatus
 
                     tvEngineRpm.text = if (rpm != -1) "$rpm RPM" else "N/A"
@@ -98,7 +101,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     )
                     
-                    sparkline?.push(if (rpm != -1) rpm else null, speed)
+                    sparkline?.push(if (rpm != -1) rpm else null, speed.takeIf { value -> value >= 0f })
 
                     tvAccState.text = if (accOn) "ON" else "OFF"
                     tvHeadlightState.text = if (headlightOn) "ON" else "OFF"
@@ -187,7 +190,9 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("OBD_PREFS", Context.MODE_PRIVATE)
         
-        cbAutoStart.isChecked = prefs.getBoolean("AUTO_START_BOOT", true)
+        val supportsBootStart = applicationInfo.targetSdkVersion < 31
+        cbAutoStart.isChecked = supportsBootStart && prefs.getBoolean("AUTO_START_BOOT", true)
+        cbAutoStart.isEnabled = supportsBootStart
         cbAutoStart.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean("AUTO_START_BOOT", isChecked).apply()
         }
@@ -214,8 +219,8 @@ class MainActivity : AppCompatActivity() {
 
         setupBluetoothSpinner()
 
-        val autoStart = prefs.getBoolean("AUTO_START_BOOT", true)
-        if (autoStart && !isServiceRunning(OBDGatewayService::class.java)) {
+        val autoStart = supportsBootStart && prefs.getBoolean("AUTO_START_BOOT", true)
+        if (autoStart && !OBDGatewayService.isRunning) {
             if (checkAndRequestPermissions()) {
                 startOBDService()
             }
@@ -518,7 +523,7 @@ class MainActivity : AppCompatActivity() {
                                         updateDeviceStatusUi()
                                         setupVehicleGarage()
                                         dialog.dismiss()
-                                        if (!isServiceRunning(OBDGatewayService::class.java)) {
+                                        if (!OBDGatewayService.isRunning) {
                                             startOBDService()
                                         }
                                     }
@@ -619,7 +624,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupBluetoothSpinner() {
         val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
-        val pairedDevices: Set<BluetoothDevice>? = bluetoothAdapter?.bondedDevices
+        val pairedDevices: Set<BluetoothDevice>? = if (GatewayPermissions.canAccessBluetooth(this)) {
+            try { bluetoothAdapter?.bondedDevices } catch (_: SecurityException) { null }
+        } else null
         val deviceList = mutableListOf<String>()
         val macList = mutableListOf<String>()
 
@@ -628,24 +635,30 @@ class MainActivity : AppCompatActivity() {
         macList.add("")
 
         if (!pairedDevices.isNullOrEmpty()) {
-            for (device in pairedDevices) {
-                deviceList.add("${device.name} (${device.address})")
-                macList.add(device.address)
+            try {
+                for (device in pairedDevices) {
+                    deviceList.add("${device.name} (${device.address})")
+                    macList.add(device.address)
+                }
+            } catch (_: SecurityException) {
+                // A permission can be revoked while the paired-device list is being rebuilt.
             }
         } else {
-            deviceList.add("No paired Bluetooth devices found")
+            deviceList.add("No paired devices — pair the OBD adapter in Android Bluetooth settings")
             macList.add("")
         }
 
         val adapter = ArrayAdapter(this, R.layout.spinner_closed_item, deviceList)
         adapter.setDropDownViewResource(R.layout.spinner_dropdown_item)
+        // Rebuilding the list must not clear a saved adapter when Bluetooth is
+        // temporarily off or its bond has not appeared yet.
+        suppressInitialSpinnerCallback = true
         spinner.adapter = adapter
 
         val savedMac = VehiclePrefs.getActiveAdapterMac(this)
         if (!savedMac.isNullOrEmpty()) {
             val index = macList.indexOf(savedMac)
             if (index >= 0) {
-                suppressInitialSpinnerCallback = true
                 spinner.setSelection(index)
             }
         } else {
@@ -667,14 +680,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startOBDService() {
+        if (!GatewayPermissions.granted(this)) return
+        if (applicationInfo.targetSdkVersion >= 31 &&
+            !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
+            // Pairing can finish after the phone UI has gone into the background.
+            // Collection must then wait for an explicit foreground start.
+            statusText.text = "Paired. Open the app and press Start to collect."
+            return
+        }
         val intent = Intent(this, OBDGatewayService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (_: SecurityException) {
+            statusText.text = "Cannot start collection. Check Bluetooth and location permissions."
+            return
+        } catch (_: IllegalStateException) {
+            statusText.text = "Open the app and press Start to collect."
+            return
         }
         statusText.text = "Service Running..."
         setServiceRunningUi(true)
+        if (Build.VERSION.SDK_INT >= 33 && applicationInfo.targetSdkVersion >= 33 &&
+            !GatewayPermissions.canPostNotifications(this)) {
+            // Optional alerts: denial must not prevent foreground collection.
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 102)
+        }
     }
 
     private fun stopOBDService() {
@@ -685,14 +719,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkAndRequestPermissions(): Boolean {
-        val permissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            permissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-        }
+        val permissions = GatewayPermissions.required(Build.VERSION.SDK_INT, applicationInfo.targetSdkVersion)
 
         val listPermissionsNeeded = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -717,6 +744,7 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQUEST_CODE) {
             if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                setupBluetoothSpinner()
                 startOBDService()
             } else {
                 statusText.text = "Permissions Denied. Service cannot start."
@@ -726,13 +754,22 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        // Pairing happens in Android settings; refresh when returning to the app.
+        setupBluetoothSpinner()
         val filter = android.content.IntentFilter().apply {
             addAction("com.example.obdapp.TELEMETRY_UPDATE")
             addAction("com.example.obdapp.STATUS_UPDATE")
         }
-        registerReceiver(telemetryReceiver, filter)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(telemetryReceiver, filter, "$packageName.permission.INTERNAL_BROADCAST", null,
+                Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerLegacyTelemetryReceiver(filter)
+        }
 
-        val isRunning = isServiceRunning(OBDGatewayService::class.java)
+        // The collector runs in this process. Its published lifecycle state is
+        // reliable on modern Android, unlike deprecated service enumeration.
+        val isRunning = OBDGatewayService.isRunning
         setServiceRunningUi(isRunning)
         updateStatusUi(if (isRunning) "Service Running..." else "Service Stopped")
 
@@ -757,18 +794,16 @@ class MainActivity : AppCompatActivity() {
         ageTicker = null
     }
 
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerLegacyTelemetryReceiver(filter: android.content.IntentFilter) {
+        // Called only below API 33, where NOT_EXPORTED is unavailable. The signature
+        // permission enforces sender isolation on these older platforms as well.
+        registerReceiver(telemetryReceiver, filter, "$packageName.permission.INTERNAL_BROADCAST", null)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         mainJob.cancel()
     }
 
-    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
-        val manager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-        for (service in manager.getRunningServices(Integer.MAX_VALUE)) {
-            if (serviceClass.name == service.service.className) {
-                return true
-            }
-        }
-        return false
-    }
 }

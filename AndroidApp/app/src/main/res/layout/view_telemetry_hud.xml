@@ -47,16 +47,16 @@
                 <TextView
                     android:id="@+id/tvGpsPosition"
                     style="@style/HudValue"
-                    android:text="0.000000, 0.000000" />
+                    android:text="Waiting for GPS fix" />
             </LinearLayout>
 
             <!-- GPS Speed -->
             <LinearLayout style="@style/HudCell">
-                <TextView style="@style/HudLabel" android:text="GPS Speed" />
+                <TextView style="@style/HudLabel" android:text="Vehicle Speed" />
                 <TextView
                     android:id="@+id/tvGpsSpeed"
                     style="@style/HudValue"
-                    android:text="0.0 km/h" />
+                    android:text="N/A" />
             </LinearLayout>
 
             <!-- Altitude -->
@@ -65,7 +65,7 @@
                 <TextView
                     android:id="@+id/tvAltitude"
                     style="@style/HudValue"
-                    android:text="0 m" />
+                    android:text="N/A" />
             </LinearLayout>
 
             <!-- OBD Connection -->

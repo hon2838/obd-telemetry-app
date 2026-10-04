@@ -58,6 +58,21 @@ test('telemetry dedupe is durable, per vehicle, and reports accepted and duplica
   expect(telemetryDataStore.filter(r => r.eventId === 'same')).toHaveLength(1);
 });
 
+test('a fully acknowledged retry does not rewrite the JSON store', async () => {
+  const record = { timestamp: VALID_TIMESTAMP + 150, eventId: 'already-durable', speed: 20 };
+  expect((await fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [record] })).statusCode).toBe(201);
+  const write = jest.spyOn(fs, 'writeFileSync');
+  try {
+    const response = await fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [record] });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().duplicateIds).toEqual(['already-durable']);
+    expect(response.json().acceptedIds).toEqual([]);
+    expect(write).not.toHaveBeenCalled();
+  } finally {
+    write.mockRestore();
+  }
+});
+
 test('concurrent telemetry mutations serialize without duplicate IDs', async () => {
   const responses = await Promise.all([
     fastify.inject({ method: 'POST', url: '/api/telemetry/batch', headers: auth, payload: [{ timestamp: VALID_TIMESTAMP + 200, eventId: 'parallel-a' }] }),

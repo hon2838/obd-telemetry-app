@@ -3,6 +3,8 @@ import Head from 'next/head';
 import { apiFetch, isAbortError } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
+import TripRouteMap from '../components/TripRouteMap';
+import type { GpsPoint } from '../components/TripRouteMap';
 import {
   Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X, Car
 } from 'lucide-react';
@@ -40,6 +42,7 @@ interface LeaderboardData {
 }
 
 export const MAX_DETAIL_CHART_POINTS = 750;
+const MAX_DETAIL_MAP_POINTS = 2000;
 
 // Keep the first and last samples, then select evenly spaced samples from the
 // interior. This bounds Recharts' SVG work while preserving the full trip
@@ -70,6 +73,9 @@ export default function TripsDashboard() {
   const [loaded, setLoaded] = useState(false);
   const [selectedDrive, setSelectedDrive] = useState<DriveSession | null>(null);
   const [selectedDrivePoints, setSelectedDrivePoints] = useState<any[]>([]);
+  const [selectedDriveRoutePoints, setSelectedDriveRoutePoints] = useState<GpsPoint[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(false);
   const driveAbortRef = useRef<AbortController | null>(null);
 
   const handleDriveClick = async (drive: DriveSession) => {
@@ -79,19 +85,24 @@ export default function TripsDashboard() {
 
     setSelectedDrive(drive);
     setSelectedDrivePoints([]);
+    setSelectedDriveRoutePoints([]);
+    setDetailLoading(true);
+    setDetailError(false);
     try {
       // First try /api/telemetry/series with points=750 so downsampling happens before transfer and transformation
       let res = await apiFetch(buildUrl('/api/telemetry/series', {
         start: drive.startTime,
         end: drive.endTime,
-        points: MAX_DETAIL_CHART_POINTS
+        points: MAX_DETAIL_CHART_POINTS,
+        vehicle: drive.vehicleId
       }), { signal: controller.signal });
 
       if (res.status === 404 || res.status === 501) {
         // Safe fallback for an older server lacking /api/telemetry/series
         res = await apiFetch(buildUrl('/api/telemetry/history', {
           start: drive.startTime,
-          end: drive.endTime
+          end: drive.endTime,
+          vehicle: drive.vehicleId
         }), { signal: controller.signal });
       }
 
@@ -99,17 +110,25 @@ export default function TripsDashboard() {
       const data = await res.json();
       if (controller.signal.aborted) return;
 
-      const rawPoints: any[] = Array.isArray(data) ? data : (Array.isArray(data?.records) ? data.records : []);
+      const records: any[] = Array.isArray(data) ? data : (Array.isArray(data?.records) ? data.records : []);
+      const rawPoints = [...records].sort((left, right) => Number(left.timestamp) - Number(right.timestamp));
       const transformed = rawPoints.map((d: any) => ({
         time: new Date(d.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         speed: (d.speed !== null && d.speed !== undefined) ? d.speed : (d.gpsSpeed || 0),
         rpm: d.rpm || 0
       }));
       setSelectedDrivePoints(decimateChartPoints(transformed, MAX_DETAIL_CHART_POINTS));
+      setSelectedDriveRoutePoints(decimateChartPoints(rawPoints, MAX_DETAIL_MAP_POINTS).map((point: any) => ({
+        latitude: point.latitude,
+        longitude: point.longitude
+      })));
     } catch (err) {
       if (!isAbortError(err)) {
         console.error('Failed to load trip telemetry details:', err);
+        setDetailError(true);
       }
+    } finally {
+      if (!controller.signal.aborted) setDetailLoading(false);
     }
   };
 
@@ -130,6 +149,9 @@ export default function TripsDashboard() {
     driveAbortRef.current?.abort();
     setSelectedDrive(null);
     setSelectedDrivePoints([]);
+    setSelectedDriveRoutePoints([]);
+    setDetailLoading(false);
+    setDetailError(false);
   }, [activeVehicleId]);
 
   useEffect(() => {
@@ -422,12 +444,15 @@ export default function TripsDashboard() {
           <div className="glass-panel-static" style={styles.modalContent}>
             <div style={styles.modalHeader}>
               <h2 style={styles.modalTitle}>Trip Details - Drive #{selectedDrive.id}</h2>
-              <button style={styles.closeButton} onClick={() => setSelectedDrive(null)}>
+              <button style={styles.closeButton} onClick={() => {
+                driveAbortRef.current?.abort();
+                setSelectedDrive(null);
+              }}>
                 <X size={24} />
               </button>
             </div>
             
-            <div style={{ display: 'flex', gap: '48px', marginBottom: '24px', color: 'var(--text-primary)' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '24px 48px', marginBottom: '24px', color: 'var(--text-primary)' }}>
               <div>
                 <strong style={{color: 'var(--text-secondary)'}}>Duration:</strong> {selectedDrive.summary.durationMin} mins<br/>
                 <strong style={{color: 'var(--text-secondary)'}}>Distance:</strong> {selectedDrive.summary.distanceKm.toFixed(2)} km<br/>
@@ -440,9 +465,27 @@ export default function TripsDashboard() {
               </div>
             </div>
 
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', color: 'var(--text-primary)' }}>Trip Route</h3>
+            {detailLoading ? (
+              <div style={styles.noData}>Loading trip route...</div>
+            ) : (
+              <TripRouteMap
+                points={selectedDriveRoutePoints}
+                startLocation={selectedDrive.summary.startLocation}
+                endLocation={selectedDrive.summary.endLocation}
+              />
+            )}
+            <p style={{ color: 'var(--text-secondary)', fontSize: '12px', margin: '8px 0 24px' }}>
+              Route follows recorded GPS samples and may be approximate on long trips.
+            </p>
+
             <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', color: 'var(--text-primary)' }}>Speed & RPM Profile</h3>
-            {selectedDrivePoints.length === 0 ? (
+            {detailLoading ? (
               <div style={styles.noData}>Loading telemetry points...</div>
+            ) : detailError ? (
+              <div style={styles.noData}>Trip telemetry could not be loaded.</div>
+            ) : selectedDrivePoints.length === 0 ? (
+              <div style={styles.noData}>No telemetry points available for this trip.</div>
             ) : (
               <div style={{ height: '300px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -634,7 +677,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   modalContent: {
     width: '90%',
-    maxWidth: '800px',
+    maxWidth: '900px',
     padding: '32px',
     display: 'flex',
     flexDirection: 'column',
