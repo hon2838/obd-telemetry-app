@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvCoolantTemp: TextView
     private lateinit var tvThrottlePos: TextView
     private lateinit var tvVoltage: TextView
+    private lateinit var tvFuelEconomy: TextView
     private lateinit var tvAccState: TextView
     private lateinit var tvHeadlightState: TextView
     private lateinit var tvVolume: TextView
@@ -100,7 +101,22 @@ class MainActivity : AppCompatActivity() {
                             else -> getColor(R.color.text_primary)
                         }
                     )
-                    
+
+                    // Preserve a genuine zero at idle, but never show old data
+                    // as a current consumption estimate.
+                    val fuelEcon = if (it.hasExtra("estimated_fuel_economy_kml")) {
+                        it.getDoubleExtra("estimated_fuel_economy_kml", -1.0)
+                    } else {
+                        -1.0
+                    }
+                    val fuelAgeMs = System.currentTimeMillis() - ts
+                    tvFuelEconomy.text = if (fuelEcon.isFinite() && fuelEcon >= 0.0 && ts > 0 &&
+                        fuelAgeMs in 0..FuelConsumptionEstimate.MAX_READING_AGE_MS) {
+                        String.format(Locale.getDefault(), "%.1f km/L", fuelEcon)
+                    } else {
+                        "N/A"
+                    }
+
                     sparkline?.push(if (rpm != -1) rpm else null, speed.takeIf { value -> value >= 0f })
 
                     tvAccState.text = if (accOn) "ON" else "OFF"
@@ -138,6 +154,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setServiceRunningUi(running: Boolean) {
+        if (!running && ::tvFuelEconomy.isInitialized) tvFuelEconomy.text = "N/A"
         btnStart.isEnabled = !running
         btnStop.isEnabled = running
         btnStart.alpha = if (running) 0.5f else 1f
@@ -145,6 +162,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTelemetryAge() {
+        if (::tvFuelEconomy.isInitialized &&
+            (lastTelemetryAt == 0L || System.currentTimeMillis() - lastTelemetryAt > FuelConsumptionEstimate.MAX_READING_AGE_MS)) {
+            tvFuelEconomy.text = "N/A"
+        }
         if (lastTelemetryAt == 0L) {
             tvTelemetryAge.text = getString(R.string.telemetry_waiting)
             tvTelemetryAge.setTextColor(getColor(R.color.text_muted))
@@ -176,6 +197,7 @@ class MainActivity : AppCompatActivity() {
         tvCoolantTemp = findViewById(R.id.tvCoolantTemp)
         tvThrottlePos = findViewById(R.id.tvThrottlePos)
         tvVoltage = findViewById(R.id.tvVoltage)
+        tvFuelEconomy = findViewById(R.id.tvFuelEconomy)
         tvAccState = findViewById(R.id.tvAccState)
         tvHeadlightState = findViewById(R.id.tvHeadlightState)
         tvVolume = findViewById(R.id.tvVolume)

@@ -8,7 +8,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import java.util.UUID
 
-@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class, CommandInboxEntity::class], version = 9, exportSchema = true)
+@Database(entities = [TelemetryEntity::class, FuelLogEntity::class, MaintenanceEntity::class, CommandInboxEntity::class], version = 10, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun telemetryDao(): TelemetryDao
     abstract fun fuelLogDao(): FuelLogDao
@@ -146,6 +146,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Nullable additions preserve historical and pending records.
+                db.execSQL("ALTER TABLE `telemetry_data` ADD COLUMN `mafGps` REAL")
+                db.execSQL("ALTER TABLE `telemetry_data` ADD COLUMN `fuelSystemStatus` INTEGER")
+                db.execSQL("ALTER TABLE `telemetry_data` ADD COLUMN `estimatedFuelRateLph` REAL")
+                db.execSQL("ALTER TABLE `telemetry_data` ADD COLUMN `estimatedFuelEconomyKmL` REAL")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -161,7 +171,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
-                    MIGRATION_8_9
+                    MIGRATION_8_9,
+                    MIGRATION_9_10
                 )
                 .build()
                 INSTANCE = instance

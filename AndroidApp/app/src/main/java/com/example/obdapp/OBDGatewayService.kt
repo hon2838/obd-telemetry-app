@@ -134,6 +134,35 @@ class AmbientAirTempCommand : ObdCommand() {
     }
 }
 
+class MassAirFlowCommand : ObdCommand() {
+    override val tag = "MASS_AIR_FLOW"
+    override val name = "Mass Air Flow"
+    override val mode = "01"
+    override val pid = "10"
+    override val defaultUnit = "g/s"
+    override val handler = { response: ObdRawResponse ->
+        val raw = obdPidPayload(response, 0x10, 2)
+        ((raw[0] * 256 + raw[1]) / 100.0).toString()
+    }
+}
+
+class FuelSystemStatusCommand : ObdCommand() {
+    var secondarySystemStatus: Int? = null
+        private set
+    override val tag = "FUEL_SYSTEM_STATUS"
+    override val name = "Fuel System Status"
+    override val mode = "01"
+    override val pid = "03"
+    override val defaultUnit = ""
+    override val handler = { response: ObdRawResponse ->
+        // A second active fuel system may have a different mixture. Do not
+        // calculate from bank 1 alone unless bank 2 is absent or closed-loop.
+        val raw = obdPidPayload(response, 0x03, 2)
+        secondarySystemStatus = raw[1]
+        raw[0].toString()
+    }
+}
+
 class ResetTroubleCodesCommand : ObdCommand() {
     override val tag = "RESET_DTC"
     override val name = "Reset Trouble Codes"
@@ -188,6 +217,7 @@ class OBDGatewayService : Service(), LocationListener {
     @Volatile private var cachedThrottlePos: Int? = null
     private var lastSecondaryPidReadElapsed: Long = 0L
     private var throttleRetryAfterElapsed: Long = 0L
+    private var fuelEstimateRetryAfterElapsed: Long = 0L
 
     private val COOLANT_REFRESH_MS = 15_000L
     private val VOLTAGE_REFRESH_MS = 20_000L
@@ -538,6 +568,7 @@ class OBDGatewayService : Service(), LocationListener {
                             cachedThrottlePos = null
                             lastSecondaryPidReadElapsed = 0L
                             throttleRetryAfterElapsed = 0L
+                            fuelEstimateRetryAfterElapsed = 0L
                             // Publish only after initialization so the collector
                             // cannot query PIDs during adapter reset/setup.
                             obdConnection = connection
@@ -650,6 +681,7 @@ class OBDGatewayService : Service(), LocationListener {
         cachedThrottlePos = null
         lastSecondaryPidReadElapsed = 0L
         throttleRetryAfterElapsed = 0L
+        fuelEstimateRetryAfterElapsed = 0L
         try {
             bluetoothSocket?.close()
         } catch (_: Exception) {}
@@ -675,6 +707,10 @@ class OBDGatewayService : Service(), LocationListener {
                     var speed: Int? = null
                     var engineLoad: Int? = cachedEngineLoad
                     var throttlePos: Int? = cachedThrottlePos
+                    // Fuel inputs belong to this cycle; never reuse old values.
+                    var mafGps: Double? = null
+                    var fuelSystemStatus: Int? = null
+                    var secondaryFuelSystemEligible = false
 
                     // Fast OBD readings: short locked window with delay between commands
                     if (obdConnection != null) {
@@ -689,6 +725,23 @@ class OBDGatewayService : Service(), LocationListener {
                                     rpm = rpmResp?.value?.toIntOrNull()
                                     speed = speedResp?.value?.toIntOrNull()
                                     val nowElapsed = SystemClock.elapsedRealtime()
+                                    if (nowElapsed >= fuelEstimateRetryAfterElapsed) {
+                                        try {
+                                            mafGps = obdConnection?.run(MassAirFlowCommand())?.value?.toDoubleOrNull()
+                                            delay(ObdPollingCadence.COMMAND_GAP_MS)
+                                            val fuelStatusCommand = FuelSystemStatusCommand()
+                                            fuelSystemStatus = obdConnection?.run(fuelStatusCommand)?.value?.toIntOrNull()
+                                            secondaryFuelSystemEligible = fuelStatusCommand.secondarySystemStatus in listOf(0, 2)
+                                            delay(ObdPollingCadence.COMMAND_GAP_MS)
+                                        } catch (e: Exception) {
+                                            if (e is NoDataException || e is UnSupportedCommandException) {
+                                                mafGps = null
+                                                fuelSystemStatus = null
+                                                fuelEstimateRetryAfterElapsed = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
+                                                Log.i(TAG, "Fuel estimate inputs unavailable; retrying in five minutes")
+                                            } else throw e
+                                        }
+                                    }
                                     // Read throttle on every fast cycle. A separate
                                     // post-read time gate would skip quick cycles.
                                     if (nowElapsed >= throttleRetryAfterElapsed) {
@@ -745,6 +798,8 @@ class OBDGatewayService : Service(), LocationListener {
                         speed = null
                         engineLoad = null
                         throttlePos = null
+                        mafGps = null
+                        fuelSystemStatus = null
                     }
 
                     var gpsFix = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
@@ -779,6 +834,13 @@ class OBDGatewayService : Service(), LocationListener {
                     val wifiSsid = getWifiSsid()
                     val btConnected = isBtConnected()
 
+                    // Check freshness after GPS/system calls too: their latency
+                    // must not turn old OBD inputs into a new fuel estimate.
+                    val fuelEstimate = if (obdConnection != null) FuelConsumptionEstimate.calculate(
+                        mafGps, speed, if (secondaryFuelSystemEligible) fuelSystemStatus else null,
+                        SystemClock.elapsedRealtime() - cycleStartedElapsed, engineRpm = rpm
+                    ) else null
+
                     val telemetry = TelemetryEntity(
                         timestamp = System.currentTimeMillis(),
                         vehicleId = VehiclePrefs.getActiveVehicleId(this@OBDGatewayService),
@@ -794,6 +856,10 @@ class OBDGatewayService : Service(), LocationListener {
                         engineLoad = engineLoad,
                         throttlePos = throttlePos,
                         fuelLevel = fuelLevel,
+                        mafGps = mafGps,
+                        fuelSystemStatus = fuelSystemStatus,
+                        estimatedFuelRateLph = fuelEstimate?.litresPerHour,
+                        estimatedFuelEconomyKmL = fuelEstimate?.kilometresPerLitre,
                         ambientTemp = ambientTemp,
                         voltage = voltage,
                         accelTime = completedAccelTime,
@@ -825,6 +891,7 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("rpm", telemetry.rpm ?: -1)
                         putExtra("coolant", telemetry.coolantTemp ?: -1)
                         putExtra("throttle", telemetry.throttlePos ?: -1)
+                        putExtra("estimated_fuel_economy_kml", telemetry.estimatedFuelEconomyKmL ?: -1.0)
                         putExtra("volt", telemetry.voltage ?: -1.0f)
                         putExtra("obd_status", if (obdConnection != null) "Connected" else "GPS Only")
                         putExtra("timestamp", telemetry.timestamp)

@@ -22,4 +22,16 @@ class ObdTelemetryParsingTest {
         assertThrows(IOException::class.java) { obdPidPayload(ObdRawResponse("41 42 36", 0), 0x42, 2) }
         assertThrows(IOException::class.java) { obdPidPayload(ObdRawResponse("41 11 80", 0), 0x04, 1) }
     }
+
+    @Test
+    fun parsesFuelInputsAndRejectsIncompleteOrDifferentReplies() {
+        assertEquals("3.24", MassAirFlowCommand().handleResponse(ObdRawResponse("41 10 01 44", 0)).value)
+        assertEquals("2", FuelSystemStatusCommand().handleResponse(ObdRawResponse("41 03 02 00", 0)).value)
+        val mixedStatus = FuelSystemStatusCommand()
+        assertEquals("2", mixedStatus.handleResponse(ObdRawResponse("41 03 02 04", 0)).value)
+        assertEquals(4, mixedStatus.secondarySystemStatus)
+        assertThrows(IOException::class.java) { MassAirFlowCommand().handleResponse(ObdRawResponse("41 10 01", 0)) }
+        assertThrows(IOException::class.java) { MassAirFlowCommand().handleResponse(ObdRawResponse("41 42 01 44", 0)) }
+        assertThrows(IOException::class.java) { FuelSystemStatusCommand().handleResponse(ObdRawResponse("41 03 02", 0)) }
+    }
 }

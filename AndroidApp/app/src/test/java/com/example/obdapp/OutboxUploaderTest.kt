@@ -34,6 +34,7 @@ class OutboxUploaderTest {
     private lateinit var serverThread: Thread
     private val serverFailure = AtomicReference<Throwable?>()
     private val uploadedVehicles = CopyOnWriteArrayList<String>()
+    private val uploadedTelemetry = CopyOnWriteArrayList<JSONObject>()
     @Volatile private var failingVehicle = "b"
     @Volatile private var failureCode = 200
 
@@ -123,6 +124,9 @@ class OutboxUploaderTest {
     private fun responseFor(requestLine: String, body: String): Pair<Int, String> {
         if (requestLine.startsWith("GET ")) return 200 to """{"commands":[]}"""
         val batch = JSONArray(body)
+        if (requestLine.contains("/api/telemetry/batch")) {
+            for (index in 0 until batch.length()) uploadedTelemetry.add(batch.getJSONObject(index))
+        }
         val vehicle = batch.getJSONObject(0).getString("vehicleId")
         uploadedVehicles.add(vehicle)
         // A 2xx response with no event acknowledgments is incompatible.
@@ -258,6 +262,26 @@ class OutboxUploaderTest {
             intervalKm = null, intervalDays = null, lastServiceOdo = null, lastServiceDate = null,
             vehicleId = vehicle
         ))
+    }
+
+    @Test
+    fun uploadsFuelEstimateAndIdleZeroWithoutLosingLegacyNulls() = runBlocking(Dispatchers.IO) {
+        failingVehicle = "none"
+        insertTelemetry("a")
+        val original = db.telemetryDao().getUnsyncedRecordsForVehicle("a").single()
+        db.telemetryDao().insert(original.copy(
+            id = 0, eventId = "fuel-estimate", mafGps = 3.24,
+            fuelSystemStatus = 2, estimatedFuelRateLph = 1.057959184,
+            estimatedFuelEconomyKmL = 0.0
+        ))
+        OutboxUploader.drainOutbox(context)
+        val sent = uploadedTelemetry.first { it.getString("eventId") == "fuel-estimate" }
+        assertEquals(3.24, sent.getDouble("mafGps"), 0.0)
+        assertEquals(2, sent.getInt("fuelSystemStatus"))
+        assertEquals(1.057959184, sent.getDouble("estimatedFuelRateLph"), 0.0)
+        assertEquals(0.0, sent.getDouble("estimatedFuelEconomyKmL"), 0.0)
+        assertTrue(uploadedTelemetry.first { it.getString("eventId") == "telemetry-a" }.isNull("estimatedFuelEconomyKmL"))
+        assertEquals(0, db.telemetryDao().countUnsyncedForVehicle("a"))
     }
 
     private suspend fun insertTelemetry(vehicle: String) {

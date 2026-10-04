@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
-import { Activity, Map as MapIcon, Thermometer, Battery, Flame, Navigation, AlertCircle, Clock, Car } from 'lucide-react';
+import { Activity, Map as MapIcon, Thermometer, Battery, Flame, Fuel, Navigation, AlertCircle, Clock, Car } from 'lucide-react';
 import { apiFetch, isAbortError } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
@@ -39,8 +39,46 @@ interface TelemetryData {
   accelTime: number | null;
   alertCoolant: boolean;
   alertVoltage: boolean;
+  // Optional instantaneous fuel-estimate fields (petrol MAF model).
+  // Absent on older payloads; never derived from mismatched samples.
+  mafGps?: number | null;
+  fuelSystemStatus?: number | null;
+  estimatedFuelRateLph?: number | null;
+  estimatedFuelEconomyKmL?: number | null;
   timeLabel?: string;
 }
+
+// Instantaneous petrol fuel-economy estimate in km/L, from the same sample.
+// Returns null for missing/non-finite/negative values; legitimate zero
+// (e.g. idle) is preserved. No L/100km or L/h derivation here.
+export function formatFuelEconomyKmL(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return value.toFixed(1);
+}
+
+const FuelEconomyCard = ({ value, timestamp, connectionOk }: {
+  value: unknown; timestamp: number | null; connectionOk: boolean;
+}) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const ticker = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
+  // Cloud telemetry normally syncs once per minute. Apply the dashboard's
+  // reporting timeout, rather than retaining an old figure indefinitely.
+  const age = timestamp === null ? null : now - timestamp;
+  const formatted = connectionOk && age !== null && age >= 0 && age <= STALE_THRESHOLD_MS
+    ? formatFuelEconomyKmL(value) : null;
+  return <MetricCard
+    title="Estimated fuel economy"
+    value={formatted ?? 'N/A'}
+    unit={formatted !== null ? 'km/L' : ''}
+    icon={<Fuel size={20} color={formatted !== null ? 'var(--accent-green)' : 'var(--text-muted)'} />}
+    progress={undefined}
+    progressColor={formatted !== null ? 'var(--accent-green)' : 'var(--border)'}
+    subtext="Petrol estimate · latest synced reading"
+  />;
+};
 
 interface MapProps {
   latitude: number;
@@ -364,7 +402,7 @@ export default function TelemetryDashboard() {
   const latest = data[data.length - 1] || {
     rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
     gpsSpeed: 0, engineLoad: null, throttlePos: null, fuelLevel: null, ambientTemp: null, voltage: null,
-    accelTime: null, alertCoolant: false, alertVoltage: false
+    accelTime: null, alertCoolant: false, alertVoltage: false, estimatedFuelEconomyKmL: null
   };
 
   const formatVal = (val: any, decimals = 2) => {
@@ -545,6 +583,7 @@ export default function TelemetryDashboard() {
           progressColor={latest.fuelLevel !== null ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--border)'}
           subtext={latest.fuelLevel !== null ? (latest.fuelLevel < 15 ? "Low Fuel Warning" : "Level Normal") : "N/A"}
         />
+        <FuelEconomyCard value={latest.estimatedFuelEconomyKmL} timestamp={latestTimestamp} connectionOk={connectionOk} />
         <MetricCard
           title="System Voltage"
            value={formatVal(latest.voltage)}
