@@ -48,6 +48,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check slow authentication and denial paths
+        run: node scripts/check-auth-timeout.cjs
+
       - name: Next.js build
         run: npm run build
         env:
