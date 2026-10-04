@@ -4,6 +4,9 @@ import type { NextRequest } from 'next/server';
 const BACKEND_BASE = (process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
 const PUBLIC_PAGES = new Set(['/login']);
 const PUBLIC_AUTH_ROUTES = new Set(['/api/auth/login', '/api/auth/me', '/api/auth/logout', '/api/auth/change-password']);
+// Match the API gateway's deadline: JSON-store commits on small hosts can
+// briefly delay authentication without making a valid session unavailable.
+const AUTH_TIMEOUT_MS = 15000;
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -20,7 +23,7 @@ export async function proxy(req: NextRequest) {
     if (cookie) headers.Cookie = cookie;
     if (authorization) headers.Authorization = authorization;
     const meRes = await fetch(`${BACKEND_BASE}/api/auth/me`, {
-      method: 'GET', headers, signal: AbortSignal.timeout(5000), cache: 'no-store',
+      method: 'GET', headers, signal: AbortSignal.timeout(AUTH_TIMEOUT_MS), cache: 'no-store',
     });
     if (meRes.ok) {
       const profile = await meRes.json();
