@@ -1,7 +1,7 @@
 package com.example.obdapp
 
 internal object ObdPollingCadence {
-    // RPM, vehicle speed and throttle are read on every fast cycle.
+    // RPM, speed, throttle and available fuel-estimate inputs share one cycle.
     const val FAST_INTERVAL_MS = 1_000L
     const val SECONDARY_INTERVAL_MS = 5_000L
     const val GPS_ONLY_INTERVAL_MS = 3_000L

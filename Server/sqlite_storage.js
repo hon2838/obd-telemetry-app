@@ -6,7 +6,8 @@ const SUPPORTED_RECORD_FIELDS = new Set([
   'rpm', 'speed', 'coolantTemp', 'latitude', 'longitude', 'altitude', 'gpsSpeed',
   'engineLoad', 'throttlePos', 'fuelLevel', 'ambientTemp', 'voltage', 'batteryVoltage',
   'accelTime', 'alertCoolant', 'alertVoltage', 'accOn', 'headlightOn', 'volume',
-  'wifiSsid', 'btConnected'
+  'wifiSsid', 'btConnected',
+  'mafGps', 'fuelSystemStatus', 'estimatedFuelRateLph', 'estimatedFuelEconomyKmL'
 ]);
 
 function initSqliteStorage(sqlitePath) {
@@ -61,6 +62,24 @@ function initSqliteStorage(sqlitePath) {
     );
   `);
 
+  // Upgrade existing WAL databases in place; older telemetry stays nullable.
+  const fuelColumns = {
+    maf_gps: 'REAL', fuel_system_status: 'INTEGER',
+    estimated_fuel_rate_lph: 'REAL', estimated_fuel_economy_kml: 'REAL'
+  };
+  const existingColumns = new Set(db.prepare('PRAGMA table_info(telemetry)').all().map(row => row.name));
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const [name, type] of Object.entries(fuelColumns)) {
+      if (!existingColumns.has(name)) db.exec(`ALTER TABLE telemetry ADD COLUMN ${name} ${type}`);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
+    db.close();
+    throw error;
+  }
+
   function ensureIngestSequences() {
     const rows = db.prepare('SELECT id, ingest_seq FROM telemetry ORDER BY id ASC').all();
     const seen = new Set();
@@ -110,13 +129,15 @@ function initSqliteStorage(sqlitePath) {
       latitude, longitude, altitude, gps_speed, engine_load,
       throttle_pos, fuel_level, ambient_temp, voltage, battery_voltage,
       accel_time, alert_coolant, alert_voltage, acc_on, headlight_on,
-      volume, wifi_ssid, bt_connected, received_at, ingest_seq
+      volume, wifi_ssid, bt_connected, received_at, ingest_seq,
+      maf_gps, fuel_system_status, estimated_fuel_rate_lph, estimated_fuel_economy_kml
     ) VALUES (
       ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?
     )
   `);
 
@@ -147,7 +168,11 @@ function initSqliteStorage(sqlitePath) {
       r.wifiSsid ?? null,
       r.btConnected === true ? 1 : (r.btConnected === false ? 0 : null),
       r.receivedAt ?? Date.now(),
-      r.ingestSeq ?? null
+      r.ingestSeq ?? null,
+      r.mafGps ?? null,
+      r.fuelSystemStatus ?? null,
+      r.estimatedFuelRateLph ?? null,
+      r.estimatedFuelEconomyKmL ?? null
     );
   }
 
@@ -180,6 +205,10 @@ function initSqliteStorage(sqlitePath) {
     if (row.wifi_ssid !== null) record.wifiSsid = row.wifi_ssid;
     if (row.bt_connected !== null) record.btConnected = row.bt_connected === 1;
     if (row.ingest_seq !== null) record.ingestSeq = row.ingest_seq;
+    if (row.maf_gps !== null) record.mafGps = row.maf_gps;
+    if (row.fuel_system_status !== null) record.fuelSystemStatus = row.fuel_system_status;
+    if (row.estimated_fuel_rate_lph !== null) record.estimatedFuelRateLph = row.estimated_fuel_rate_lph;
+    if (row.estimated_fuel_economy_kml !== null) record.estimatedFuelEconomyKmL = row.estimated_fuel_economy_kml;
     return record;
   }
 
@@ -274,7 +303,10 @@ function initSqliteStorage(sqlitePath) {
         ['batteryVoltage', 'battery_voltage'], ['accelTime', 'accel_time'],
         ['alertCoolant', 'alert_coolant'], ['alertVoltage', 'alert_voltage'],
         ['accOn', 'acc_on'], ['headlightOn', 'headlight_on'], ['volume', 'volume'],
-        ['wifiSsid', 'wifi_ssid'], ['btConnected', 'bt_connected']
+        ['wifiSsid', 'wifi_ssid'], ['btConnected', 'bt_connected'],
+        ['mafGps', 'maf_gps'], ['fuelSystemStatus', 'fuel_system_status'],
+        ['estimatedFuelRateLph', 'estimated_fuel_rate_lph'],
+        ['estimatedFuelEconomyKmL', 'estimated_fuel_economy_kml']
       ];
       function sameRecord(existing, input) {
         if (existing.timestamp !== input.timestamp || existing.vehicle_id !== (input.vehicleId || 'default') ||

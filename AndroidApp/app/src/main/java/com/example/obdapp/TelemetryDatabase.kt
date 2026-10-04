@@ -42,6 +42,10 @@ data class TelemetryEntity(
     val volume: Int? = null,
     val wifiSsid: String? = null,
     val btConnected: Boolean? = null,
+    val mafGps: Double? = null,
+    val fuelSystemStatus: Int? = null,
+    val estimatedFuelRateLph: Double? = null,
+    val estimatedFuelEconomyKmL: Double? = null,
     @ColumnInfo(defaultValue = "default") val vehicleId: String = "default",
     var synced: Boolean = false
 )

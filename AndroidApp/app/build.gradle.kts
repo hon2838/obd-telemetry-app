@@ -17,8 +17,8 @@ android {
         // versionCode is <= what's already on the device.
         // versionName is the human-readable label the user
         // sees in the app's About screen.
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
     }
 
     flavorDimensions += "variant"
