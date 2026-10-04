@@ -713,7 +713,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopOBDService() {
         val intent = Intent(this, OBDGatewayService::class.java)
-        stopService(intent)
+        val accepted = stopService(intent)
+        // Operational metadata only; helps distinguish an undelivered tap from
+        // an OS refusal or a later service restart without logging telemetry.
+        android.util.Log.i("OBDServiceControl", "Stop requested: accepted=$accepted, running=${OBDGatewayService.isRunning}")
         setServiceRunningUi(false)
         updateStatusUi("Service Stopped")
     }
