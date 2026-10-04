@@ -25,6 +25,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.hamcrest.Matchers.not
 
 /**
  * Live phone-collector instrumentation for the fresh androidauto phone package
@@ -297,6 +298,10 @@ class AndroidAutoPhoneRuntimeTest {
 
             // Real stop via the actual Stop button.
             onView(withId(R.id.btnStop)).perform(scrollTo()).check(matches(isEnabled())).perform(click())
+            // The listener immediately changes these controls. Keep the genuine
+            // tap: a failure here means callback delivery, not service teardown.
+            onView(withId(R.id.btnStop)).check(matches(not(isEnabled())))
+            onView(withId(R.id.statusText)).check(matches(withText("Service Stopped")))
 
             val stopped = awaitServiceStopped(STOP_TIMEOUT_MS)
             assertTrue("Stopping must clear running status: service=${OBDGatewayService.isRunning}, published=${GatewayStatusStore.status.value.running}", stopped)
