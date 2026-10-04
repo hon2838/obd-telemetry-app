@@ -19,13 +19,16 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.Looper
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.github.eltonvs.obd.command.ObdCommand
 import com.github.eltonvs.obd.command.ObdRawResponse
+import com.github.eltonvs.obd.command.NoDataException
+import com.github.eltonvs.obd.command.UnSupportedCommandException
 import com.github.eltonvs.obd.command.engine.RPMCommand
 import com.github.eltonvs.obd.command.engine.SpeedCommand
-import com.github.eltonvs.obd.command.temperature.EngineCoolantTemperatureCommand
 import com.github.eltonvs.obd.connection.ObdDeviceConnection
 import android.util.Log
 import java.util.Locale
@@ -36,6 +39,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.InputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -43,6 +47,17 @@ import java.net.URL
 import java.util.UUID
 
 // Define custom commands for parameters not built into eltonvs:kotlin-obd-api or to ensure compatibility
+class CoolantTemperatureCommand : ObdCommand() {
+    override val tag = "COOLANT_TEMPERATURE"
+    override val name = "Coolant Temperature"
+    override val mode = "01"
+    override val pid = "05"
+    override val defaultUnit = "°C"
+    override val handler = { response: ObdRawResponse ->
+        (obdPidPayload(response, 0x05, 1)[0] - 40).toString()
+    }
+}
+
 class LoadCommand : ObdCommand() {
     override val tag = "ENGINE_LOAD"
     override val name = "Engine Load"
@@ -50,7 +65,7 @@ class LoadCommand : ObdCommand() {
     override val pid = "04"
     override val defaultUnit = "%"
     override val handler = { response: ObdRawResponse ->
-        val raw = response.bufferedValue
+        val raw = obdPidPayload(response, 0x04, 1)
         if (raw.isNotEmpty()) {
             val value = raw[0] and 0xFF
             (value * 100 / 255).toString()
@@ -65,7 +80,7 @@ class ThrottlePositionCommand : ObdCommand() {
     override val pid = "11"
     override val defaultUnit = "%"
     override val handler = { response: ObdRawResponse ->
-        val raw = response.bufferedValue
+        val raw = obdPidPayload(response, 0x11, 1)
         if (raw.isNotEmpty()) {
             val value = raw[0] and 0xFF
             (value * 100 / 255).toString()
@@ -80,7 +95,7 @@ class FuelLevelCommand : ObdCommand() {
     override val pid = "2F"
     override val defaultUnit = "%"
     override val handler = { response: ObdRawResponse ->
-        val raw = response.bufferedValue
+        val raw = obdPidPayload(response, 0x2F, 1)
         if (raw.isNotEmpty()) {
             val value = raw[0] and 0xFF
             (value * 100 / 255).toString()
@@ -95,7 +110,7 @@ class ModuleVoltageCommand : ObdCommand() {
     override val pid = "42"
     override val defaultUnit = "V"
     override val handler = { response: ObdRawResponse ->
-        val raw = response.bufferedValue
+        val raw = obdPidPayload(response, 0x42, 2)
         if (raw.size >= 2) {
             val a = raw[0] and 0xFF
             val b = raw[1] and 0xFF
@@ -111,7 +126,7 @@ class AmbientAirTempCommand : ObdCommand() {
     override val pid = "46"
     override val defaultUnit = "°C"
     override val handler = { response: ObdRawResponse ->
-        val raw = response.bufferedValue
+        val raw = obdPidPayload(response, 0x46, 1)
         if (raw.isNotEmpty()) {
             val value = raw[0] and 0xFF
             (value - 40).toString()
@@ -143,7 +158,7 @@ class OBDGatewayService : Service(), LocationListener {
     private val serviceJob = Job()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var bluetoothSocket: BluetoothSocket? = null
-    private var obdConnection: ObdDeviceConnection? = null
+    @Volatile private var obdConnection: ObdDeviceConnection? = null
     private val obdMutex = Mutex()
     private val commandMutex = Mutex()
     private var commandRecoveryJob: Job? = null
@@ -168,6 +183,11 @@ class OBDGatewayService : Service(), LocationListener {
     @Volatile private var cachedModuleVoltageTimestamp: Long = 0L
 
     private var slowPidIndex = 0
+    private val slowPidRetryAfter = LongArray(4)
+    @Volatile private var cachedEngineLoad: Int? = null
+    @Volatile private var cachedThrottlePos: Int? = null
+    private var lastSecondaryPidReadElapsed: Long = 0L
+    private var throttleRetryAfterElapsed: Long = 0L
 
     private val COOLANT_REFRESH_MS = 15_000L
     private val VOLTAGE_REFRESH_MS = 20_000L
@@ -180,11 +200,9 @@ class OBDGatewayService : Service(), LocationListener {
 
     // Location fields
     private var locationManager: LocationManager? = null
-    private var latitude: Double = 0.0
-    private var longitude: Double = 0.0
-    private var altitude: Double = 0.0
-    private var gpsSpeed: Float = 0.0f
-    @Volatile private var lastGpsLocationTime: Long = 0L
+    private val gpsTelemetry = GpsTelemetryPolicy()
+    @Volatile private var lastGpsRegistrationElapsed: Long = 0L
+    @Volatile private var lastLocationProvider: String? = null
 
     // 0-100 km/h acceleration tracking engine
     private val accelTracker = AccelerationTracker { timeSec ->
@@ -198,6 +216,8 @@ class OBDGatewayService : Service(), LocationListener {
     // Standard SPP UUID for ELM327
     private val sppUuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     private var deviceMacAddress: String? = null
+    private var foregroundReady = false
+    private var stopStatus = "Service Stopped"
 
     private fun getSelectedObdMac(): String? {
         return VehiclePrefs.getActiveAdapterMac(this)
@@ -205,9 +225,25 @@ class OBDGatewayService : Service(), LocationListener {
 
     override fun onCreate() {
         super.onCreate()
+        if (applicationInfo.targetSdkVersion >= 31 && !GatewayPermissions.granted(this)) {
+            rejectStartup("Permissions denied — check Bluetooth and location permissions")
+            return
+        }
+        try {
+            createNotificationChannel()
+            startForeground(1, buildNotification("Initializing OBD Service..."))
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Foreground collection permission changed during startup", error)
+            rejectStartup("Permissions denied — check Bluetooth and location permissions")
+            return
+        } catch (error: IllegalStateException) {
+            Log.w(TAG, "Foreground collection start is no longer allowed", error)
+            rejectStartup("Collection stopped — open the phone app and press Start")
+            return
+        }
+        foregroundReady = true
         isRunning = true
-        createNotificationChannel()
-        startForeground(1, buildNotification("Initializing OBD Service..."))
+        GatewayStatusStore.setRunning(true)
         setupGPS()
 
         // Register Outbox connectivity callback for immediate drain wakeups
@@ -232,23 +268,43 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     private fun setupGPS() {
+        lastGpsRegistrationElapsed = SystemClock.elapsedRealtime()
         try {
             locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                locationManager?.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1.0f, this)
-                val lastLoc = locationManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                    ?: locationManager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-                    ?: locationManager?.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-                if (lastLoc != null) {
-                    onLocationChanged(lastLoc)
+                val manager = locationManager ?: return
+                manager.removeUpdates(this)
+                for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+                    if (!manager.allProviders.contains(provider)) continue
+                    // Time-based updates also reach the app when stationary.
+                    manager.requestLocationUpdates(provider, 1000L, 0.0f, this, Looper.getMainLooper())
                 }
+                listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+                    .filter { manager.allProviders.contains(it) }
+                    .mapNotNull { manager.getLastKnownLocation(it) }
+                    .sortedByDescending { it.elapsedRealtimeNanos }
+                    .forEach { onLocationChanged(it) }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.w(TAG, "Unable to subscribe to location updates", e)
         }
     }
 
+    private fun rejectStartup(message: String) {
+        foregroundReady = false
+        isRunning = false
+        GatewayStatusStore.setRunning(false)
+        stopStatus = message
+        stopSelf()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A queued start callback can arrive after onCreate rejected promotion.
+        if (!foregroundReady) return START_NOT_STICKY
+        if (applicationInfo.targetSdkVersion >= 31 && !GatewayPermissions.granted(this)) {
+            rejectStartup("Permissions denied — check Bluetooth and location permissions")
+            return START_NOT_STICKY
+        }
         isRunning = true
         startObdPolling()
         startTelemetrySync()
@@ -282,6 +338,8 @@ class OBDGatewayService : Service(), LocationListener {
                 var hadSuccess = false
                 try {
                     if (!isDeviceConfigured(applicationContext)) {
+                        GatewayStatusStore.recordSync(VehiclePrefs.getActiveVehicleId(this@OBDGatewayService),
+                            GatewaySyncState.SETUP_REQUIRED, SystemClock.elapsedRealtime())
                         updateNotification("OBD: Car not paired — scan QR in app to pair")
                         waitForNextSync(syncDelay)
                         continue
@@ -291,12 +349,17 @@ class OBDGatewayService : Service(), LocationListener {
                         val report = OutboxUploader.drainOutbox(applicationContext)
                         hadSuccess = report.hadSuccess
                         hadFailures = report.hadNetworkFailures
+                    } else {
+                        GatewayStatusStore.recordSync(VehiclePrefs.getActiveVehicleId(this@OBDGatewayService),
+                            GatewaySyncState.OFFLINE, SystemClock.elapsedRealtime())
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "Telemetry sync error: ${e.message}", e)
                     hadFailures = true
+                    GatewayStatusStore.recordSync(VehiclePrefs.getActiveVehicleId(this@OBDGatewayService),
+                        GatewaySyncState.ERROR, SystemClock.elapsedRealtime())
                 }
 
                 if (hadFailures && !hadSuccess) {
@@ -421,6 +484,7 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     private fun triggerLocalAlertNotification(title: String, content: String) {
+        if (!GatewayPermissions.canPostNotifications(this)) return
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val alertNotification = NotificationCompat.Builder(this, "OBD_CHANNEL")
             .setContentTitle(title)
@@ -466,15 +530,19 @@ class OBDGatewayService : Service(), LocationListener {
 
                     updateNotification("OBD: GPS Only (Connecting BT...)")
                     try {
-                        connectBluetooth()
                         obdMutex.withLock {
-                            val initZ = object : ObdCommand() { override val tag = "AT Z"; override val name = "Reset"; override val mode = "AT Z"; override val pid = "AT Z" }
-                            val initSP0 = object : ObdCommand() { override val tag = "AT SP 0"; override val name = "Select Protocol Auto"; override val mode = "AT SP 0"; override val pid = "AT SP 0" }
-                            obdConnection?.run(initZ)
-                            delay(500)
-                            obdConnection?.run(initSP0)
-                            delay(500)
+                            val connection = connectBluetooth()
+                            initializeObdAdapter(connection)
+                            slowPidRetryAfter.fill(0L)
+                            cachedEngineLoad = null
+                            cachedThrottlePos = null
+                            lastSecondaryPidReadElapsed = 0L
+                            throttleRetryAfterElapsed = 0L
+                            // Publish only after initialization so the collector
+                            // cannot query PIDs during adapter reset/setup.
+                            obdConnection = connection
                         }
+                        Log.i(TAG, "OBD adapter initialized successfully")
                         val matchedVehicle = VehiclePrefs.findVehicleByMac(this@OBDGatewayService, selectedMac)
                         if (matchedVehicle != null && matchedVehicle.id != VehiclePrefs.getActiveVehicleId(this@OBDGatewayService)) {
                             VehiclePrefs.setActiveVehicle(this@OBDGatewayService, matchedVehicle.id)
@@ -484,6 +552,7 @@ class OBDGatewayService : Service(), LocationListener {
                         processPendingCommands()
                         reconnectDelay = 5000L
                     } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace()
                         updateNotification("OBD: GPS Only Mode")
                         handleObdDisconnect()
@@ -510,56 +579,77 @@ class OBDGatewayService : Service(), LocationListener {
                 3 -> (now - cachedAmbientTimestamp) >= AMBIENT_REFRESH_MS
                 else -> false
             }
-            if (shouldPoll) {
+            if (shouldPoll && now >= slowPidRetryAfter[candidate]) {
                 slowPidIndex = (candidate + 1) % slowPidCandidates
-                obdMutex.withLock {
-                    if (obdConnection == null) return@withLock
-                    when (candidate) {
-                        0 -> {
-                            val resp = obdConnection?.run(EngineCoolantTemperatureCommand())
-                            delay(100)
-                            val v = resp?.value?.toIntOrNull()
-                            if (v != null) {
-                                cachedCoolantTemp = v
-                                cachedCoolantTimestamp = System.currentTimeMillis()
+                try {
+                    obdMutex.withLock {
+                        if (obdConnection == null) return@withLock
+                        when (candidate) {
+                            0 -> {
+                                val resp = obdConnection?.run(CoolantTemperatureCommand())
+                                delay(100)
+                                val v = resp?.value?.toIntOrNull()
+                                if (v != null) {
+                                    cachedCoolantTemp = v
+                                    cachedCoolantTimestamp = System.currentTimeMillis()
+                                }
                             }
-                        }
-                        1 -> {
-                            val resp = obdConnection?.run(ModuleVoltageCommand())
-                            delay(100)
-                            val v = resp?.value?.toFloatOrNull()
-                            if (v != null) {
-                                cachedModuleVoltage = v
-                                cachedModuleVoltageTimestamp = System.currentTimeMillis()
+                            1 -> {
+                                val resp = obdConnection?.run(ModuleVoltageCommand())
+                                delay(100)
+                                val v = resp?.value?.toFloatOrNull()
+                                if (v != null) {
+                                    cachedModuleVoltage = v
+                                    cachedModuleVoltageTimestamp = System.currentTimeMillis()
+                                }
                             }
-                        }
-                        2 -> {
-                            val resp = obdConnection?.run(FuelLevelCommand())
-                            delay(100)
-                            val v = resp?.value?.toIntOrNull()
-                            if (v != null) {
-                                cachedFuelLevel = v
-                                cachedFuelLevelTimestamp = System.currentTimeMillis()
+                            2 -> {
+                                val resp = obdConnection?.run(FuelLevelCommand())
+                                delay(100)
+                                val v = resp?.value?.toIntOrNull()
+                                if (v != null) {
+                                    cachedFuelLevel = v
+                                    cachedFuelLevelTimestamp = System.currentTimeMillis()
+                                }
                             }
-                        }
-                        3 -> {
-                            val resp = obdConnection?.run(AmbientAirTempCommand())
-                            delay(100)
-                            val v = resp?.value?.toIntOrNull()
-                            if (v != null) {
-                                cachedAmbientTemp = v
-                                cachedAmbientTimestamp = System.currentTimeMillis()
+                            3 -> {
+                                val resp = obdConnection?.run(AmbientAirTempCommand())
+                                delay(100)
+                                val v = resp?.value?.toIntOrNull()
+                                if (v != null) {
+                                    cachedAmbientTemp = v
+                                    cachedAmbientTimestamp = System.currentTimeMillis()
+                                }
                             }
                         }
                     }
+                } catch (noData: NoDataException) {
+                    postponeUnavailableSlowPid(candidate)
+                } catch (unsupported: UnSupportedCommandException) {
+                    postponeUnavailableSlowPid(candidate)
                 }
                 break // Only poll at most ONE slow PID per cycle to preserve adapter fairness
             }
         }
     }
 
+    private fun postponeUnavailableSlowPid(candidate: Int) {
+        slowPidRetryAfter[candidate] = System.currentTimeMillis() + 5 * 60 * 1000L
+        when (candidate) {
+            0 -> cachedCoolantTemp = null
+            1 -> cachedModuleVoltage = null
+            2 -> cachedFuelLevel = null
+            3 -> cachedAmbientTemp = null
+        }
+        Log.i(TAG, "Optional OBD sensor $candidate unavailable; retrying in five minutes")
+    }
+
     private fun handleObdDisconnect() {
         obdConnection = null
+        cachedEngineLoad = null
+        cachedThrottlePos = null
+        lastSecondaryPidReadElapsed = 0L
+        throttleRetryAfterElapsed = 0L
         try {
             bluetoothSocket?.close()
         } catch (_: Exception) {}
@@ -575,6 +665,7 @@ class OBDGatewayService : Service(), LocationListener {
             val dao = db.telemetryDao()
 
             while (isActive) {
+                val cycleStartedElapsed = SystemClock.elapsedRealtime()
                 try {
                     if (!isAccOn()) {
                         delay(5000)
@@ -582,8 +673,8 @@ class OBDGatewayService : Service(), LocationListener {
                     }
                     var rpm: Int? = null
                     var speed: Int? = null
-                    var engineLoad: Int? = null
-                    var throttlePos: Int? = null
+                    var engineLoad: Int? = cachedEngineLoad
+                    var throttlePos: Int? = cachedThrottlePos
 
                     // Fast OBD readings: short locked window with delay between commands
                     if (obdConnection != null) {
@@ -591,23 +682,45 @@ class OBDGatewayService : Service(), LocationListener {
                             obdMutex.withLock {
                                 if (obdConnection != null) {
                                     val rpmResp = obdConnection?.run(RPMCommand())
-                                    delay(100)
+                                    delay(ObdPollingCadence.COMMAND_GAP_MS)
                                     val speedResp = obdConnection?.run(SpeedCommand())
-                                    delay(100)
-                                    val loadResp = obdConnection?.run(LoadCommand())
-                                    delay(100)
-                                    val throttleResp = obdConnection?.run(ThrottlePositionCommand())
-                                    delay(100)
+                                    delay(ObdPollingCadence.COMMAND_GAP_MS)
 
                                     rpm = rpmResp?.value?.toIntOrNull()
                                     speed = speedResp?.value?.toIntOrNull()
-                                    engineLoad = loadResp?.value?.toIntOrNull()
-                                    throttlePos = throttleResp?.value?.toIntOrNull()
+                                    val nowElapsed = SystemClock.elapsedRealtime()
+                                    // Read throttle on every fast cycle. A separate
+                                    // post-read time gate would skip quick cycles.
+                                    if (nowElapsed >= throttleRetryAfterElapsed) {
+                                        try {
+                                            cachedThrottlePos = obdConnection?.run(ThrottlePositionCommand())?.value?.toIntOrNull()
+                                            delay(ObdPollingCadence.COMMAND_GAP_MS)
+                                        } catch (e: Exception) {
+                                            if (e is NoDataException || e is UnSupportedCommandException) {
+                                                cachedThrottlePos = null
+                                                throttleRetryAfterElapsed = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
+                                                Log.i(TAG, "Throttle PID unavailable; retrying in five minutes")
+                                            } else throw e
+                                        }
+                                    }
+                                    if (nowElapsed - lastSecondaryPidReadElapsed >= ObdPollingCadence.SECONDARY_INTERVAL_MS) {
+                                        val loadResp = obdConnection?.run(LoadCommand())
+                                        delay(ObdPollingCadence.COMMAND_GAP_MS)
+                                        cachedEngineLoad = loadResp?.value?.toIntOrNull()
+                                        lastSecondaryPidReadElapsed = SystemClock.elapsedRealtime()
+                                    }
+                                    engineLoad = cachedEngineLoad
+                                    throttlePos = cachedThrottlePos
                                 }
                             }
                         } catch (obdEx: Exception) {
-                            Log.w(TAG, "Fast OBD poll error: ${obdEx.message}")
+                            if (obdEx is CancellationException) throw obdEx
+                            Log.w(TAG, "Fast OBD poll error", obdEx)
                             handleObdDisconnect()
+                            rpm = null
+                            speed = null
+                            engineLoad = null
+                            throttlePos = null
                         }
                     }
 
@@ -616,7 +729,8 @@ class OBDGatewayService : Service(), LocationListener {
                         try {
                             pollStaggeredSlowPid()
                         } catch (obdEx: Exception) {
-                            Log.w(TAG, "Slow OBD poll error: ${obdEx.message}")
+                            if (obdEx is CancellationException) throw obdEx
+                            Log.w(TAG, "Slow OBD poll error", obdEx)
                             handleObdDisconnect()
                         }
                     }
@@ -626,9 +740,23 @@ class OBDGatewayService : Service(), LocationListener {
                     val ambientTemp = cachedAmbientTemp
                     var voltage = cachedModuleVoltage ?: readSystemPropVoltage()
 
+                    if (obdConnection == null) {
+                        rpm = null
+                        speed = null
+                        engineLoad = null
+                        throttlePos = null
+                    }
+
+                    var gpsFix = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
+                    if (gpsFix == null && SystemClock.elapsedRealtime() - lastGpsRegistrationElapsed >= 60_000L) {
+                        // Re-subscribe after an ACC/provider interruption, without
+                        // toggling the head unit's system-wide location setting.
+                        withContext(Dispatchers.Main) { setupGPS() }
+                        gpsFix = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
+                    }
                     val curSpeed = speed
-                    // If GPS has not provided recent updates (e.g. no GPS fix indoors), fallback to OBD speed
-                    if (curSpeed != null && System.currentTimeMillis() - lastGpsLocationTime > 3000L) {
+                    // Only a fresh measured GPS speed takes precedence over OBD.
+                    if (curSpeed != null && gpsFix?.speedKmh == null) {
                         processSpeedUpdate(curSpeed.toFloat(), System.currentTimeMillis())
                     }
 
@@ -657,10 +785,12 @@ class OBDGatewayService : Service(), LocationListener {
                         rpm = rpm,
                         speed = speed,
                         coolantTemp = coolantTemp,
-                        latitude = latitude,
-                        longitude = longitude,
-                        altitude = altitude,
-                        gpsSpeed = gpsSpeed * 3.6f,
+                        // Existing storage/API use zero coordinates as no fix.
+                        // Never attach an old position to a new telemetry time.
+                        latitude = gpsFix?.latitude ?: 0.0,
+                        longitude = gpsFix?.longitude ?: 0.0,
+                        altitude = gpsFix?.altitudeMeters ?: 0.0,
+                        gpsSpeed = gpsFix?.speedKmh ?: 0.0f,
                         engineLoad = engineLoad,
                         throttlePos = throttlePos,
                         fuelLevel = fuelLevel,
@@ -678,13 +808,20 @@ class OBDGatewayService : Service(), LocationListener {
 
                     // Local persistence is independent of networking or slow PID completion
                     dao.insert(telemetry)
+                    GatewayStatusStore.recordSample(
+                        telemetry.vehicleId, obdConnection != null, gpsFix?.elapsedRealtimeNanos?.div(1_000_000L),
+                        SystemClock.elapsedRealtime()
+                    )
 
                     val updateIntent = Intent("com.example.obdapp.TELEMETRY_UPDATE").apply {
                         setPackage(packageName)
                         putExtra("lat", telemetry.latitude)
                         putExtra("lon", telemetry.longitude)
                         putExtra("alt", telemetry.altitude)
-                        putExtra("speed", telemetry.gpsSpeed)
+                        putExtra("speed", gpsFix?.speedKmh ?: speed?.toFloat() ?: -1.0f)
+                        putExtra("speed_source", if (gpsFix?.speedKmh != null) "GPS" else if (speed != null) "OBD" else "")
+                        putExtra("gps_fix", gpsFix != null)
+                        putExtra("gps_altitude_valid", gpsFix?.altitudeMeters != null)
                         putExtra("rpm", telemetry.rpm ?: -1)
                         putExtra("coolant", telemetry.coolantTemp ?: -1)
                         putExtra("throttle", telemetry.throttlePos ?: -1)
@@ -702,8 +839,12 @@ class OBDGatewayService : Service(), LocationListener {
                     }
                     sendBroadcast(updateIntent)
 
-                    delay(3000)
+                    delay(ObdPollingCadence.pauseAfterCycle(
+                        SystemClock.elapsedRealtime() - cycleStartedElapsed,
+                        obdConnection != null
+                    ))
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     e.printStackTrace()
                     delay(3000)
                 }
@@ -711,7 +852,13 @@ class OBDGatewayService : Service(), LocationListener {
         }
     }
 
-    private fun connectBluetooth() {
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun connectBluetooth(): ObdDeviceConnection {
+        // Startup requires both nearby-device permissions. Re-check on reconnect;
+        // revocation exceptions from the socket/discovery calls reach the outer retry handler.
+        if (applicationInfo.targetSdkVersion >= 31 && !GatewayPermissions.granted(this)) {
+            throw SecurityException("Bluetooth/location permissions were revoked")
+        }
         val mac = getSelectedObdMac()
         if (mac.isNullOrEmpty()) {
             throw Exception("No Bluetooth Device Selected")
@@ -719,15 +866,18 @@ class OBDGatewayService : Service(), LocationListener {
         deviceMacAddress = mac
 
         val adapter = BluetoothAdapter.getDefaultAdapter()
-        val device = adapter?.getRemoteDevice(deviceMacAddress)
-        
-        bluetoothSocket = device?.createRfcommSocketToServiceRecord(sppUuid)
-        bluetoothSocket?.connect()
+            ?: throw IOException("Bluetooth is unavailable")
+        val device = adapter.getRemoteDevice(mac)
+        // Discovery competes with RFCOMM connection setup, even when it was
+        // started by another app.
+        adapter.cancelDiscovery()
+        bluetoothSocket = device.createRfcommSocketToServiceRecord(sppUuid)
+        bluetoothSocket!!.connect()
         
         val inputStream: InputStream = bluetoothSocket!!.inputStream
         val outputStream: OutputStream = bluetoothSocket!!.outputStream
         
-        obdConnection = ObdDeviceConnection(inputStream, outputStream)
+        return ObdDeviceConnection(inputStream, outputStream)
     }
 
     private fun createNotificationChannel() {
@@ -753,7 +903,9 @@ class OBDGatewayService : Service(), LocationListener {
     
     private fun updateNotification(text: String) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(1, buildNotification(text))
+        if (GatewayPermissions.canPostNotifications(this)) {
+            notificationManager.notify(1, buildNotification(text))
+        }
         
         val statusIntent = Intent("com.example.obdapp.STATUS_UPDATE").apply {
             setPackage(packageName)
@@ -764,24 +916,50 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        latitude = location.latitude
-        longitude = location.longitude
-        altitude = location.altitude
-        gpsSpeed = location.speed
-        lastGpsLocationTime = System.currentTimeMillis()
-
-        // Feed GPS ground speed (m/s -> km/h) to 0-100 tracker
-        val speedKmh = location.speed * 3.6f
-        val locTime = if (location.time > 0) location.time else System.currentTimeMillis()
-        processSpeedUpdate(speedKmh, locTime)
+        val nowElapsed = SystemClock.elapsedRealtimeNanos()
+        val current = gpsTelemetry.current(nowElapsed)
+        if (location.provider != LocationManager.GPS_PROVIDER &&
+            lastLocationProvider == LocationManager.GPS_PROVIDER && current != null) return
+        if (gpsTelemetry.accept(GpsTelemetryPolicy.Fix(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                altitudeMeters = if (location.hasAltitude()) location.altitude else null,
+                speedMetersPerSecond = if (location.hasSpeed()) location.speed else null,
+                elapsedRealtimeNanos = location.elapsedRealtimeNanos
+            ), nowElapsed)) {
+            lastLocationProvider = location.provider
+            gpsTelemetry.current(nowElapsed)?.speedKmh?.let { speedKmh ->
+                val ageMs = (nowElapsed - location.elapsedRealtimeNanos) / 1_000_000L
+                processSpeedUpdate(speedKmh, System.currentTimeMillis() - ageMs)
+            }
+        }
     }
+
+    // Registered listeners resume automatically when their provider is enabled.
+    // Re-registering inside this callback can remove a subscription being set up.
+    override fun onProviderEnabled(provider: String) {}
+
+    override fun onProviderDisabled(provider: String) {
+        if (provider == lastLocationProvider) gpsTelemetry.clear()
+    }
+
+    // This callback is abstract on the Android 10 head unit, although newer
+    // Android SDKs supply a default implementation.
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        GatewayStatusStore.setRunning(false)
         OutboxUploader.commandHandler = null
         stopAllJobs()
         serviceJob.cancel()
-        bluetoothSocket?.close()
+        foregroundReady = false
+        try {
+            bluetoothSocket?.close()
+        } catch (error: IOException) {
+            Log.w(TAG, "Unable to close the disconnected Bluetooth socket", error)
+        }
         bluetoothSocket = null
         obdConnection = null
         try {
@@ -791,7 +969,7 @@ class OBDGatewayService : Service(), LocationListener {
         }
         sendBroadcast(Intent("com.example.obdapp.STATUS_UPDATE").apply {
             setPackage(packageName)
-            putExtra("status", "Service Stopped")
+            putExtra("status", stopStatus)
             putExtra("running", false)
         })
     }
@@ -897,6 +1075,7 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     private fun isBtConnected(): Boolean? {
+        if (obdConnection != null && bluetoothSocket?.isConnected == true) return true
         return try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod = systemPropertiesClass.getMethod("get", String::class.java)

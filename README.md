@@ -56,6 +56,8 @@ The repository is divided into three main components:
 
 For production releases, follow [deployment_guide.md](deployment_guide.md). Build and test images locally, then transfer the finished images to the production host.
 
+For the experimental phone app projected through Android Auto, see [Android Auto setup, architecture, validation, and server capacity](docs/ANDROID_AUTO.md). Build it with `make apk-androidauto`; the standard head-unit APK remains a separate package.
+
 ## Tech Stack
 
 - **Android:** Kotlin, Room, Coroutines, Foreground Services

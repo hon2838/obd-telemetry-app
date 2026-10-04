@@ -13,6 +13,12 @@
 
     <!-- Foreground Service Permission -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <permission android:name="${applicationId}.permission.INTERNAL_BROADCAST" android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.permission.INTERNAL_BROADCAST" />
 
     <!-- Boot Completed Permission -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -28,7 +34,7 @@
         android:label="OBD Telemetry"
         android:theme="@style/Theme.OBDGateway">
         
-        <activity android:name=".MainActivity">
+        <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

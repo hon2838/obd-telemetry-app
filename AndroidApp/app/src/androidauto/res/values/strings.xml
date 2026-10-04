@@ -1,0 +1,21 @@
+<resources>
+    <string name="androidauto_app_name">OBD Connect</string>
+    <string name="car_status_title">OBD Connect</string>
+    <string name="car_phone_setup">When safely parked, open OBD Connect on your phone to pair the cloud account, select the adapter, grant permissions, and start collection.</string>
+    <string name="car_adapter_title">OBD adapter</string>
+    <string name="car_adapter_connected">Connected</string>
+    <string name="car_adapter_disconnected">Not connected</string>
+    <string name="car_collector_stopped">Collection stopped — start it on the phone when safely parked</string>
+    <string name="car_no_recent_data">Waiting for current device status</string>
+    <string name="car_gps_title">GPS receiver</string>
+    <string name="car_gps_ready">Position available</string>
+    <string name="car_gps_waiting">Waiting for a position</string>
+    <string name="car_sync_title">Cloud sync</string>
+    <string name="car_sync_unknown">Waiting for sync status</string>
+    <string name="car_sync_setup">Pair the cloud account on your phone when safely parked</string>
+    <string name="car_sync_offline">Offline — recordings remain on the phone</string>
+    <string name="car_sync_uploading">Uploading saved recordings</string>
+    <string name="car_sync_queued">Recordings queued for upload</string>
+    <string name="car_sync_synced">Saved recordings uploaded</string>
+    <string name="car_sync_error">Sync needs attention — check the phone when safely parked</string>
+</resources>

@@ -15,13 +15,15 @@ BUILD_TIME      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 SERVER_IMAGE    ?= obd-telemetry-server
 DASH_IMAGE      ?= obd-telemetry-dashboard
 
-.PHONY: help build build-server build-dashboard build-all apk apk-bundle apk-and-server version test test-server lint lint-fix clean
+.PHONY: help build build-server build-dashboard build-all apk apk-androidauto test-android apk-bundle apk-and-server version test test-server lint lint-fix clean
 
 help:
 	@echo "OBD Telemetry — make targets"
 	@echo
 	@echo "  make version         print the build identity that will be baked in"
 	@echo "  make apk            build the Android APK from AndroidApp/"
+	@echo "  make apk-androidauto build the phone Android Auto debug APK"
+	@echo "  make test-android   run head-unit and Android Auto JVM tests"
 	@echo "  make apk-bundle     stage the APK + version.json into Server/agent/ for Docker build"
 	@echo "  make build          build both images (server + dashboard) with build identity"
 	@echo "  make build-all      apk-bundle + build (the 'ship a release' target)"
@@ -37,13 +39,21 @@ version:
 
 # Build the Android APK. Requires ANDROID_HOME and a working
 # Android SDK + JDK 17+. The output goes to
-# AndroidApp/app/build/outputs/apk/debug/app-debug.apk.
+# AndroidApp/app/build/outputs/apk/standard/debug/app-standard-debug.apk.
 # `make apk-bundle` then stages the file where the server
 # Dockerfile expects it.
 apk:
 	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
 	  ANDROID_SDK_ROOT=$${ANDROID_SDK_ROOT:-$$ANDROID_HOME} \
-	  ./gradlew :app:assembleDebug --no-daemon
+	  ./gradlew :app:assembleStandardDebug --no-daemon
+
+apk-androidauto:
+	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
+	  ./gradlew :app:assembleAndroidautoDebug --no-daemon
+
+test-android:
+	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
+	  ./gradlew :app:testStandardDebugUnitTest :app:testAndroidautoDebugUnitTest --no-daemon
 
 # Copy the freshly-built APK into Server/agent/ and write a
 # version.json sidecar with the version code/name + SHA-256.
@@ -53,7 +63,7 @@ apk:
 # server can serve it at /install.sh.
 apk-bundle: apk
 	@mkdir -p Server/agent
-	@cp AndroidApp/app/build/outputs/apk/debug/app-debug.apk Server/agent/app-debug.apk
+	@cp AndroidApp/app/build/outputs/apk/standard/debug/app-standard-debug.apk Server/agent/app-debug.apk
 	@cp static/install.sh Server/install.sh
 	@VERSION_CODE=$$(grep -oP 'versionCode\s*=\s*\K[0-9]+' AndroidApp/app/build.gradle.kts) && \
 	  VERSION_NAME=$$(grep -oP 'versionName\s*=\s*"\K[^"]+' AndroidApp/app/build.gradle.kts) && \

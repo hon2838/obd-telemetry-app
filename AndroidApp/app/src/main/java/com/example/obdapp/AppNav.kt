@@ -12,6 +12,16 @@ object AppNav {
     enum class Page { GATEWAY, DIAGNOSTICS, TRIPS, FUEL, PERF, MAINT }
 
     fun setup(activity: Activity, current: Page) {
+        if (android.os.Build.VERSION.SDK_INT >= 35 && activity.applicationInfo.targetSdkVersion >= 35) {
+            activity.findViewById<android.view.View>(android.R.id.content).apply {
+                setOnApplyWindowInsetsListener { view, insets ->
+                    val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.ime())
+                    view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                    insets
+                }
+                requestApplyInsets()
+            }
+        }
         bind(activity, current, Page.GATEWAY, R.id.navGateway, MainActivity::class.java)
         bind(activity, current, Page.DIAGNOSTICS, R.id.navDiagnostics, DiagnosticsActivity::class.java)
         bind(activity, current, Page.TRIPS, R.id.navTrips, TripsActivity::class.java)

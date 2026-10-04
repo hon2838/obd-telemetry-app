@@ -9,7 +9,9 @@ async function healthRoutes(fastify, options) {
     return reply.send({
       status: 'ok',
       service: 'obd-telemetry-server',
-      version: PACKAGE_VERSION,
+      version: process.env.OBD_SERVICE_VERSION || PACKAGE_VERSION,
+      build_commit: process.env.OBD_BUILD_COMMIT || 'unknown',
+      build_time: process.env.OBD_BUILD_TIME || 'unknown',
       uptime_seconds: startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0,
       telemetry_records: stores.telemetryDataStore ? stores.telemetryDataStore.length : 0,
       fuel_logs: stores.fuelLogsStore ? stores.fuelLogsStore.length : 0,

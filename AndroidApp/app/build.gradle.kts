@@ -21,6 +21,24 @@ android {
         versionName = "1.2.0"
     }
 
+    flavorDimensions += "variant"
+    productFlavors {
+        create("standard") {
+            dimension = "variant"
+            applicationId = "com.example.obdapp"
+        }
+        create("amapauto") {
+            dimension = "variant"
+            applicationId = "com.autonavi.amapauto"
+        }
+        create("androidauto") {
+            dimension = "variant"
+            applicationId = "com.example.obdapp.androidauto"
+            targetSdk = 36
+            minSdk = 26
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -30,6 +48,9 @@ android {
     lint {
         abortOnError = false
         checkReleaseBuilds = false
+    }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -54,6 +75,9 @@ kapt {
 }
 
 dependencies {
+  "androidautoImplementation"("androidx.car.app:app:1.7.0")
+  "androidautoImplementation"("androidx.car.app:app-projected:1.7.0")
+  "testAndroidautoImplementation"("androidx.car.app:app-testing:1.7.0")
   implementation("androidx.core:core-ktx:1.3.2")
   implementation("androidx.appcompat:appcompat:1.2.0")
 
@@ -77,10 +101,10 @@ dependencies {
   testImplementation("junit:junit:4.13.2")
   testImplementation("androidx.test:core:1.5.0")
   testImplementation("org.robolectric:robolectric:4.11.1")
-  androidTestImplementation("androidx.test.ext:junit:1.1.5")
-  androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-  androidTestImplementation("androidx.test:core:1.5.0")
-  androidTestImplementation("androidx.test:runner:1.5.2")
+  androidTestImplementation("androidx.test.ext:junit:1.3.0")
+  androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+  androidTestImplementation("androidx.test:core:1.7.0")
+  androidTestImplementation("androidx.test:runner:1.7.0")
 }
 
 configurations.all {

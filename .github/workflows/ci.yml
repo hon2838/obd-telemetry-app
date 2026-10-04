@@ -53,6 +53,35 @@ jobs:
         env:
           NEXT_PUBLIC_API_URL: https://obd-api.hon2838.name.my
 
+  android-tests:
+    name: Android head-unit and Android Auto builds & tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: AndroidApp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Test and build both supported variants
+        run: ./gradlew :app:testStandardDebugUnitTest :app:testAndroidautoDebugUnitTest :app:assembleStandardDebug :app:assembleAndroidautoDebug :app:assembleAndroidautoRelease :app:lintAndroidautoDebug --no-daemon
+      - name: Check phone manifest and reject new lint errors
+        run: python3 scripts/check_androidauto_validation.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-validation
+          path: |
+            AndroidApp/app/build/reports/tests/
+            AndroidApp/app/build/reports/lint-results-androidautoDebug.*
+            AndroidApp/app/build/outputs/apk/androidauto/
+
   apk-bundle-verify:
     name: Verify APK release bundle
     runs-on: ubuntu-latest
