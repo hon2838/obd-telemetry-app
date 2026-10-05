@@ -24,11 +24,27 @@ interface DriveSession {
     maxSpeed: number;
     fuelUsedPercent: number;
     pointCount: number;
-    distanceKm: number;
-    avgSpeed: number;
+    distanceKm: number | null;
+    avgSpeed: number | null;
     startLocation: { lat: number; lon: number } | null;
     endLocation: { lat: number; lon: number } | null;
     fuelEfficiencyKmL: number | null;
+    estimatedFuelUsedLitres?: number | null;
+    estimatedFuelEconomyKmL?: number | null;
+    estimatedIdleFuelLitres?: number | null;
+    idleSeconds?: number | null;
+    distanceSource?: string;
+    quality?: {
+      coverageRatio: number | null;
+      fuelCoverageRatio: number | null;
+      economyCoverageRatio: number | null;
+      distanceCoverageRatio: number | null;
+      idleStateCoverageRatio: number | null;
+      idleFuelCoverageRatio: number | null;
+      gapCount: number;
+      maxIntervalSeconds: number;
+      efficiencyLeaderboardEligible: boolean;
+    };
     driverScore?: number;
     harshEvents?: { accel: number; brake: number };
   };
@@ -59,6 +75,18 @@ export function decimateChartPoints<T>(points: T[], maxPoints: number): T[] {
   result.push(points[points.length - 1]);
   return result;
 }
+
+export function formatTripMetric(value: number | null | undefined, digits = 2, unit = ''): string {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(digits)}${unit ? ` ${unit}` : ''}` : 'N/A';
+}
+
+const coverageLabel = (value: number | null | undefined) => typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value * 100)}%` : 'N/A';
+const distanceLabel = (source?: string) => ({
+  gps: 'Recorded GPS', 'obd-speed': 'OBD speed estimate',
+  'gps-with-obd-speed-fallback': 'GPS + OBD speed estimate', unavailable: 'No covered distance'
+}[source || ''] || 'Legacy GPS distance');
+const economyValue = (summary: DriveSession['summary']) => summary.estimatedFuelEconomyKmL === undefined ? summary.fuelEfficiencyKmL : summary.estimatedFuelEconomyKmL;
+const economyLabel = (summary: DriveSession['summary']) => summary.estimatedFuelEconomyKmL === undefined ? 'Legacy tank-level estimate' : 'Petrol estimate';
 
 export default function TripsDashboard() {
   const { activeVehicleId, buildUrl } = useVehicle();
@@ -114,8 +142,8 @@ export default function TripsDashboard() {
       const rawPoints = [...records].sort((left, right) => Number(left.timestamp) - Number(right.timestamp));
       const transformed = rawPoints.map((d: any) => ({
         time: new Date(d.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        speed: (d.speed !== null && d.speed !== undefined) ? d.speed : (d.gpsSpeed || 0),
-        rpm: d.rpm || 0
+        speed: typeof d.speed === 'number' && Number.isFinite(d.speed) ? d.speed : typeof d.gpsSpeed === 'number' && Number.isFinite(d.gpsSpeed) && typeof d.latitude === 'number' && Math.abs(d.latitude) <= 90 && typeof d.longitude === 'number' && Math.abs(d.longitude) <= 180 && !(d.latitude === 0 && d.longitude === 0) ? d.gpsSpeed : null,
+        rpm: typeof d.rpm === 'number' && Number.isFinite(d.rpm) ? d.rpm : null
       }));
       setSelectedDrivePoints(decimateChartPoints(transformed, MAX_DETAIL_CHART_POINTS));
       setSelectedDriveRoutePoints(decimateChartPoints(rawPoints, MAX_DETAIL_MAP_POINTS).map((point: any) => ({
@@ -164,10 +192,11 @@ export default function TripsDashboard() {
 
   // Compute overall stats
   const totalTrips = drives.length;
-  const totalDistance = drives.reduce((acc, d) => acc + d.summary.distanceKm, 0);
-  const efficiencies = drives.map(d => d.summary.fuelEfficiencyKmL).filter((e): e is number => e !== null && e > 0);
+  const distances = drives.map(d => d.summary.distanceKm).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const totalDistance = distances.length > 0 ? distances.reduce((acc, value) => acc + value, 0) : null;
+  const efficiencies = leaderboard.best_efficiency.map(d => d.summary.estimatedFuelEconomyKmL).filter((e): e is number => typeof e === 'number' && e > 0);
   const bestEfficiency = efficiencies.length > 0 ? Math.max(...efficiencies) : 0;
-  const longestTrip = drives.length > 0 ? Math.max(...drives.map(d => d.summary.distanceKm)) : 0;
+  const longestTrip = distances.length > 0 ? Math.max(...distances) : null;
 
   // Chart data sorted chronologically
   const chartData = useMemo(() => [...drives]
@@ -175,7 +204,7 @@ export default function TripsDashboard() {
     .map(d => ({
       date: new Date(d.startTime).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
       distance: d.summary.distanceKm,
-      efficiency: d.summary.fuelEfficiencyKmL || 0,
+      efficiency: d.summary.estimatedFuelEconomyKmL ?? null,
       id: d.id
     })), [drives]);
 
@@ -190,8 +219,8 @@ export default function TripsDashboard() {
 
   const getLeaderboardValue = (d: DriveSession) => {
     switch (activeLeaderboardTab) {
-      case 'efficiency': return `${d.summary.fuelEfficiencyKmL?.toFixed(2) || 'N/A'} km/L`;
-      case 'distance': return `${d.summary.distanceKm.toFixed(2)} km`;
+      case 'efficiency': return formatTripMetric(d.summary.estimatedFuelEconomyKmL, 2, 'km/L');
+      case 'distance': return formatTripMetric(d.summary.distanceKm, 2, 'km');
       case 'speed': return `${d.summary.maxSpeed.toFixed(2)} km/h`;
       case 'duration': return `${d.summary.durationMin} mins`;
     }
@@ -208,7 +237,7 @@ export default function TripsDashboard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div>
             <h1 style={styles.title}>Trips & Drives Log</h1>
-            <p style={styles.subtitle}>Historical analytics and trip leaderboards</p>
+            <p style={styles.subtitle}>Recorded trip intervals, estimated fuel use and data coverage</p>
           </div>
         </div>
       </div>
@@ -229,17 +258,17 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Total Distance</span>
             <Navigation size={20} style={{ color: 'var(--accent-cyan)' }} />
           </div>
-          <span style={styles.statsCardValue}>{loaded ? <>{totalDistance.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></> : '—'}</span>
-          <span style={styles.statsCardSubtext}>Across all recorded drives</span>
+          <span style={styles.statsCardValue}>{loaded ? formatTripMetric(totalDistance, 2, 'km') : '—'}</span>
+          <span style={styles.statsCardSubtext}>Across covered intervals; gaps are excluded</span>
         </div>
 
         <div className="glass-panel-static" style={styles.statsCard}>
           <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Best Trip Economy</span>
+            <span style={styles.statsCardTitle}>Best Estimated Trip Economy</span>
             <Fuel size={20} style={{ color: 'var(--accent-green)' }} />
           </div>
           <span style={styles.statsCardValue}>{loaded ? <>{bestEfficiency > 0 ? bestEfficiency.toFixed(2) : 'N/A'} <span style={{ fontSize: '16px' }}>km/L</span></> : '—'}</span>
-          <span style={styles.statsCardSubtext}>Personal best fuel efficiency</span>
+          <span style={styles.statsCardSubtext}>Petrol estimates with ≥80% coverage and ≥1 km</span>
         </div>
 
         <div className="glass-panel-static" style={styles.statsCard}>
@@ -247,7 +276,7 @@ export default function TripsDashboard() {
             <span style={styles.statsCardTitle}>Longest Trip</span>
             <TrendingUp size={20} style={{ color: 'var(--accent-purple)' }} />
           </div>
-          <span style={styles.statsCardValue}>{loaded ? <>{longestTrip.toFixed(2)} <span style={{ fontSize: '16px' }}>km</span></> : '—'}</span>
+          <span style={styles.statsCardValue}>{loaded ? formatTripMetric(longestTrip, 2, 'km') : '—'}</span>
           <span style={styles.statsCardSubtext}>Single longest drive session</span>
         </div>
       </div>
@@ -268,7 +297,7 @@ export default function TripsDashboard() {
               onClick={() => setActiveLeaderboardTab('efficiency')}
               style={{ ...styles.lbTab, ...(activeLeaderboardTab === 'efficiency' ? styles.lbTabActive : {}) }}
             >
-              Fuel Efficiency
+              Estimated Economy
             </button>
             <button 
               onClick={() => setActiveLeaderboardTab('distance')}
@@ -355,7 +384,7 @@ export default function TripsDashboard() {
                   />
                   <Legend />
                   <Area yAxisId="left" type="monotone" dataKey="distance" name="Distance (km)" stroke="var(--accent-blue)" fillOpacity={1} fill="url(#colorDist)" />
-                  <Area yAxisId="right" type="monotone" dataKey="efficiency" name="Efficiency (km/L)" stroke="var(--accent-green)" fillOpacity={1} fill="url(#colorEff)" />
+                  <Area yAxisId="right" type="monotone" dataKey="efficiency" name="Estimated economy (km/L)" connectNulls={false} stroke="var(--accent-green)" fillOpacity={1} fill="url(#colorEff)" />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -383,8 +412,9 @@ export default function TripsDashboard() {
                   <th style={styles.th}>Distance</th>
                   <th style={styles.th}>Avg Speed</th>
                   <th style={styles.th}>Max Speed</th>
-                  <th style={styles.th}>Fuel Used</th>
-                  <th style={styles.th}>Fuel Economy</th>
+                  <th style={styles.th}>Estimated Fuel Used</th>
+                  <th style={styles.th}>Estimated Economy</th>
+                  <th style={styles.th}>Data Coverage</th>
                   <th style={styles.th}>Safety Score</th>
                 </tr>
               </thead>
@@ -405,16 +435,21 @@ export default function TripsDashboard() {
                       <td style={styles.td}><strong>Drive #{drive.id}</strong></td>
                       <td style={styles.td}>{startStr}</td>
                       <td style={styles.td}>{drive.summary.durationMin} mins</td>
-                      <td style={styles.td}>{drive.summary.distanceKm.toFixed(2)} km</td>
-                       <td style={styles.td}>{drive.summary.avgSpeed.toFixed(2)} km/h</td>
+                      <td style={styles.td}>{formatTripMetric(drive.summary.distanceKm, 2, 'km')}<div style={styles.metricNote}>{distanceLabel(drive.summary.distanceSource)}</div></td>
+                       <td style={styles.td}>{formatTripMetric(drive.summary.avgSpeed, 2, 'km/h')}</td>
                        <td style={styles.td}>{drive.summary.maxSpeed.toFixed(2)} km/h</td>
-                       <td style={styles.td}>{drive.summary.fuelUsedPercent > 0 ? `${drive.summary.fuelUsedPercent.toFixed(2)}%` : '—'}</td>
+                       <td style={styles.td}>
+                         {formatTripMetric(drive.summary.estimatedFuelUsedLitres, 3, 'L')}
+                         <div style={styles.metricNote}>Covered intervals only · petrol estimate</div>
+                       </td>
                       <td style={styles.td}>
-                        {drive.summary.fuelEfficiencyKmL ? (
-                          <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>
-                            {drive.summary.fuelEfficiencyKmL.toFixed(2)} km/L
-                          </span>
-                        ) : 'N/A'}
+                        <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>{formatTripMetric(economyValue(drive.summary), 2, 'km/L')}</span>
+                        <div style={styles.metricNote}>{economyLabel(drive.summary)}</div>
+                      </td>
+                      <td style={styles.td}>
+                        Fuel {coverageLabel(drive.summary.quality?.fuelCoverageRatio)}<br/>
+                        Economy {coverageLabel(drive.summary.quality?.economyCoverageRatio)}<br/>
+                        Distance {coverageLabel(drive.summary.quality?.distanceCoverageRatio)}
                       </td>
                       <td style={styles.td}>
                         {drive.summary.driverScore !== undefined ? (
@@ -455,16 +490,29 @@ export default function TripsDashboard() {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '24px 48px', marginBottom: '24px', color: 'var(--text-primary)' }}>
               <div>
                 <strong style={{color: 'var(--text-secondary)'}}>Duration:</strong> {selectedDrive.summary.durationMin} mins<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Distance:</strong> {selectedDrive.summary.distanceKm.toFixed(2)} km<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Distance:</strong> {formatTripMetric(selectedDrive.summary.distanceKm, 2, 'km')} ({distanceLabel(selectedDrive.summary.distanceSource)})<br/>
                 <strong style={{color: 'var(--text-secondary)'}}>Safety Score:</strong> {selectedDrive.summary.driverScore}/100
               </div>
               <div>
-                <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {selectedDrive.summary.avgSpeed.toFixed(2)} km/h<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {formatTripMetric(selectedDrive.summary.avgSpeed, 2, 'km/h')}<br/>
                 <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {selectedDrive.summary.maxSpeed.toFixed(2)} km/h<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Fuel Used:</strong> {selectedDrive.summary.fuelUsedPercent > 0 ? `${selectedDrive.summary.fuelUsedPercent.toFixed(2)}%` : '— (fuel level not reported)'}
+                <strong style={{color: 'var(--text-secondary)'}}>Estimated Fuel Used:</strong> {formatTripMetric(selectedDrive.summary.estimatedFuelUsedLitres, 3, 'L')}<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Estimated Economy:</strong> {formatTripMetric(economyValue(selectedDrive.summary), 2, 'km/L')} ({economyLabel(selectedDrive.summary)})<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Recorded Idling:</strong> {formatTripMetric(selectedDrive.summary.idleSeconds, 0, 'seconds')}<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Estimated Idle Fuel:</strong> {formatTripMetric(selectedDrive.summary.estimatedIdleFuelLitres, 3, 'L')}
+              </div>
+              <div>
+                <strong style={{color: 'var(--text-secondary)'}}>Data Coverage:</strong><br/>
+                Fuel {coverageLabel(selectedDrive.summary.quality?.fuelCoverageRatio)} · Economy {coverageLabel(selectedDrive.summary.quality?.economyCoverageRatio)}<br/>
+                Distance {coverageLabel(selectedDrive.summary.quality?.distanceCoverageRatio)} · Idle state {coverageLabel(selectedDrive.summary.quality?.idleStateCoverageRatio)}<br/>
+                Idle fuel {coverageLabel(selectedDrive.summary.quality?.idleFuelCoverageRatio)} · Long gaps {selectedDrive.summary.quality?.gapCount ?? 'N/A'}<br/>
+                <span style={styles.metricNote}>Legacy tank estimate: {formatTripMetric(selectedDrive.summary.fuelEfficiencyKmL, 2, 'km/L')} · {formatTripMetric(selectedDrive.summary.fuelUsedPercent, 1, '%')} level drop (unvalidated)</span>
               </div>
             </div>
 
+            <p style={styles.metricNote}>
+              Petrol fuel use is estimated from recorded airflow. Totals cover usable recorded periods and exclude long gaps. Economy compares distance and fuel from the same recorded periods. Idling counts while the engine runs and the car is nearly stationary. Missing data stays unavailable.
+            </p>
             <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', color: 'var(--text-primary)' }}>Trip Route</h3>
             {detailLoading ? (
               <div style={styles.noData}>Loading trip route...</div>
@@ -499,8 +547,8 @@ export default function TripsDashboard() {
                     />
                     <Legend />
                     <Brush dataKey="time" height={30} stroke="var(--accent-blue)" fill="rgba(0,0,0,0.2)" />
-                    <Line yAxisId="left" type="monotone" dataKey="speed" name="Speed (km/h)" stroke="var(--accent-blue)" dot={false} strokeWidth={2} />
-                    <Line yAxisId="right" type="monotone" dataKey="rpm" name="RPM" stroke="var(--accent-purple)" dot={false} strokeWidth={2} />
+                    <Line yAxisId="left" type="monotone" dataKey="speed" name="Speed (km/h)" connectNulls={false} stroke="var(--accent-blue)" dot={false} strokeWidth={2} />
+                    <Line yAxisId="right" type="monotone" dataKey="rpm" name="RPM" connectNulls={false} stroke="var(--accent-purple)" dot={false} strokeWidth={2} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -513,6 +561,7 @@ export default function TripsDashboard() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  metricNote: { fontSize: '12px', lineHeight: 1.5, color: 'var(--text-muted)', marginTop: '4px' },
   container: {
     padding: '32px',
     maxWidth: '1400px',

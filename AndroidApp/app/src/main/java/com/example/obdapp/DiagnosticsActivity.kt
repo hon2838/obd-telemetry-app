@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
@@ -95,22 +96,11 @@ class DiagnosticsActivity : AppCompatActivity() {
                 applyAuthHeader(conn, this@DiagnosticsActivity)
                 val body = conn.inputStream.bufferedReader().readText()
                 val json = org.json.JSONObject(body)
-                val latest = json.optJSONObject("latest") ?: org.json.JSONObject()
-                val latestDtc = latest.optJSONObject("latestDtc")
-                val latestClear = latest.optJSONObject("latestClearStatus")
-                val history = json.optJSONArray("history")
-
-                val codeStr = latestDtc?.optString("code") ?: ""
-                val codes = codeStr.split(",", " ")
-                    .map { it.trim().uppercase() }
-                    .filter { Regex("^[PBUC]\\d{4}$").matches(it) }
-
+                val codes = readResult(json).codes
                 val details = if (codes.isNotEmpty()) lookupCodes(base, codes) else emptyList()
 
                 withContext(Dispatchers.Main) {
-                    renderStatus(latestDtc, latestClear)
-                    renderCodes(codeStr, codes, details)
-                    renderHistory(history)
+                    renderDiagnostics(json, details)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -118,6 +108,35 @@ class DiagnosticsActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        mainScope.cancel()
+        super.onDestroy()
+    }
+
+    private fun readResult(json: org.json.JSONObject): DtcReadDisplay.Result {
+        val latest = json.optJSONObject("latest")
+        val dtc = latest?.optJSONObject("latestDtc")
+        val dtcTimestamp = dtc?.optLong("timestamp")?.takeIf { it > 0 }
+        val history = json.optJSONArray("history")
+        val lastRead = (0 until (history?.length() ?: 0)).mapNotNull { history?.optJSONObject(it) }
+            .filter { it.optString("type") == "read" }
+            .maxByOrNull { it.optLong("timestamp") }
+            ?.takeIf { it.optLong("timestamp") >= (dtcTimestamp ?: 0) }
+        val status = latest?.optJSONObject("latestReadStatus") ?: lastRead
+        val read = status?.let {
+            DtcReadDisplay.ReadStatus(it.opt("success") as? Boolean,
+                it.optLong("timestamp").takeIf { time -> time > 0 }, it.optString("error"))
+        }
+        return DtcReadDisplay.resolve(dtc?.optString("code") ?: "", dtcTimestamp, read)
+    }
+
+    internal fun renderDiagnostics(json: org.json.JSONObject, details: List<org.json.JSONObject> = emptyList()) {
+        val result = readResult(json)
+        renderStatus(result, json.optJSONObject("latest")?.optJSONObject("latestClearStatus"))
+        renderCodes(result, details)
+        renderHistory(json.optJSONArray("history"))
     }
 
     private fun lookupCodes(base: String, codes: List<String>): List<org.json.JSONObject> {
@@ -130,7 +149,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             conn.connectTimeout = 5000
             conn.readTimeout = 15000
             conn.outputStream.use {
-                it.write(org.json.JSONArray(codes).toString().toByteArray())
+                it.write(org.json.JSONObject().put("codes", org.json.JSONArray(codes)).toString().toByteArray())
             }
             val arr = org.json.JSONArray(conn.inputStream.bufferedReader().readText())
             (0 until arr.length()).map { arr.getJSONObject(it) }
@@ -139,12 +158,17 @@ class DiagnosticsActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderStatus(latestDtc: org.json.JSONObject?, latestClear: org.json.JSONObject?) {
-        val pollText = if (latestDtc != null && !latestDtc.isNull("timestamp") && latestDtc.optLong("timestamp") > 0)
+    private fun renderStatus(result: DtcReadDisplay.Result, latestClear: org.json.JSONObject?) {
+        val pollText = if (result.timestamp != null)
             java.text.SimpleDateFormat("MMM d, HH:mm:ss", java.util.Locale.getDefault())
-                .format(java.util.Date(latestDtc.optLong("timestamp")))
+                .format(java.util.Date(result.timestamp))
             else "Never polled"
-        findViewById<TextView>(R.id.tvLatestPoll).text = "Latest Poll Result: $pollText"
+        val readState = when (result.state) {
+            DtcReadDisplay.State.FAILED -> "Failed"
+            DtcReadDisplay.State.UNKNOWN -> "Unconfirmed"
+            else -> "Successful"
+        }
+        findViewById<TextView>(R.id.tvLatestPoll).text = "Latest Poll Result: $pollText ($readState)"
 
         val clearText = if (latestClear != null && !latestClear.isNull("timestamp") && latestClear.optLong("timestamp") > 0) {
             val t = java.text.SimpleDateFormat("MMM d, HH:mm:ss", java.util.Locale.getDefault())
@@ -155,20 +179,26 @@ class DiagnosticsActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.tvLastClear).text = clearText
     }
 
-    private fun renderCodes(codeStr: String, codes: List<String>, details: List<org.json.JSONObject>) {
+    private fun renderCodes(result: DtcReadDisplay.Result, details: List<org.json.JSONObject>) {
         val container = findViewById<LinearLayout>(R.id.dtcListContainer)
         container.removeAllViews()
-
-        if (codes.isEmpty()) {
-            container.addView(infoLine("No fault codes detected.", Color.parseColor("#34C759")))
-            if (codeStr.isNotBlank() && codeStr != "No trouble codes found" && codeStr != "No DTCs") {
-                container.addView(infoLine("ECU raw response: \"$codeStr\"", Color.parseColor("#8E8E93")))
+        if (result.state == DtcReadDisplay.State.FAILED) {
+            container.addView(infoLine("Latest scan failed; current fault status is unknown.", Color.parseColor("#FF9500")))
+            result.error?.let { container.addView(infoLine("Read error: $it", Color.parseColor("#8E8E93"))) }
+            if (result.historical) container.addView(infoLine("Previous successful scan result (historical):", Color.parseColor("#8E8E93")))
+            if (result.historical && result.codes.isEmpty()) {
+                container.addView(infoLine("Previous successful scan had no stored codes.", Color.parseColor("#8E8E93")))
             }
+        } else if (result.state == DtcReadDisplay.State.UNKNOWN) {
+            container.addView(infoLine("No confirmed scan result. Read codes when the vehicle connects.", Color.parseColor("#8E8E93")))
+            return
+        } else if (result.state == DtcReadDisplay.State.EMPTY) {
+            container.addView(infoLine("No fault codes detected in the last successful scan.", Color.parseColor("#34C759")))
             return
         }
 
         val detailByCode = details.associateBy { it.optString("code") }
-        codes.forEach { code ->
+        result.codes.forEach { code ->
             val d = detailByCode[code]
             val severity = d?.optString("severity") ?: "info"
             val color = when (severity) {
@@ -223,15 +253,18 @@ class DiagnosticsActivity : AppCompatActivity() {
             val time = java.text.SimpleDateFormat("MMM d, HH:mm:ss", java.util.Locale.getDefault())
                 .format(java.util.Date(ev.optLong("timestamp")))
             val codesArr = ev.optJSONArray("codes")
-            val codeList = (0 until (codesArr?.length() ?: 0)).map { codesArr!!.getString(it) }
+            val codeList = (0 until (codesArr?.length() ?: 0)).flatMap { DtcReadDisplay.codes(codesArr!!.optString(it)) }.distinct()
+            val readSuccess = ev.opt("success") as? Boolean
             val summary = if (isRead) {
-                if (codeList.isEmpty()) "Read scan — no codes, system healthy"
-                else "Read scan — found: ${codeList.joinToString(", ")}"
+                if (readSuccess == false) "Read scan — failed: ${ev.optString("error", "No confirmed result") }"
+                else if (codeList.isNotEmpty()) "Read scan — found: ${codeList.joinToString(", ")}"
+                else if (readSuccess == true) "Read scan — no stored codes"
+                else "Read scan — result unconfirmed"
             } else {
                 if (ev.optBoolean("success", false)) "Clear command — succeeded"
                 else "Clear command — failed/executing"
             }
-            val color = if (!isRead && !ev.optBoolean("success", false))
+            val color = if ((isRead && readSuccess == false) || (!isRead && !ev.optBoolean("success", false)))
                 Color.parseColor("#FF9500")
             else if (isRead && codeList.isNotEmpty())
                 Color.parseColor("#FF3B30")

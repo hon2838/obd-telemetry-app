@@ -114,11 +114,12 @@
             </LinearLayout>
 
             <!-- Estimated instantaneous fuel economy (petrol MAF estimate) -->
-            <LinearLayout style="@style/HudCell">
+            <LinearLayout style="@style/HudCell" android:layout_columnSpan="2">
                 <TextView style="@style/HudLabel" android:text="Estimated fuel economy (Petrol estimate)" />
                 <TextView
                     android:id="@+id/tvFuelEconomy"
                     style="@style/HudValue"
+                    android:layout_width="match_parent"
                     android:text="N/A" />
             </LinearLayout>
         </GridLayout>

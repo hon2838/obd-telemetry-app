@@ -892,6 +892,7 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("coolant", telemetry.coolantTemp ?: -1)
                         putExtra("throttle", telemetry.throttlePos ?: -1)
                         putExtra("estimated_fuel_economy_kml", telemetry.estimatedFuelEconomyKmL ?: -1.0)
+                        putExtra("estimated_fuel_rate_lph", telemetry.estimatedFuelRateLph ?: -1.0)
                         putExtra("volt", telemetry.voltage ?: -1.0f)
                         putExtra("obd_status", if (obdConnection != null) "Connected" else "GPS Only")
                         putExtra("timestamp", telemetry.timestamp)

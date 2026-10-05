@@ -2,10 +2,10 @@
 const { Readable } = require('stream');
 
 function* driveCsvChunks(records) {
-  yield 'Timestamp,Time,RPM,Speed,CoolantTemp,Latitude,Longitude,Altitude,GPSSpeed,EngineLoad,ThrottlePos,FuelLevel,AmbientTemp,Voltage,AccelTime,AlertCoolant,AlertVoltage\n';
+  yield 'Timestamp,Time,RPM,Speed,CoolantTemp,Latitude,Longitude,Altitude,GPSSpeed,EngineLoad,ThrottlePos,FuelLevel,AmbientTemp,Voltage,AccelTime,AlertCoolant,AlertVoltage,MAF (g/s),FuelSystemStatus (code),EstimatedFuelRate (L/h),EstimatedFuelEconomy (km/L)\n';
   for (const record of records) {
     const timeStr = new Date(record.timestamp).toISOString();
-    yield `${record.timestamp},${timeStr},${record.rpm ?? ''},${record.speed ?? ''},${record.coolantTemp ?? ''},${record.latitude ?? ''},${record.longitude ?? ''},${record.altitude ?? ''},${record.gpsSpeed ?? ''},${record.engineLoad ?? ''},${record.throttlePos ?? ''},${record.fuelLevel ?? ''},${record.ambientTemp ?? ''},${record.voltage ?? ''},${record.accelTime ?? ''},${record.alertCoolant ? 'true' : 'false'},${record.alertVoltage ? 'true' : 'false'}\n`;
+    yield `${record.timestamp},${timeStr},${record.rpm ?? ''},${record.speed ?? ''},${record.coolantTemp ?? ''},${record.latitude ?? ''},${record.longitude ?? ''},${record.altitude ?? ''},${record.gpsSpeed ?? ''},${record.engineLoad ?? ''},${record.throttlePos ?? ''},${record.fuelLevel ?? ''},${record.ambientTemp ?? ''},${record.voltage ?? ''},${record.accelTime ?? ''},${record.alertCoolant ? 'true' : 'false'},${record.alertVoltage ? 'true' : 'false'},${record.mafGps ?? ''},${record.fuelSystemStatus ?? ''},${record.estimatedFuelRateLph ?? ''},${record.estimatedFuelEconomyKmL ?? ''}\n`;
   }
 }
 

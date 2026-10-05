@@ -1,6 +1,6 @@
 # Estimated fuel economy in km/L
 
-The Android telemetry readout and web dashboard show **Estimated fuel economy** in **km/L**. A larger number means more distance per litre. A running engine at zero OBD speed displays `0.0 km/L`; missing or unreliable inputs display `N/A`.
+The Android telemetry readout and web dashboard show **Estimated fuel economy** in **km/L**, with **estimated fuel rate in L/h** alongside it. A larger km/L number means more distance per litre. A running engine at zero OBD speed displays `0.0 km/L`; L/h describes fuel use while stationary. Missing or unreliable inputs display `N/A`.
 
 This is an instantaneous **petrol estimate**, not a measured injector flow or a trip average. It assumes a stoichiometric air–fuel ratio of 14.7 and petrol density of 750 g/L. It is not suitable for diesel, LPG or materially different fuel blends without a separate model or calibration. The UI labels the assumption explicitly.
 
@@ -27,19 +27,19 @@ An unsupported airflow/status PID pauses those optional requests for five minute
 
 ## Display and persistence
 
-Android clears the fuel value after five seconds without a fresh telemetry update and when the collector stops. The dashboard shows **latest synced reading**, matching the existing approximately once-per-minute upload schedule. It clears the fuel figure when its connection fails or the sample exceeds the dashboard's 90-second reporting timeout. It is not a one-second cloud stream.
+Android clears both fuel values after five seconds without a fresh telemetry update and when the collector stops. The dashboard shows **latest synced reading**, matching the existing approximately once-per-minute upload schedule. It clears both fuel figures when its connection fails or the sample exceeds the dashboard's 90-second reporting timeout. It is not a one-second cloud stream. Displays distinguish stale/disconnected data from unavailable or incomplete estimates; a null value alone does not establish that a sensor is unsupported or identify a particular fuel-control state.
 
 Nullable telemetry fields are `mafGps` (g/s), `fuelSystemStatus` (primary raw status byte), `estimatedFuelRateLph` and `estimatedFuelEconomyKmL`. The Android Room database upgrades from version 9 to 10 without deleting queued/history records. Uploads carry those fields, including legitimate zero values. Server ingestion validates ranges and integer status, and JSON/SQLite storage retain the values across restart. Existing clients and old records without these fields remain compatible and display `N/A`.
 
 The web server's SQLite database adds nullable columns in place. Deploy the server before installing the new collector so the new fields are retained on ingestion; an older server may acknowledge a batch while ignoring fields it does not yet normalize. Back up storage before an upgrade. No server deployment or car installation is part of this local implementation.
 
-Existing trip efficiency based on tank-level changes and manual fill-up statistics are unchanged. No estimate is integrated into trip fuel totals in this release.
+Trip summaries now integrate eligible fuel-rate samples over bounded capture-time intervals and expose coverage. The existing tank-level estimate remains a separate compatibility field. Manual refill statistics require explicitly recorded full-to-full cycles and stay separate from the MAF model. See [Trip and refill information](TRIP_FUEL_INFORMATION.md) for methods, quality limits and upgrade behavior. CSV exports append MAF, fuel status, estimated L/h and estimated km/L; older records export blanks for missing fields.
 
 ## Validation
 
 Tests cover calculation, idle zero, invalid/missing inputs, engine-off state, closed-loop eligibility, stale inputs, OBD response parsing, preservation of a version-9 queue, actual upload serialization and server round-trips/restarts with JSON and SQLite. UI tests cover zero, unavailable and stale readings; dashboard browser tests also cover a lost connection. Builds are produced for standard Android and Android Auto; the new display is in the normal app activity, not the projected driving template.
 
-Local validation passed 140 backend tests on Node.js 24, 60 standard Android JVM tests, 72 Android Auto JVM tests and four dashboard browser tests. The standard and Android Auto debug APKs, Android Auto release APK and dashboard production build completed. The Android Auto manifest/lint gate passed with its documented legacy target finding. An existing HTTP cancellation test failed once during concurrent testing, then passed in isolation and the final complete suites. Standard lint still reports the existing target-29 Play-policy finding and two Bluetooth permission findings in unchanged adapter-list code; these were not hidden or broadened into this feature.
+The original instantaneous-estimate release passed 140 backend tests on Node.js 24, 60 standard Android JVM tests, 72 Android Auto JVM tests and four dashboard browser tests. Its standard and Android Auto debug APKs, Android Auto release APK and dashboard production build completed. The Android Auto manifest/lint gate passed with its documented legacy target finding. An existing HTTP cancellation test failed once during concurrent testing, then passed in isolation and the final complete suites. Standard lint still reports the existing target-29 Play-policy finding and two Bluetooth permission findings in unchanged adapter-list code; these were not hidden or broadened into this feature. Current follow-up validation is recorded in [Trip and refill information](TRIP_FUEL_INFORMATION.md).
 
 The earlier Explorer hardware test confirmed the source PIDs on this car. The new collector/build still requires a parked on-car validation. Compare longer-term estimates with measured fill-up consumption before treating them as accurate fuel accounting.
 

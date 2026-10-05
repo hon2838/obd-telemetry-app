@@ -49,16 +49,20 @@ const DTC_DATABASE = {
   "P0700": { description: "Transmission Control System Malfunction (MIL Request)", severity: "severe", system: "Transmission" }
 };
 
+const DTC_PATTERN = /^[PBCU][0-3][0-9A-F]{3}$/;
+
 function parseDtcCodes(dtcString) {
-  if (!dtcString) return [];
+  if (typeof dtcString !== 'string' || !dtcString) return [];
   return dtcString
     .split(/[,\s]+/)
     .map(c => c.trim().toUpperCase())
-    .filter(c => /^[PBUC]\d{4}$/.test(c));
+    .filter(c => DTC_PATTERN.test(c));
 }
 
 function getDtcInfo(code) {
+  if (typeof code !== 'string') return null;
   const normalized = code.trim().toUpperCase();
+  if (!DTC_PATTERN.test(normalized)) return null;
   if (DTC_DATABASE[normalized]) {
     return { code: normalized, ...DTC_DATABASE[normalized] };
   }
@@ -121,6 +125,38 @@ function getDtcInfo(code) {
   };
 }
 
+// Legacy readers send formatted text rather than a command acknowledgment.
+// Only explicit empty responses or entirely valid code lists confirm a read.
+function classifyDtcRead(raw, success) {
+  if (success === false) return { success: false, error: raw || 'DTC read failed', codes: [] };
+  if (typeof raw !== 'string') return { success: false, error: 'Missing DTC response', codes: [] };
+  const text = raw.trim();
+  if (text === '' || /^(no trouble codes found|no dtcs)$/i.test(text)) {
+    return { success: true, codes: [], code: 'No trouble codes found' };
+  }
+  const tokens = text.split(/[,\s]+/).filter(Boolean).map(code => code.toUpperCase());
+  if (tokens.length > 0 && tokens.every(code => DTC_PATTERN.test(code))) {
+    const codes = [...new Set(tokens)];
+    return { success: true, codes, code: codes.join(', ') };
+  }
+  return { success: false, error: text, codes: [] };
+}
+
+function diagnosticView(diag) {
+  // Completed durable commands also update latestDtc. Prefer them when newer
+  // than the legacy read status, without changing the durable command protocol.
+  const latestDtc = diag.latestDtc || { code: '', timestamp: null };
+  const stored = diag.latestReadStatus;
+  const latestReadStatus = stored && (!latestDtc.timestamp || stored.timestamp >= latestDtc.timestamp)
+    ? stored
+    : latestDtc.timestamp ? { ...classifyDtcRead(latestDtc.code), timestamp: latestDtc.timestamp } : { success: null, timestamp: null };
+  // Older stores may contain raw failure text as latestDtc. Keep that text in
+  // the failed status, rather than presenting it as a confirmed fault result.
+  const confirmedDtc = latestDtc.timestamp && !classifyDtcRead(latestDtc.code).success
+    ? { code: '', timestamp: null } : latestDtc;
+  return { ...diag, latestDtc: confirmedDtc, latestReadStatus };
+}
+
 async function dtcRoutes(fastify, options) {
   const {
     vehicleExists,
@@ -140,13 +176,16 @@ async function dtcRoutes(fastify, options) {
 
   // Handler to ingest DTC reads
   const handleDtcPost = async (request, reply) => {
-    const { dtc, timestamp, vehicleId } = request.body || {};
+    const { dtc, timestamp, vehicleId, success } = request.body || {};
+    if (typeof dtc !== 'string' || (success !== undefined && typeof success !== 'boolean')) {
+      return reply.status(400).send({ error: 'dtc must be a string and success must be a boolean when supplied' });
+    }
     if (vehicleId !== undefined && !vehicleExists(vehicleId)) {
       return reply.status(400).send({ error: `Unknown vehicleId: ${vehicleId}` });
     }
     const vid = request.auth?.type === 'device' ? request.auth.vehicleId : (vehicleId || DEFAULT_VEHICLE_ID);
     const time = timestamp || Date.now();
-    const rawCodeStr = dtc || "No trouble codes found";
+    const read = classifyDtcRead(dtc, success);
 
     return serializeMutation(async () => {
       try {
@@ -158,20 +197,22 @@ async function dtcRoutes(fastify, options) {
             latestClearStatus: { success: null, timestamp: null }
           };
         }
-        nextDiagnostics.byVehicle[vid].latestDtc = { code: rawCodeStr, timestamp: time };
+        if (read.success) nextDiagnostics.byVehicle[vid].latestDtc = { code: read.code, timestamp: time };
+        nextDiagnostics.byVehicle[vid].latestReadStatus = { success: read.success, timestamp: time, ...(read.error ? { error: read.error } : {}) };
         const historyEntry = {
           id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
           vehicleId: vid,
           timestamp: time,
           type: 'read',
-          codes: parseDtcCodes(rawCodeStr),
-          success: true
+          codes: read.codes,
+          success: read.success,
+          ...(read.error ? { error: read.error } : {})
         };
         const nextHistory = dtcHistoryStore.concat(historyEntry);
         runFileTransactionSync([[DIAG_PATH, nextDiagnostics], [DTC_HIST_PATH, nextHistory]]);
         setDiagnosticsStore(nextDiagnostics);
         dtcHistoryStore.push(historyEntry);
-        return reply.send({ success: true });
+        return reply.send({ success: true, readSuccess: read.success });
       } catch (err) {
         return retryablePersistenceError(reply, request, err);
       }
@@ -243,16 +284,16 @@ async function dtcRoutes(fastify, options) {
         .map(([, diag]) => diag);
 
       latest = candidateEntries
-        .filter(d => (d.latestDtc && d.latestDtc.timestamp) || (d.latestClearStatus && d.latestClearStatus.timestamp))
-        .sort((a, b) => (Math.max(b.latestDtc?.timestamp || 0, b.latestClearStatus?.timestamp || 0))
-                       - Math.max(a.latestDtc?.timestamp || 0, a.latestClearStatus?.timestamp || 0))[0] || {
+        .filter(d => d.latestDtc?.timestamp || d.latestReadStatus?.timestamp || d.latestClearStatus?.timestamp)
+        .sort((a, b) => (Math.max(b.latestDtc?.timestamp || 0, b.latestClearStatus?.timestamp || 0, b.latestReadStatus?.timestamp || 0))
+                       - Math.max(a.latestDtc?.timestamp || 0, a.latestClearStatus?.timestamp || 0, a.latestReadStatus?.timestamp || 0))[0] || {
           latestDtc: { code: "", timestamp: null },
           latestClearStatus: { success: null, timestamp: null }
         };
     }
 
     return reply.send({
-      latest,
+      latest: diagnosticView(latest),
       history
     });
   };
@@ -266,16 +307,21 @@ async function dtcRoutes(fastify, options) {
       return reply.status(400).send({ error: "Body must contain 'codes' array" });
     }
     const details = codes.map(code => getDtcInfo(code));
+    if (details.some(detail => detail === null)) return reply.status(400).send({ error: 'Invalid DTC code' });
     return reply.send(details);
   });
 
   // Single lookup DTC description
   fastify.get('/api/dtc/lookup/:code', async (request, reply) => {
     const { code } = request.params;
-    return reply.send(getDtcInfo(code));
+    const detail = getDtcInfo(code);
+    if (!detail) return reply.status(400).send({ error: 'Invalid DTC code' });
+    return reply.send(detail);
   });
 }
 
 module.exports = dtcRoutes;
 module.exports.parseDtcCodes = parseDtcCodes;
 module.exports.getDtcInfo = getDtcInfo;
+
+module.exports.classifyDtcRead = classifyDtcRead;
