@@ -56,8 +56,8 @@ export function formatFuelEconomyKmL(value: unknown): string | null {
   return value.toFixed(1);
 }
 
-const FuelEconomyCard = ({ value, timestamp, connectionOk }: {
-  value: unknown; timestamp: number | null; connectionOk: boolean;
+const FuelEconomyCard = ({ value, rate, timestamp, connectionOk }: {
+  value: unknown; rate: unknown; timestamp: number | null; connectionOk: boolean;
 }) => {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -67,8 +67,12 @@ const FuelEconomyCard = ({ value, timestamp, connectionOk }: {
   // Cloud telemetry normally syncs once per minute. Apply the dashboard's
   // reporting timeout, rather than retaining an old figure indefinitely.
   const age = timestamp === null ? null : now - timestamp;
-  const formatted = connectionOk && age !== null && age >= 0 && age <= STALE_THRESHOLD_MS
-    ? formatFuelEconomyKmL(value) : null;
+  const fresh = connectionOk && age !== null && age >= 0 && age <= STALE_THRESHOLD_MS;
+  const formatted = fresh ? formatFuelEconomyKmL(value) : null;
+  const formattedRate = fresh ? formatFuelEconomyKmL(rate) : null;
+  const state = !connectionOk ? 'Disconnected' : age !== null && age > STALE_THRESHOLD_MS ? 'Reading too old'
+    : !fresh ? 'Awaiting fresh reading'
+    : formatted === null || formattedRate === null ? 'Estimate unavailable or incomplete' : 'Latest synced reading';
   return <MetricCard
     title="Estimated fuel economy"
     value={formatted ?? 'N/A'}
@@ -76,7 +80,7 @@ const FuelEconomyCard = ({ value, timestamp, connectionOk }: {
     icon={<Fuel size={20} color={formatted !== null ? 'var(--accent-green)' : 'var(--text-muted)'} />}
     progress={undefined}
     progressColor={formatted !== null ? 'var(--accent-green)' : 'var(--border)'}
-    subtext="Petrol estimate · latest synced reading"
+    subtext={<><div data-testid="fuel-rate">Estimated fuel rate: {formattedRate !== null ? `${formattedRate} L/h` : 'N/A'}</div><div>Petrol estimate · {state}</div></>}
   />;
 };
 
@@ -402,7 +406,8 @@ export default function TelemetryDashboard() {
   const latest = data[data.length - 1] || {
     rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
     gpsSpeed: 0, engineLoad: null, throttlePos: null, fuelLevel: null, ambientTemp: null, voltage: null,
-    accelTime: null, alertCoolant: false, alertVoltage: false, estimatedFuelEconomyKmL: null
+    accelTime: null, alertCoolant: false, alertVoltage: false,
+    estimatedFuelEconomyKmL: null, estimatedFuelRateLph: null
   };
 
   const formatVal = (val: any, decimals = 2) => {
@@ -583,7 +588,7 @@ export default function TelemetryDashboard() {
           progressColor={latest.fuelLevel !== null ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--border)'}
           subtext={latest.fuelLevel !== null ? (latest.fuelLevel < 15 ? "Low Fuel Warning" : "Level Normal") : "N/A"}
         />
-        <FuelEconomyCard value={latest.estimatedFuelEconomyKmL} timestamp={latestTimestamp} connectionOk={connectionOk} />
+        <FuelEconomyCard value={latest.estimatedFuelEconomyKmL} rate={latest.estimatedFuelRateLph} timestamp={latestTimestamp} connectionOk={connectionOk} />
         <MetricCard
           title="System Voltage"
            value={formatVal(latest.voltage)}

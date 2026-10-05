@@ -20,11 +20,13 @@ interface HistoryItem {
   type: 'read' | 'clear';
   codes: string[];
   success: boolean;
+  error?: string;
 }
 
 interface DiagnosticsData {
   latest: {
     latestDtc: { code: string; timestamp: number | null };
+    latestReadStatus?: { success: boolean | null; timestamp: number | null; error?: string };
     latestClearStatus: { success: boolean | null; timestamp: number | null };
   };
   history: HistoryItem[];
@@ -95,7 +97,7 @@ export default function DiagnosticsDashboard() {
     setData(d || { latest: { latestDtc: { code: "", timestamp: null }, latestClearStatus: { success: null, timestamp: null } }, history: [] });
     const currentCodeStr = d.latest?.latestDtc?.code || "";
     const codes = currentCodeStr && currentCodeStr !== 'No trouble codes found' && currentCodeStr !== 'No DTCs'
-      ? currentCodeStr.split(/[,\s]+/).map((c: string) => c.trim().toUpperCase()).filter((c: string) => /^[PBUC]\d{4}$/.test(c))
+      ? currentCodeStr.split(/[,\s]+/).map((c: string) => c.trim().toUpperCase()).filter((c: string) => /^[PBCU][0-3][0-9A-F]{3}$/.test(c))
       : [];
     await fetchDtcDetails(codes, signal);
   };
@@ -162,10 +164,13 @@ export default function DiagnosticsDashboard() {
   };
 
   const currentCodeStr = data.latest.latestDtc?.code || "";
-  const hasActiveDtc = currentCodeStr && 
-                       currentCodeStr !== "No trouble codes found" && 
-                       currentCodeStr !== "No DTCs" &&
-                       activeDtcDetails.length > 0;
+  const latestRead = data.latest.latestReadStatus;
+  const lastReadEvent = [...data.history].filter(event => event.type === 'read').sort((a, b) => b.timestamp - a.timestamp)[0];
+  const readFailed = latestRead?.success === false || (!latestRead && lastReadEvent?.success === false);
+  const confirmedEmpty = !readFailed && !!data.latest.latestDtc?.timestamp &&
+    (/^(no trouble codes found|no dtcs)$/i.test(currentCodeStr.trim()) || currentCodeStr.trim() === '') &&
+    activeDtcDetails.length === 0;
+  const hasActiveDtc = activeDtcDetails.length > 0;
 
   return (
     <div style={styles.container}>
@@ -235,10 +240,10 @@ export default function DiagnosticsDashboard() {
               </div>
             )}
             <div style={styles.statusRow}>
-              <span style={styles.statusLabel}>Latest Poll Result:</span>
+              <span style={styles.statusLabel}>Latest Scan Attempt:</span>
               <span style={styles.statusValue}>
-                {data.latest.latestDtc?.timestamp 
-                  ? new Date(data.latest.latestDtc.timestamp).toLocaleTimeString() 
+                {(latestRead?.timestamp || data.latest.latestDtc?.timestamp)
+                  ? `${new Date((latestRead?.timestamp || data.latest.latestDtc.timestamp)!).toLocaleTimeString()}${readFailed ? ' (Failed)' : ''}`
                   : 'Never polled'}
               </span>
             </div>
@@ -256,7 +261,7 @@ export default function DiagnosticsDashboard() {
         {/* Current Trouble Codes Panel */}
         <div className="glass-panel-static" style={styles.card}>
           <div style={styles.cardHeader}>
-            {hasActiveDtc ? (
+            {hasActiveDtc || !confirmedEmpty ? (
               <AlertTriangle size={20} style={{ color: 'var(--accent-red)' }} />
             ) : (
               <CheckCircle size={20} style={{ color: 'var(--accent-green)' }} />
@@ -264,11 +269,16 @@ export default function DiagnosticsDashboard() {
             <h2 style={styles.cardTitle}>System Diagnostics Status</h2>
           </div>
 
+          {readFailed && <div style={styles.warningBox}>
+            <AlertCircle size={18} />
+            <span>Latest DTC scan failed. Current fault status is unknown. {latestRead?.error || lastReadEvent?.error || ''}
+              {data.latest.latestDtc?.timestamp ? ' The previous confirmed result below is historical.' : ''}</span>
+          </div>}
           {hasActiveDtc ? (
             <div style={styles.dtcList}>
               <div style={styles.warningBox}>
                 <ShieldAlert size={18} />
-                <span>The Engine Control Unit (ECU) has reported active faults.</span>
+                <span>{readFailed ? 'Previous confirmed fault codes (historical).' : 'The Engine Control Unit (ECU) reported these fault codes at the last confirmed scan.'}</span>
               </div>
               
               {activeDtcDetails.map(dtc => (
@@ -286,14 +296,20 @@ export default function DiagnosticsDashboard() {
                 </div>
               ))}
             </div>
-          ) : (
+          ) : confirmedEmpty ? (
             <div style={styles.noDtcBox}>
               <CheckCircle size={48} style={{ color: 'var(--accent-green)', opacity: 0.8 }} />
               <h3 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)' }}>No Fault Codes Detected</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-                All engine and powertrain systems are reporting a healthy status.
+                The last confirmed scan returned no trouble codes.
               </p>
               {currentCodeStr && <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', padding: '4px 8px', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '4px' }}>ECU Raw Response: "{currentCodeStr}"</span>}
+            </div>
+          ) : (
+            <div style={styles.noDtcBox}>
+              <AlertCircle size={48} style={{ color: 'var(--accent-amber)' }} />
+              <h3>Fault status unknown</h3>
+              <p>{readFailed && data.latest.latestDtc?.timestamp ? 'A previous scan returned no codes. Run a successful scan to confirm the current status.' : 'No confirmed scan result is available. Run a DTC scan to check fault codes.'}</p>
             </div>
           )}
         </div>
@@ -325,7 +341,7 @@ export default function DiagnosticsDashboard() {
                     </div>
                     <div style={styles.timelineDetails}>
                       {isRead ? (
-                        event.codes.length > 0 ? (
+                        event.success === false ? <span style={{ color: 'var(--accent-amber)' }}>Scan failed: {event.error || 'No confirmed result'}</span> : event.codes.length > 0 ? (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                             <span style={{ color: 'var(--text-primary)' }}>Codes Found:</span>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -335,7 +351,7 @@ export default function DiagnosticsDashboard() {
                             </div>
                           </div>
                         ) : (
-                          <span style={{ color: 'var(--accent-green)' }}>No codes found. System Healthy.</span>
+                          <span style={{ color: 'var(--accent-green)' }}>No codes found in this confirmed scan.</span>
                         )
                       ) : (
                         <span>

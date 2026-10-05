@@ -56,6 +56,9 @@ class MainActivity : AppCompatActivity() {
     private val PERMISSION_REQUEST_CODE = 101
     private var suppressInitialSpinnerCallback = false
     private var lastTelemetryAt = 0L
+    private var lastFuelEconomy: Double? = null
+    private var lastFuelRate: Double? = null
+    private var fuelConnectionOk = false
     private var ageTicker: kotlinx.coroutines.Job? = null
     private var sparkline: SparklineView? = null
 
@@ -81,7 +84,7 @@ class MainActivity : AppCompatActivity() {
                     val wifiSsid = it.getStringExtra("wifiSsid") ?: ""
                     val btConnected = it.getBooleanExtra("btConnected", false)
                     val ts = it.getLongExtra("timestamp", 0L)
-                    if (ts > 0) lastTelemetryAt = ts
+                    lastTelemetryAt = ts.coerceAtLeast(0L)
 
                     tvGpsPosition.text = if (hasGpsFix) String.format("%.6f, %.6f", lat, lon) else "Waiting for GPS fix"
                     tvGpsSpeed.text = if (speed >= 0f) String.format("%.1f km/h (%s)", speed, speedSource) else "N/A"
@@ -104,18 +107,10 @@ class MainActivity : AppCompatActivity() {
 
                     // Preserve a genuine zero at idle, but never show old data
                     // as a current consumption estimate.
-                    val fuelEcon = if (it.hasExtra("estimated_fuel_economy_kml")) {
-                        it.getDoubleExtra("estimated_fuel_economy_kml", -1.0)
-                    } else {
-                        -1.0
-                    }
-                    val fuelAgeMs = System.currentTimeMillis() - ts
-                    tvFuelEconomy.text = if (fuelEcon.isFinite() && fuelEcon >= 0.0 && ts > 0 &&
-                        fuelAgeMs in 0..FuelConsumptionEstimate.MAX_READING_AGE_MS) {
-                        String.format(Locale.getDefault(), "%.1f km/L", fuelEcon)
-                    } else {
-                        "N/A"
-                    }
+                    lastFuelEconomy = it.getDoubleExtra("estimated_fuel_economy_kml", -1.0)
+                    lastFuelRate = it.getDoubleExtra("estimated_fuel_rate_lph", -1.0)
+                    fuelConnectionOk = obdStatus == "Connected"
+                    updateFuelEstimate()
 
                     sparkline?.push(if (rpm != -1) rpm else null, speed.takeIf { value -> value >= 0f })
 
@@ -133,6 +128,11 @@ class MainActivity : AppCompatActivity() {
                     val status = it.getStringExtra("status") ?: "Service Stopped"
                     val running = it.getBooleanExtra("running", status != "Service Stopped")
                     setServiceRunningUi(running)
+                    if (status.contains("GPS Only", true) || status.contains("Lost", true) ||
+                        status.contains("Suspended", true)) {
+                        fuelConnectionOk = false
+                        updateFuelEstimate()
+                    }
                     updateStatusUi(status)
                 }
             }
@@ -154,7 +154,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setServiceRunningUi(running: Boolean) {
-        if (!running && ::tvFuelEconomy.isInitialized) tvFuelEconomy.text = "N/A"
+        if (!running) {
+            fuelConnectionOk = false
+            lastFuelEconomy = null
+            lastFuelRate = null
+            updateFuelEstimate()
+        }
         btnStart.isEnabled = !running
         btnStop.isEnabled = running
         btnStart.alpha = if (running) 0.5f else 1f
@@ -162,10 +167,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTelemetryAge() {
-        if (::tvFuelEconomy.isInitialized &&
-            (lastTelemetryAt == 0L || System.currentTimeMillis() - lastTelemetryAt > FuelConsumptionEstimate.MAX_READING_AGE_MS)) {
-            tvFuelEconomy.text = "N/A"
-        }
+        updateFuelEstimate()
         if (lastTelemetryAt == 0L) {
             tvTelemetryAge.text = getString(R.string.telemetry_waiting)
             tvTelemetryAge.setTextColor(getColor(R.color.text_muted))
@@ -174,6 +176,12 @@ class MainActivity : AppCompatActivity() {
         val ageSec = (System.currentTimeMillis() - lastTelemetryAt) / 1000
         tvTelemetryAge.text = if (ageSec < 5) getString(R.string.telemetry_live) else getString(R.string.telemetry_updated, ageSec)
         tvTelemetryAge.setTextColor(if (ageSec > 90) getColor(R.color.accent_red) else getColor(R.color.text_muted))
+    }
+
+    private fun updateFuelEstimate() {
+        if (::tvFuelEconomy.isInitialized) tvFuelEconomy.text = FuelEstimateDisplay.format(
+            lastFuelEconomy, lastFuelRate, lastTelemetryAt, System.currentTimeMillis(), fuelConnectionOk
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

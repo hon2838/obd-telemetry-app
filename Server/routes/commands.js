@@ -1,3 +1,4 @@
+const { classifyDtcRead } = require('./dtc');
 // Commands route plugin
 const MAX_PENDING_COMMANDS = 10;
 const MAX_COMMAND_TOMBSTONES = 100;
@@ -56,8 +57,7 @@ async function commandsRoutes(fastify, options) {
     dtcHistoryStore,
     DIAG_PATH,
     DTC_HIST_PATH,
-    runFileTransactionSync,
-    parseDtcCodes
+    runFileTransactionSync
   } = options;
 
   fastify.post('/api/commands', {
@@ -194,7 +194,7 @@ async function commandsRoutes(fastify, options) {
       };
       const bounded = trimTombstones(candidate);
       try {
-        if (status === 'completed' && getDiagnosticsStore && setDiagnosticsStore && Array.isArray(dtcHistoryStore)) {
+        if ((status === 'completed' || current.command === 'read_dtc') && getDiagnosticsStore && setDiagnosticsStore && Array.isArray(dtcHistoryStore)) {
           const diagnostics = getDiagnosticsStore();
           const nextDiagnostics = JSON.parse(JSON.stringify(diagnostics));
           const vehicleId = current.vehicleId;
@@ -204,17 +204,22 @@ async function commandsRoutes(fastify, options) {
               latestClearStatus: { success: null, timestamp: null }
             };
           }
+          const read = current.command === 'read_dtc'
+            ? (status === 'completed' ? classifyDtcRead(result.dtc) : { success: false, codes: [], error: typeof result?.error === 'string' ? result.error : typeof result?.reason === 'string' ? result.reason : `DTC read ${status}` })
+            : null;
           const historyEntry = {
             id: `command-${current.id}`,
             vehicleId,
             timestamp: now,
             type: current.command === 'read_dtc' ? 'read' : 'clear',
-            codes: current.command === 'read_dtc' ? parseDtcCodes(result.dtc) : [],
-            success: true
+            codes: read ? read.codes : [],
+            success: read ? read.success : true,
+            ...(read?.error ? { error: read.error } : {})
           };
           const nextHistory = dtcHistoryStore.concat(historyEntry);
           if (current.command === 'read_dtc') {
-            nextDiagnostics.byVehicle[vehicleId].latestDtc = { code: result.dtc || 'No trouble codes found', timestamp: now };
+            if (read.success) nextDiagnostics.byVehicle[vehicleId].latestDtc = { code: read.code, timestamp: now };
+            nextDiagnostics.byVehicle[vehicleId].latestReadStatus = { success: read.success, timestamp: now, ...(read.error ? { error: read.error } : {}) };
           } else {
             nextDiagnostics.byVehicle[vehicleId].latestClearStatus = { success: true, timestamp: now };
           }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
@@ -22,7 +23,11 @@ import java.util.Locale
 
 class FuelActivity : AppCompatActivity() {
 
-    private data class FuelLogRow(val ts: Long, val litres: Double, val odo: Double, val source: String)
+    private data class FuelLogRow(
+        val ts: Long, val litres: Double, val odo: Double, val source: String,
+        val fillState: String, val economy: Double?, val economyStatus: String,
+        val cycleDistance: Double?, val cycleLitres: Double?
+    )
 
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val dateFmt = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
@@ -42,18 +47,8 @@ class FuelActivity : AppCompatActivity() {
             try {
                 val stats = org.json.JSONObject(httpGet("$base/api/fuel-stats?vehicle=$vid"))
                 val logsJson = org.json.JSONArray(httpGet("$base/api/fuel-logs?vehicle=$vid"))
-                val logs = (0 until logsJson.length()).map {
-                    val l = logsJson.getJSONObject(it)
-                    FuelLogRow(
-                        l.optLong("timestamp"),
-                        l.optDouble("litres", 0.0),
-                        l.optDouble("odometer", 0.0),
-                        l.optString("source")
-                    )
-                }
                 withContext(Dispatchers.Main) {
-                    renderStats(stats, logs)
-                    renderLogs(logs)
+                    renderFuel(stats, logsJson, vid == "all")
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -61,6 +56,26 @@ class FuelActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        mainScope.cancel()
+        super.onDestroy()
+    }
+
+    private fun org.json.JSONObject.number(name: String): Double? =
+        (opt(name) as? Number)?.toDouble()?.takeIf { it.isFinite() }
+
+    internal fun renderFuel(stats: org.json.JSONObject, logsJson: org.json.JSONArray, fleet: Boolean = false) {
+        val logs = (0 until logsJson.length()).map {
+            val log = logsJson.getJSONObject(it)
+            FuelLogRow(log.optLong("timestamp"), log.optDouble("litres", 0.0),
+                log.optDouble("odometer", 0.0), log.optString("source"),
+                log.optString("fillState", "unknown"), log.number("economy"),
+                log.optString("economyStatus"), log.number("cycleDistance"), log.number("cycleLitres"))
+        }
+        renderStats(stats, logs, fleet)
+        renderLogs(logs)
     }
 
     private fun httpGet(url: String): String {
@@ -71,14 +86,12 @@ class FuelActivity : AppCompatActivity() {
         return conn.inputStream.bufferedReader().readText()
     }
 
-    private fun renderStats(stats: org.json.JSONObject, logs: List<FuelLogRow>) {
-        val avg = stats.optDouble("averageKmPerLitre", Double.NaN)
+    private fun renderStats(stats: org.json.JSONObject, logs: List<FuelLogRow>, fleet: Boolean) {
+        val cycleCount = stats.number("cycleCount")?.takeIf { it >= 0 && it % 1.0 == 0.0 }?.toInt()
         findViewById<TextView>(R.id.statAvgEconomy).text =
-            if (avg.isNaN()) "N/A" else String.format(Locale.getDefault(), "%.2f", avg)
+            FuelHistoryDisplay.average(stats.number("averageKmPerLitre"), cycleCount, fleet)
         findViewById<TextView>(R.id.statEconomyRange).text =
-            if (stats.optInt("logCount", 0) >= 2)
-                String.format(Locale.getDefault(), "%.2f – %.2f", stats.optDouble("worstKmPerLitre"), stats.optDouble("bestKmPerLitre"))
-            else "Need 2+ logs"
+            FuelHistoryDisplay.summary(cycleCount, stats.number("worstKmPerLitre"), stats.number("bestKmPerLitre"), fleet)
         findViewById<TextView>(R.id.statTotalLitres).text =
             String.format(Locale.getDefault(), "%.1f", stats.optDouble("totalLitres", 0.0))
         findViewById<TextView>(R.id.statLogCount).text = "${stats.optInt("logCount", 0)} logs"
@@ -86,7 +99,7 @@ class FuelActivity : AppCompatActivity() {
             String.format(Locale.getDefault(), "%.0f", stats.optDouble("totalDistance", 0.0))
         val maxOdo = logs.maxOfOrNull { it.odo } ?: 0.0
         findViewById<TextView>(R.id.statCurrentOdo).text =
-            if (maxOdo > 0) String.format(Locale.getDefault(), "odo %,.0f km", maxOdo) else ""
+            if (!fleet && maxOdo > 0) String.format(Locale.getDefault(), "odo %,.0f km", maxOdo) else ""
     }
 
     private fun renderLogs(logs: List<FuelLogRow>) {
@@ -98,7 +111,7 @@ class FuelActivity : AppCompatActivity() {
             return
         }
 
-        logs.forEachIndexed { i, log ->
+        logs.forEach { log ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = androidx.core.content.ContextCompat.getDrawable(this@FuelActivity, R.drawable.card_bg)
@@ -125,17 +138,15 @@ class FuelActivity : AppCompatActivity() {
             ).apply { weight = 1f; marginStart = 12 })
             row.addView(header)
 
-            // Economy of a fill = distance since the previous (older) fill / litres;
-            // the oldest entry is the baseline fill with no economy yet.
-            val economyText = if (i < logs.size - 1) {
-                val km = log.odo - logs[i + 1].odo
-                if (km > 0 && log.litres > 0)
-                    String.format(Locale.getDefault(), "%.2f km/L over %,.0f km", km / log.litres, km)
-                else "Initial fill"
-            } else "Initial fill"
+            val economyText = FuelHistoryDisplay.economy(log.economyStatus, log.economy, log.cycleDistance, log.cycleLitres)
+            val fillLabel = when (log.fillState) {
+                "full" -> "Full tank"
+                "partial" -> "Partial fill"
+                else -> "Unclassified fill"
+            }
 
             row.addView(TextView(this).apply {
-                text = "$economyText  •  ${String.format(Locale.getDefault(), "%,.0f", log.odo)} km  •  ${if (log.source == "app") "logged in app" else "logged on web"}"
+                text = "$economyText  •  $fillLabel  •  ${String.format(Locale.getDefault(), "%,.0f", log.odo)} km  •  ${if (log.source == "app") "logged in app" else "logged on web"}"
                 setTextColor(Color.parseColor("#AEAEB2"))
                 textSize = 13f
                 setPadding(0, 10, 0, 0)

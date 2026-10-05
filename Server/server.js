@@ -27,6 +27,7 @@ const vehiclesRoutes = require('./routes/vehicles')
 const authRoutes = require('./routes/auth')
 const exportRoutes = require('./routes/export')
 const { initSqliteStorage } = require('./sqlite_storage')
+const { calculateTripMetrics, knownSpeed, validGps } = require('./trip_calculations')
 
 // Read the expected API key from the environment at module load.
 // We deliberately do NOT provide a default: shipping a literal
@@ -1567,7 +1568,8 @@ function segmentDrives(vehicleFilter = null) {
 
   const drives = [];
   for (const [vid, records] of byVehicle) {
-    const sorted = [...records].sort((a, b) => a.timestamp - b.timestamp);
+    const sorted = records.filter(record => typeof record.timestamp === 'number' && Number.isFinite(record.timestamp) && record.timestamp >= 0)
+      .sort((a, b) => a.timestamp - b.timestamp);
     segmentRecordsByGap(sorted).forEach((seg, i) => {
       drives.push({ ...seg, id: `${vid}-${i + 1}`, vehicleId: vid });
     });
@@ -1589,8 +1591,8 @@ function segmentDrives(vehicleFilter = null) {
         const dt = (p2.timestamp - p1.timestamp) / 1000;
         if (dt > 0 && dt < 10) { // Only compare points reasonably close
           // Calculate speed diff in km/h
-          const dv = getRecordSpeed(p2) - getRecordSpeed(p1);
-          const accel = dv / dt; // km/h per second
+          const s1 = knownSpeed(p1), s2 = knownSpeed(p2);
+          const accel = s1 !== null && s2 !== null ? (s2 - s1) / dt : 0; // km/h per second
 
           if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
             harshAccelCount++;
@@ -1621,26 +1623,21 @@ function segmentDrives(vehicleFilter = null) {
       minute: '2-digit'
     });
 
-    // 1. Calculate GPS distance
-    let distanceKm = 0;
+    const tripMetrics = calculateTripMetrics(drive.points);
+    // Preserve the legacy tank-based field's original GPS-only denominator.
+    // New interval-based metrics use bounded GPS with an OBD-speed fallback.
+    let legacyDistanceKm = 0;
     let prevPoint = null;
     for (const p of drive.points) {
       if (p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0) {
-        if (prevPoint) {
-          distanceKm += getHaversineDistance(prevPoint.latitude, prevPoint.longitude, p.latitude, p.longitude);
-        }
+        if (prevPoint) legacyDistanceKm += getHaversineDistance(prevPoint.latitude, prevPoint.longitude, p.latitude, p.longitude);
         prevPoint = p;
       }
     }
-
-    // 2. Average Speed
-    const speeds = drive.points.map(getRecordSpeed);
-    const avgSpeed = speeds.length > 0 ? (speeds.reduce((a, b) => a + b, 0) / speeds.length) : 0;
-
-    // 3. Start/End locations
-    const validGps = drive.points.filter(p => p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0);
-    const startLocation = validGps.length > 0 ? { lat: validGps[0].latitude, lon: validGps[0].longitude } : null;
-    const endLocation = validGps.length > 0 ? { lat: validGps[validGps.length - 1].latitude, lon: validGps[validGps.length - 1].longitude } : null;
+    const validGpsPoints = drive.points.filter(validGps);
+    const startLocation = validGpsPoints.length > 0 ? { lat: validGpsPoints[0].latitude, lon: validGpsPoints[0].longitude } : null;
+    const lastGpsPoint = validGpsPoints.at(-1);
+    const endLocation = lastGpsPoint ? { lat: lastGpsPoint.latitude, lon: lastGpsPoint.longitude } : null;
 
     // 4. Fuel used and fuel efficiency. Tank size is a per-vehicle
     // property (set on the vehicle in the registry); cars without one
@@ -1652,7 +1649,7 @@ function segmentDrives(vehicleFilter = null) {
     const vehicle = vehiclesStore.find(v => v.id === drive.vehicleId);
     const tankLitres = (vehicle && Number(vehicle.tankLitres) > 0) ? Number(vehicle.tankLitres) : 36;
     const fuelUsedLitres = (fuelUsedPercent / 100) * tankLitres;
-    const fuelEfficiencyKmL = (fuelUsedLitres > 0 && distanceKm > 0) ? (distanceKm / fuelUsedLitres) : null;
+    const fuelEfficiencyKmL = (fuelUsedLitres > 0 && legacyDistanceKm > 0) ? (legacyDistanceKm / fuelUsedLitres) : null;
 
     return {
       id: drive.id,
@@ -1666,11 +1663,20 @@ function segmentDrives(vehicleFilter = null) {
         maxSpeed: drive.maxSpeed,
         fuelUsedPercent: parseFloat(fuelUsedPercent.toFixed(1)),
         pointCount: drive.recordCount,
-        distanceKm: parseFloat(distanceKm.toFixed(2)),
-        avgSpeed: parseFloat(avgSpeed.toFixed(1)),
+        ...tripMetrics,
         startLocation,
         endLocation,
         fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+        fuelEfficiencySource: 'legacy-tank-level-drop',
+        legacyTankEstimate: {
+          fuelUsedLitres: drive.startLevel !== null && drive.endLevel !== null ? parseFloat(fuelUsedLitres.toFixed(3)) : null,
+          fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+          tankLitres,
+          tankCapacitySource: vehicle && Number(vehicle.tankLitres) > 0 ? 'vehicle-configured' : 'legacy-default-36-litres',
+          distanceMethod: 'legacy-unbounded-gps-polyline',
+          method: 'positive-endpoint-tank-level-drop-times-capacity',
+          reliability: 'unvalidated-not-used-for-leaderboard'
+        },
         driverScore: finalScore,
         harshEvents: { accel: harshAccelCount, brake: harshBrakeCount }
       }
@@ -2108,14 +2114,15 @@ fastify.get('/api/trips/leaderboard', async (request, reply) => {
     });
   }
 
-  // Filter drives for efficiency leaderboards (only count trips >= 1km to avoid division anomalies)
-  const validForEfficiency = drives.filter(d => d.summary.distanceKm >= 1.0 && d.summary.fuelEfficiencyKmL !== null);
+  // Rank only estimates with >=80% capture-span coverage and >=1km of paired
+  // distance. Tank-level changes and uncovered intervals are never ranked.
+  const validForEfficiency = drives.filter(d => d.summary.quality.efficiencyLeaderboardEligible);
 
   const bestEfficiency = [...validForEfficiency]
-    .sort((a, b) => b.summary.fuelEfficiencyKmL - a.summary.fuelEfficiencyKmL)
+    .sort((a, b) => b.summary.estimatedFuelEconomyKmL - a.summary.estimatedFuelEconomyKmL)
     .slice(0, 5);
 
-  const longestDistance = [...drives]
+  const longestDistance = drives.filter(d => d.summary.distanceKm !== null)
     .sort((a, b) => b.summary.distanceKm - a.summary.distanceKm)
     .slice(0, 5);
 

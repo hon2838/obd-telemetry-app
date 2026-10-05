@@ -17,7 +17,11 @@ interface FuelLog {
   litres: number;
   odometer: number;
   source: string;
-  economy?: number | null; // calculated on the fly
+  fillState?: 'full' | 'partial' | 'unknown';
+  economy?: number | null;
+  economyStatus?: string;
+  cycleLitres?: number;
+  cycleDistance?: number;
 }
 
 interface FuelStats {
@@ -27,6 +31,8 @@ interface FuelStats {
   totalLitres: number;
   totalDistance: number;
   logCount: number;
+  cycleCount?: number;
+  unknownFillCount?: number;
 }
 
 export default function FuelTracker() {
@@ -43,6 +49,7 @@ export default function FuelTracker() {
 
   const [litresInput, setLitresInput] = useState('');
   const [odoInput, setOdoInput] = useState('');
+  const [fillStateInput, setFillStateInput] = useState<'full' | 'partial' | 'unknown'>('unknown');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -55,15 +62,7 @@ export default function FuelTracker() {
     if (!logsRes.ok) throw new Error(`Fuel logs HTTP ${logsRes.status}`);
     if (!statsRes.ok) throw new Error(`Fuel stats HTTP ${statsRes.status}`);
     const [logsData, statsData] = await Promise.all([logsRes.json(), statsRes.json()]);
-    const sortedAsc = [...(Array.isArray(logsData) ? logsData : [])].sort((a: FuelLog, b: FuelLog) => a.odometer - b.odometer);
-    const computedLogs = sortedAsc.map((log: FuelLog, index: number) => {
-      if (index === 0) return { ...log, economy: null };
-      const prev = sortedAsc[index - 1];
-      const dist = log.odometer - prev.odometer;
-      const economy = dist > 0 && log.litres > 0 ? parseFloat((dist / log.litres).toFixed(2)) : null;
-      return { ...log, economy };
-    });
-    setLogs([...computedLogs].sort((a, b) => b.odometer - a.odometer));
+    setLogs(Array.isArray(logsData) ? logsData : []);
     setStats(statsData || { averageKmPerLitre: 0, bestKmPerLitre: 0, worstKmPerLitre: 0, totalLitres: 0, totalDistance: 0, logCount: 0 });
   };
 
@@ -90,18 +89,18 @@ export default function FuelTracker() {
     const litres = parseFloat(litresInput);
     const odometer = parseFloat(odoInput);
 
-    if (isNaN(litres) || litres <= 0) {
+    if (!Number.isFinite(litres) || litres <= 0) {
       setError('Please enter a valid positive number for litres.');
       return;
     }
-    if (isNaN(odometer) || odometer <= 0) {
-      setError('Please enter a valid positive number for odometer.');
+    if (!Number.isFinite(odometer) || odometer < 0) {
+      setError('Please enter a valid non-negative number for odometer.');
       return;
     }
 
     // Odometer verification against latest log
     if (logs.length > 0) {
-      const highestOdo = Math.max(...logs.map(l => l.odometer));
+      const highestOdo = Math.max(...logs.filter(l => l.vehicleId === explicitVehicle.id).map(l => l.odometer));
       if (odometer <= highestOdo) {
         setError(`New odometer reading (${odometer} km) must be higher than the previous record (${highestOdo} km).`);
         return;
@@ -118,6 +117,7 @@ export default function FuelTracker() {
         body: JSON.stringify({
           timestamp: Date.now(),
           litres,
+          fillState: fillStateInput,
           odometer,
           source: 'web',
           vehicleId: explicitVehicle.id
@@ -128,6 +128,7 @@ export default function FuelTracker() {
         setSuccessMsg('Refuel logged successfully!');
         setLitresInput('');
         setOdoInput('');
+        setFillStateInput('unknown');
         fetchData();
       } else {
         const errData = await res.json();
@@ -203,13 +204,13 @@ export default function FuelTracker() {
               <TrendingUp size={20} color="var(--accent-green)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{stats.averageKmPerLitre !== null && stats.averageKmPerLitre !== undefined ? stats.averageKmPerLitre.toFixed(2) : 'N/A'}</span>
+              <span style={styles.cardValue}>{(stats.cycleCount || 0) > 0 ? stats.averageKmPerLitre.toFixed(2) : 'N/A'}</span>
               {stats.averageKmPerLitre > 0 && <span style={styles.cardUnit}>km/L</span>}
             </div>
             <div style={styles.cardSubtext}>
-              {stats.logCount >= 2 
-                ? `Range: ${stats.worstKmPerLitre.toFixed(2)} - ${stats.bestKmPerLitre.toFixed(2)} km/L`
-                : 'Need at least 2 logs to calculate economy'}
+              {(stats.cycleCount || 0) > 0
+                ? `${stats.cycleCount} full-tank cycles • Range: ${stats.worstKmPerLitre.toFixed(2)} - ${stats.bestKmPerLitre.toFixed(2)} km/L`
+                : 'Need two confirmed full fills for one vehicle'}
             </div>
           </div>
 
@@ -237,9 +238,9 @@ export default function FuelTracker() {
               <span style={styles.cardUnit}>km</span>
             </div>
             <div style={styles.cardSubtext}>
-              {logs.length > 0 
-                ? `Current Odo: ${Math.max(...logs.map(l => l.odometer)).toFixed(2)} km`
-                : 'No odometer reading logged'}
+              {activeVehicle
+                ? (logs.length > 0 ? `Current Odo: ${Math.max(...logs.map(l => l.odometer)).toFixed(2)} km` : 'No odometer reading logged')
+                : 'Sum of each vehicle’s recorded odometer span'}
             </div>
           </div>
         </div>
@@ -279,6 +280,17 @@ export default function FuelTracker() {
                       required
                     />
                   </div>
+                </div>
+
+                <div style={styles.inputGroup}>
+                  <label htmlFor="fuel-fill-state" style={styles.label}>Tank after refueling</label>
+                  <select id="fuel-fill-state" value={fillStateInput}
+                    onChange={e => setFillStateInput(e.target.value as 'full' | 'partial' | 'unknown')} style={styles.input}>
+                    <option value="unknown">Unknown</option>
+                    <option value="full">Full tank</option>
+                    <option value="partial">Partial fill</option>
+                  </select>
+                  <p style={styles.cardSubtext}>Economy uses two confirmed full fills and includes partial fills between them. Unknown fills do not establish a cycle.</p>
                 </div>
 
                 {error && <div style={styles.errorAlert}>{error}</div>}
@@ -326,7 +338,7 @@ export default function FuelTracker() {
                   </ResponsiveContainer>
                 ) : (
                   <div style={styles.noDataPlaceholder}>
-                    No trend data available. Log at least two entries to start tracking economy.
+                    No full-tank cycles yet. Record two full fills for the same vehicle; partial fills between them are included.
                   </div>
                 )}
               </div>
@@ -343,6 +355,8 @@ export default function FuelTracker() {
                     <thead>
                       <tr style={styles.trHead}>
                         <th style={styles.th}>Date</th>
+                        <th style={styles.th}>Vehicle</th>
+                        <th style={styles.th}>Tank</th>
                         <th style={styles.th}>Litres</th>
                         <th style={styles.th}>Odometer</th>
                         <th style={styles.th}>Economy</th>
@@ -361,15 +375,18 @@ export default function FuelTracker() {
                               minute: '2-digit'
                             })}
                           </td>
+                          <td style={styles.td}>{vehicles.find(vehicle => vehicle.id === log.vehicleId)?.name || log.vehicleId || 'Unknown vehicle'}</td>
+                          <td style={styles.td}>{log.fillState === 'full' ? 'Full tank' : log.fillState === 'partial' ? 'Partial fill' : 'Unknown'}</td>
                           <td style={styles.td}>{log.litres.toFixed(2)} L</td>
                            <td style={styles.td}>{log.odometer.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km</td>
                           <td style={styles.td}>
-                            {log.economy ? (
+                            {log.economy !== null && log.economy !== undefined ? (
                               <span style={{ color: 'var(--accent-green)', fontWeight: 'bold' }}>
                                  {log.economy.toFixed(2)} km/L
+                                 <small style={{ display: 'block', fontWeight: 400 }}>{log.cycleDistance} km / {log.cycleLitres} L in cycle</small>
                               </span>
                             ) : (
-                              <span style={{ color: 'var(--text-muted)' }}>Initial fill</span>
+                              <span style={{ color: 'var(--text-muted)' }}>{log.economyStatus === 'full-baseline' ? 'Full-tank baseline' : log.economyStatus === 'partial-fill' ? 'Awaiting full fill' : log.economyStatus === 'invalid-interval' ? 'Invalid interval' : 'Unknown fill — ineligible'}</span>
                             )}
                           </td>
                           <td style={styles.td}>
