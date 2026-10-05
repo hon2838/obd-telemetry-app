@@ -874,9 +874,24 @@ class OBDGatewayService : Service(), LocationListener {
 
                     // Local persistence is independent of networking or slow PID completion
                     dao.insert(telemetry)
+
+                    val effectiveSpeed = gpsFix?.speedKmh ?: speed?.toFloat()
+                    val effectiveSpeedSource = if (gpsFix?.speedKmh != null) "GPS" else if (speed != null) "OBD" else ""
+                    val gaugeSnapshot = LiveGaugeSnapshot(
+                        speedKmh = effectiveSpeed,
+                        speedSource = effectiveSpeedSource,
+                        rpm = telemetry.rpm,
+                        coolantTemp = telemetry.coolantTemp,
+                        voltage = telemetry.voltage,
+                        fuelRateLph = telemetry.estimatedFuelRateLph,
+                        fuelEconomyKmL = telemetry.estimatedFuelEconomyKmL,
+                        engineLoad = telemetry.engineLoad,
+                        throttlePos = telemetry.throttlePos,
+                        sampledAtElapsedMs = SystemClock.elapsedRealtime()
+                    )
                     GatewayStatusStore.recordSample(
                         telemetry.vehicleId, obdConnection != null, gpsFix?.elapsedRealtimeNanos?.div(1_000_000L),
-                        SystemClock.elapsedRealtime()
+                        SystemClock.elapsedRealtime(), gaugeSnapshot
                     )
 
                     val updateIntent = Intent("com.example.obdapp.TELEMETRY_UPDATE").apply {

@@ -18,4 +18,12 @@
     <string name="car_sync_queued">Recordings queued for upload</string>
     <string name="car_sync_synced">Saved recordings uploaded</string>
     <string name="car_sync_error">Sync needs attention — check the phone when safely parked</string>
+    <string name="car_action_live_gauges">Live Gauges</string>
+    <string name="car_gauges_title">Live Gauges</string>
+    <string name="car_gauge_speed">Speed</string>
+    <string name="car_gauge_rpm">Engine RPM</string>
+    <string name="car_gauge_coolant">Coolant Temp</string>
+    <string name="car_gauge_voltage">Battery Voltage</string>
+    <string name="car_gauge_fuel">Fuel Economy</string>
+    <string name="car_gauge_load">Engine Load</string>
 </resources>
