@@ -50,6 +50,9 @@ class DeviceStatusScreenTest {
         assertEquals(3, template.pane.rows.size)
         assertTrue(template.pane.actions.isEmpty())
         assertTrue(template.pane.rows.all { it.onClickDelegate == null })
+        assertNotNull(template.actionStrip)
+        assertEquals(1, template.actionStrip!!.actions.size)
+        assertEquals(context.getString(R.string.car_action_live_gauges), template.actionStrip!!.actions[0].title.toString())
     }
 
     @Test fun visibleScreenExpiresGpsWithoutAnotherTelemetrySample() {

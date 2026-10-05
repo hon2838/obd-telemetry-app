@@ -6,6 +6,19 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class GatewaySyncState { UNKNOWN, SETUP_REQUIRED, OFFLINE, UPLOADING, QUEUED, SYNCED, ERROR }
 
+data class LiveGaugeSnapshot(
+    val speedKmh: Float? = null,
+    val speedSource: String = "OBD",
+    val rpm: Int? = null,
+    val coolantTemp: Int? = null,
+    val voltage: Float? = null,
+    val fuelRateLph: Double? = null,
+    val fuelEconomyKmL: Double? = null,
+    val engineLoad: Int? = null,
+    val throttlePos: Int? = null,
+    val sampledAtElapsedMs: Long = 0L
+)
+
 /** Operational state only: this never contains credentials, coordinates, or diagnostic commands. */
 data class GatewayStatus(
     val running: Boolean = false,
@@ -16,7 +29,8 @@ data class GatewayStatus(
     val sampledAtElapsedMs: Long? = null,
     val syncVehicleId: String? = null,
     val syncState: GatewaySyncState = GatewaySyncState.UNKNOWN,
-    val syncUpdatedAtElapsedMs: Long? = null
+    val syncUpdatedAtElapsedMs: Long? = null,
+    val liveGauges: LiveGaugeSnapshot? = null
 )
 
 /** Shared by the existing collector and all car sessions; no second collector or uploader. */
@@ -31,14 +45,21 @@ object GatewayStatusStore {
     }
 
     @Synchronized
-    fun recordSample(vehicleId: String, adapterConnected: Boolean, gpsFixAtElapsedMs: Long?, elapsedMs: Long) {
+    fun recordSample(
+        vehicleId: String,
+        adapterConnected: Boolean,
+        gpsFixAtElapsedMs: Long?,
+        elapsedMs: Long,
+        liveGauges: LiveGaugeSnapshot? = null
+    ) {
         val previous = mutableStatus.value
         mutableStatus.value = mutableStatus.value.copy(
             running = true, vehicleId = vehicleId, adapterConnected = adapterConnected,
             gpsFix = gpsFixAtElapsedMs != null, gpsFixAtElapsedMs = gpsFixAtElapsedMs,
             sampledAtElapsedMs = elapsedMs,
             syncState = if (previous.syncVehicleId == vehicleId && previous.syncState == GatewaySyncState.SYNCED)
-                GatewaySyncState.QUEUED else previous.syncState
+                GatewaySyncState.QUEUED else previous.syncState,
+            liveGauges = liveGauges ?: previous.liveGauges
         )
     }
 

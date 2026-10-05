@@ -4,6 +4,7 @@ import android.os.SystemClock
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
+import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.MessageTemplate
 import androidx.car.app.model.Pane
 import androidx.car.app.model.PaneTemplate
@@ -76,12 +77,28 @@ internal class DeviceStatusScreen(carContext: CarContext) : Screen(carContext) {
             GatewaySyncState.SYNCED -> R.string.car_sync_synced
             GatewaySyncState.ERROR -> R.string.car_sync_error
         }
+
         val pane = Pane.Builder()
             .addRow(row(R.string.car_adapter_title, adapterText))
             .addRow(row(R.string.car_gps_title, if (view.gpsReady) R.string.car_gps_ready else R.string.car_gps_waiting))
             .addRow(row(R.string.car_sync_title, syncText)).build()
-        return PaneTemplate.Builder(pane).setTitle(carContext.getString(R.string.car_status_title))
-            .setHeaderAction(Action.APP_ICON).build()
+
+        val actionStrip = ActionStrip.Builder()
+            .addAction(
+                Action.Builder()
+                    .setTitle(carContext.getString(R.string.car_action_live_gauges))
+                    .setOnClickListener {
+                        screenManager.push(LiveGaugesScreen(carContext))
+                    }
+                    .build()
+            )
+            .build()
+
+        return PaneTemplate.Builder(pane)
+            .setTitle(carContext.getString(R.string.car_status_title))
+            .setHeaderAction(Action.APP_ICON)
+            .setActionStrip(actionStrip)
+            .build()
     }
 
     private fun row(title: Int, text: Int) = Row.Builder()
