@@ -174,6 +174,50 @@ class ResetTroubleCodesCommand : ObdCommand() {
     }
 }
 
+class IntakeAirTemperatureCommand : ObdCommand() {
+    override val tag = "INTAKE_AIR_TEMP"
+    override val name = "Intake Air Temperature"
+    override val mode = "01"
+    override val pid = "0F"
+    override val defaultUnit = "°C"
+    override val handler = { response: ObdRawResponse ->
+        val raw = obdPidPayload(response, 0x0F, 1)
+        if (raw.isNotEmpty()) {
+            val value = raw[0] and 0xFF
+            (value - 40).toString()
+        } else "0"
+    }
+}
+
+class ManifoldAbsolutePressureCommand : ObdCommand() {
+    override val tag = "INTAKE_MANIFOLD_PRESSURE"
+    override val name = "Intake Manifold Absolute Pressure"
+    override val mode = "01"
+    override val pid = "0B"
+    override val defaultUnit = "kPa"
+    override val handler = { response: ObdRawResponse ->
+        val raw = obdPidPayload(response, 0x0B, 1)
+        if (raw.isNotEmpty()) {
+            (raw[0] and 0xFF).toString()
+        } else "0"
+    }
+}
+
+class RelativeThrottlePositionCommand : ObdCommand() {
+    override val tag = "RELATIVE_THROTTLE_POSITION"
+    override val name = "Relative Throttle Position"
+    override val mode = "01"
+    override val pid = "45"
+    override val defaultUnit = "%"
+    override val handler = { response: ObdRawResponse ->
+        val raw = obdPidPayload(response, 0x45, 1)
+        if (raw.isNotEmpty()) {
+            val value = raw[0] and 0xFF
+            (value * 100 / 255).toString()
+        } else "0"
+    }
+}
+
 class OBDGatewayService : Service(), LocationListener {
 
     companion object {
@@ -198,6 +242,8 @@ class OBDGatewayService : Service(), LocationListener {
     private var syncJob: Job? = null
     private val syncWakeupChannel = Channel<Unit>(Channel.CONFLATED)
 
+    @Volatile private var obdCapabilities: ObdCapabilities = ObdCapabilities.EMPTY
+
     // Slow PID cache and timestamps
     @Volatile private var cachedCoolantTemp: Int? = null
     @Volatile private var cachedCoolantTimestamp: Long = 0L
@@ -211,8 +257,14 @@ class OBDGatewayService : Service(), LocationListener {
     @Volatile private var cachedModuleVoltage: Float? = null
     @Volatile private var cachedModuleVoltageTimestamp: Long = 0L
 
+    @Volatile private var cachedIntakeAirTemp: Int? = null
+    @Volatile private var cachedIntakeAirTimestamp: Long = 0L
+
+    @Volatile private var cachedManifoldPressure: Int? = null
+    @Volatile private var cachedManifoldPressureTimestamp: Long = 0L
+
     private var slowPidIndex = 0
-    private val slowPidRetryAfter = LongArray(4)
+    private val slowPidRetryAfter = LongArray(6)
     @Volatile private var cachedEngineLoad: Int? = null
     @Volatile private var cachedThrottlePos: Int? = null
     private var lastSecondaryPidReadElapsed: Long = 0L
@@ -223,6 +275,8 @@ class OBDGatewayService : Service(), LocationListener {
     private val VOLTAGE_REFRESH_MS = 20_000L
     private val FUEL_REFRESH_MS = 60_000L
     private val AMBIENT_REFRESH_MS = 60_000L
+    private val INTAKE_AIR_REFRESH_MS = 20_000L
+    private val MANIFOLD_PRESSURE_REFRESH_MS = 15_000L
 
     @Volatile private var cachedFallbackWifiSsid: String? = null
     @Volatile private var lastFallbackWifiSsidTimestamp: Long = 0L
@@ -562,10 +616,13 @@ class OBDGatewayService : Service(), LocationListener {
                     try {
                         obdMutex.withLock {
                             val connection = connectBluetooth()
-                            initializeObdAdapter(connection)
+                            val capabilities = initializeObdAdapter(connection)
+                            obdCapabilities = capabilities
                             slowPidRetryAfter.fill(0L)
                             cachedEngineLoad = null
                             cachedThrottlePos = null
+                            cachedIntakeAirTemp = null
+                            cachedManifoldPressure = null
                             lastSecondaryPidReadElapsed = 0L
                             throttleRetryAfterElapsed = 0L
                             fuelEstimateRetryAfterElapsed = 0L
@@ -573,7 +630,7 @@ class OBDGatewayService : Service(), LocationListener {
                             // cannot query PIDs during adapter reset/setup.
                             obdConnection = connection
                         }
-                        Log.i(TAG, "OBD adapter initialized successfully")
+                        Log.i(TAG, "OBD adapter initialized successfully (${obdCapabilities.supportedPids.size} supported PIDs)")
                         val matchedVehicle = VehiclePrefs.findVehicleByMac(this@OBDGatewayService, selectedMac)
                         if (matchedVehicle != null && matchedVehicle.id != VehiclePrefs.getActiveVehicleId(this@OBDGatewayService)) {
                             VehiclePrefs.setActiveVehicle(this@OBDGatewayService, matchedVehicle.id)
@@ -600,14 +657,27 @@ class OBDGatewayService : Service(), LocationListener {
 
     private suspend fun pollStaggeredSlowPid() {
         val now = System.currentTimeMillis()
-        val slowPidCandidates = 4
+        val slowPidCandidates = 6
         for (step in 0 until slowPidCandidates) {
             val candidate = (slowPidIndex + step) % slowPidCandidates
+            val isSupported = when (candidate) {
+                0 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x05)
+                1 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x42)
+                2 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x2F)
+                3 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x46)
+                4 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x0F)
+                5 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x0B)
+                else -> false
+            }
+            if (!isSupported) continue
+
             val shouldPoll = when (candidate) {
                 0 -> (now - cachedCoolantTimestamp) >= COOLANT_REFRESH_MS
                 1 -> (now - cachedModuleVoltageTimestamp) >= VOLTAGE_REFRESH_MS
                 2 -> (now - cachedFuelLevelTimestamp) >= FUEL_REFRESH_MS
                 3 -> (now - cachedAmbientTimestamp) >= AMBIENT_REFRESH_MS
+                4 -> (now - cachedIntakeAirTimestamp) >= INTAKE_AIR_REFRESH_MS
+                5 -> (now - cachedManifoldPressureTimestamp) >= MANIFOLD_PRESSURE_REFRESH_MS
                 else -> false
             }
             if (shouldPoll && now >= slowPidRetryAfter[candidate]) {
@@ -652,6 +722,24 @@ class OBDGatewayService : Service(), LocationListener {
                                     cachedAmbientTimestamp = System.currentTimeMillis()
                                 }
                             }
+                            4 -> {
+                                val resp = obdConnection?.run(IntakeAirTemperatureCommand())
+                                delay(100)
+                                val v = resp?.value?.toIntOrNull()
+                                if (v != null) {
+                                    cachedIntakeAirTemp = v
+                                    cachedIntakeAirTimestamp = System.currentTimeMillis()
+                                }
+                            }
+                            5 -> {
+                                val resp = obdConnection?.run(ManifoldAbsolutePressureCommand())
+                                delay(100)
+                                val v = resp?.value?.toIntOrNull()
+                                if (v != null) {
+                                    cachedManifoldPressure = v
+                                    cachedManifoldPressureTimestamp = System.currentTimeMillis()
+                                }
+                            }
                         }
                     }
                 } catch (noData: NoDataException) {
@@ -671,14 +759,19 @@ class OBDGatewayService : Service(), LocationListener {
             1 -> cachedModuleVoltage = null
             2 -> cachedFuelLevel = null
             3 -> cachedAmbientTemp = null
+            4 -> cachedIntakeAirTemp = null
+            5 -> cachedManifoldPressure = null
         }
         Log.i(TAG, "Optional OBD sensor $candidate unavailable; retrying in five minutes")
     }
 
     private fun handleObdDisconnect() {
         obdConnection = null
+        obdCapabilities = ObdCapabilities.EMPTY
         cachedEngineLoad = null
         cachedThrottlePos = null
+        cachedIntakeAirTemp = null
+        cachedManifoldPressure = null
         lastSecondaryPidReadElapsed = 0L
         throttleRetryAfterElapsed = 0L
         fuelEstimateRetryAfterElapsed = 0L
@@ -742,11 +835,16 @@ class OBDGatewayService : Service(), LocationListener {
                                             } else throw e
                                         }
                                     }
-                                    // Read throttle on every fast cycle. A separate
-                                    // post-read time gate would skip quick cycles.
+                                    // Read throttle on every fast cycle. Prefer relative throttle (PID 0x45)
+                                    // when supported to report true pedal demand instead of absolute throttle.
                                     if (nowElapsed >= throttleRetryAfterElapsed) {
                                         try {
-                                            cachedThrottlePos = obdConnection?.run(ThrottlePositionCommand())?.value?.toIntOrNull()
+                                            val throttleCmd = if (obdCapabilities.isSupported(0x45)) {
+                                                RelativeThrottlePositionCommand()
+                                            } else {
+                                                ThrottlePositionCommand()
+                                            }
+                                            cachedThrottlePos = obdConnection?.run(throttleCmd)?.value?.toIntOrNull()
                                             delay(ObdPollingCadence.COMMAND_GAP_MS)
                                         } catch (e: Exception) {
                                             if (e is NoDataException || e is UnSupportedCommandException) {
@@ -790,7 +888,7 @@ class OBDGatewayService : Service(), LocationListener {
 
                     val coolantTemp = cachedCoolantTemp
                     val fuelLevel = cachedFuelLevel
-                    val ambientTemp = cachedAmbientTemp
+                    val ambientTemp = cachedAmbientTemp ?: cachedIntakeAirTemp
                     var voltage = cachedModuleVoltage ?: readSystemPropVoltage()
 
                     if (obdConnection == null) {
@@ -803,9 +901,8 @@ class OBDGatewayService : Service(), LocationListener {
                     }
 
                     var gpsFix = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
-                    if (gpsFix == null && SystemClock.elapsedRealtime() - lastGpsRegistrationElapsed >= 60_000L) {
-                        // Re-subscribe after an ACC/provider interruption, without
-                        // toggling the head unit's system-wide location setting.
+                    if (locationManager == null) {
+                        // Subscribe once if not already initialized
                         withContext(Dispatchers.Main) { setupGPS() }
                         gpsFix = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
                     }
@@ -887,6 +984,8 @@ class OBDGatewayService : Service(), LocationListener {
                         fuelEconomyKmL = telemetry.estimatedFuelEconomyKmL,
                         engineLoad = telemetry.engineLoad,
                         throttlePos = telemetry.throttlePos,
+                        intakeAirTemp = cachedIntakeAirTemp,
+                        manifoldPressureKpa = cachedManifoldPressure,
                         sampledAtElapsedMs = SystemClock.elapsedRealtime()
                     )
                     GatewayStatusStore.recordSample(
@@ -906,6 +1005,9 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("rpm", telemetry.rpm ?: -1)
                         putExtra("coolant", telemetry.coolantTemp ?: -1)
                         putExtra("throttle", telemetry.throttlePos ?: -1)
+                        putExtra("iat", cachedIntakeAirTemp ?: -1)
+                        putExtra("map", cachedManifoldPressure ?: -1)
+                        putExtra("ambient", telemetry.ambientTemp ?: -1)
                         putExtra("estimated_fuel_economy_kml", telemetry.estimatedFuelEconomyKmL ?: -1.0)
                         putExtra("estimated_fuel_rate_lph", telemetry.estimatedFuelRateLph ?: -1.0)
                         putExtra("volt", telemetry.voltage ?: -1.0f)

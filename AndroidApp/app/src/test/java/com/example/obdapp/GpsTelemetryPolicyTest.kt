@@ -8,8 +8,8 @@ class GpsTelemetryPolicyTest {
 
     @Test
     fun rejectsOldCachedFixAndLeavesPolicyEmpty() {
-        assertFalse(policy.accept(fix(timeMs = 1_000L), nowMs = 30_000L))
-        assertNull(policy.current(nowMs = 30_000L))
+        assertFalse(policy.accept(fix(timeMs = 1_000L), nowMs = 35_000L))
+        assertNull(policy.current(nowMs = 35_000L))
     }
 
     @Test
@@ -37,7 +37,8 @@ class GpsTelemetryPolicyTest {
         assertNull(afterSpeedExpiry.speedKmh)
         assertEquals(42.0, afterSpeedExpiry.latitude, 0.0)
         assertEquals(12.6f, policy.current(nowMs = 8_000L)!!.speedKmh!!, 0.001f)
-        assertNull(policy.current(nowMs = 15_001L))
+        assertEquals(42.0, policy.current(nowMs = 15_001L)!!.latitude, 0.0)
+        assertNull(policy.current(nowMs = 35_001L))
     }
 
     @Test
@@ -52,7 +53,7 @@ class GpsTelemetryPolicyTest {
     fun clearingDisabledProviderDropsFixAndDuplicateDoesNotRefreshAge() {
         assertTrue(policy.accept(fix(timeMs = 1_000L), nowMs = 1_000L))
         assertFalse(policy.accept(fix(timeMs = 1_000L), nowMs = 10_000L))
-        assertNull(policy.current(nowMs = 11_001L))
+        assertNull(policy.current(nowMs = 31_001L))
         policy.clear()
         assertNull(policy.current(nowMs = 1_000L))
     }

@@ -16,6 +16,8 @@ data class LiveGaugeSnapshot(
     val fuelEconomyKmL: Double? = null,
     val engineLoad: Int? = null,
     val throttlePos: Int? = null,
+    val intakeAirTemp: Int? = null,
+    val manifoldPressureKpa: Int? = null,
     val sampledAtElapsedMs: Long = 0L
 )
 
