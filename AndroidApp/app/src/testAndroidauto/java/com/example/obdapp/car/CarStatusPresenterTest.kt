@@ -28,7 +28,7 @@ class CarStatusPresenterTest {
     }
 
     @Test fun gpsExpiresIndependentlyFromAdapterStatus() {
-        val view = present(sample, 11_001L)
+        val view = present(sample.copy(sampledAtElapsedMs = 31_000L), 32_000L)
         assertEquals(AdapterStatus.CONNECTED, view.adapter)
         assertFalse(view.gpsReady)
     }

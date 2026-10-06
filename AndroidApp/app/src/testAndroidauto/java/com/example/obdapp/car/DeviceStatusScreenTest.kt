@@ -66,7 +66,7 @@ class DeviceStatusScreenTest {
             val initial = controller.templatesReturned.last() as PaneTemplate
             assertEquals(context.getString(R.string.car_gps_ready), initial.pane.rows[1].texts.single().toString())
 
-            shadowOf(Looper.getMainLooper()).idleFor(12, TimeUnit.SECONDS)
+            shadowOf(Looper.getMainLooper()).idleFor(32, TimeUnit.SECONDS)
             val expired = controller.templatesReturned.last() as PaneTemplate
             assertEquals(context.getString(R.string.car_gps_waiting), expired.pane.rows[1].texts.single().toString())
         } finally {

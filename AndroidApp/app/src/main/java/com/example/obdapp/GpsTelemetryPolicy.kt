@@ -83,7 +83,7 @@ internal class GpsTelemetryPolicy(
             fix.elapsedRealtimeNanos >= 0L
 
     companion object {
-        const val DEFAULT_COORDINATE_MAX_AGE_MS = 10_000L
+        const val DEFAULT_COORDINATE_MAX_AGE_MS = 30_000L
         const val DEFAULT_SPEED_MAX_AGE_MS = 3_000L
         private const val NANOS_PER_MILLISECOND = 1_000_000L
         private const val METERS_PER_SECOND_TO_KMH = 3.6f
