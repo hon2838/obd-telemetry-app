@@ -12,14 +12,12 @@
         android:padding="20dp">
 
         <include layout="@layout/view_nav_bar" />
-        <include layout="@layout/view_title_header" />
-        <include layout="@layout/view_status_card" />
 
         <!-- Live Telemetry HUD & Head Unit State directly on primary screen -->
         <include layout="@layout/view_telemetry_hud" />
         <include layout="@layout/view_head_unit_card" />
 
-        <!-- Collapsible Accordion Dropdown for Settings & Hardware Management -->
+        <!-- Collapsible Accordion Dropdown for Settings, Hardware & Service Status -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -48,6 +46,7 @@
                 android:visibility="gone"
                 android:layout_marginTop="16dp">
 
+                <include layout="@layout/view_status_card" />
                 <include layout="@layout/view_vehicle_card" />
                 <include layout="@layout/view_bluetooth_card" />
                 <include layout="@layout/view_api_config_card" />
