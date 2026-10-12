@@ -8,13 +8,17 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
-import android.widget.EditText
 import android.widget.Toast
+import androidx.appcompat.widget.PopupMenu
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -50,6 +54,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvWifiSsid: TextView
     private lateinit var tvBtConnected: TextView
     private lateinit var tvTelemetryAge: TextView
+    private lateinit var tvIntakeAirTemp: TextView
+    private lateinit var tvManifoldPressure: TextView
+    private lateinit var tvEngineLoad: TextView
+    private lateinit var tvMassAirFlow: TextView
+    private lateinit var tvSprintTime: TextView
+    private lateinit var tvFuelLoopStatus: TextView
 
     private val mainJob = kotlinx.coroutines.Job()
     private val mainScope = CoroutineScope(Dispatchers.Main + mainJob)
@@ -120,9 +130,43 @@ class MainActivity : AppCompatActivity() {
                     tvWifiSsid.text = if (wifiSsid.isNotEmpty()) wifiSsid else "N/A"
                     tvBtConnected.text = if (btConnected) "Connected" else "Disconnected"
 
+                    // Expanded OBD gauges
+                    val iat = it.getIntExtra("iat", -1)
+                    val map = it.getIntExtra("map", -1)
+                    val load = it.getIntExtra("load", -1)
+                    val maf = it.getDoubleExtra("maf", -1.0)
+                    val fuelStatus = it.getIntExtra("fuel_status", -1)
+
+                    tvIntakeAirTemp.text = if (iat != -1) "$iat °C" else "N/A"
+                    tvManifoldPressure.text = if (map != -1) "$map kPa" else "N/A"
+                    tvEngineLoad.text = if (load != -1) "$load %" else "N/A"
+                    tvMassAirFlow.text = if (maf >= 0.0) String.format(Locale.getDefault(), "%.1f g/s", maf) else "N/A"
+                    
+                    tvFuelLoopStatus.text = when (fuelStatus) {
+                        1 -> "Open (Cold)"
+                        2 -> "Closed Loop"
+                        4 -> "Open (Load)"
+                        8 -> "Open (Fault)"
+                        16 -> "Closed (Fault)"
+                        else -> "N/A"
+                    }
+                    tvFuelLoopStatus.setTextColor(
+                        when (fuelStatus) {
+                            2 -> getColor(R.color.accent_green)
+                            1, 4 -> getColor(R.color.accent_amber)
+                            8, 16 -> getColor(R.color.accent_red)
+                            else -> getColor(R.color.text_primary)
+                        }
+                    )
+
                     val accelTime = if (it.hasExtra("accelTime")) it.getDoubleExtra("accelTime", -1.0) else -1.0
                     if (accelTime > 0.0) {
+                        tvSprintTime.text = String.format(Locale.getDefault(), "%.2fs", accelTime)
+                        tvSprintTime.setTextColor(getColor(R.color.accent_cyan))
                         Toast.makeText(this@MainActivity, String.format(Locale.getDefault(), "⚡ 0-100 km/h: %.2fs", accelTime), Toast.LENGTH_LONG).show()
+                    } else if (tvSprintTime.text.isEmpty() || tvSprintTime.text.toString() == "N/A") {
+                        tvSprintTime.text = "Ready"
+                        tvSprintTime.setTextColor(getColor(R.color.text_primary))
                     }
                 } else if (it.action == "com.example.obdapp.STATUS_UPDATE") {
                     val status = it.getStringExtra("status") ?: "Service Stopped"
@@ -212,7 +256,16 @@ class MainActivity : AppCompatActivity() {
         tvWifiSsid = findViewById(R.id.tvWifiSsid)
         tvBtConnected = findViewById(R.id.tvBtConnected)
         tvTelemetryAge = findViewById(R.id.tvTelemetryAge)
+        tvIntakeAirTemp = findViewById(R.id.tvIntakeAirTemp)
+        tvManifoldPressure = findViewById(R.id.tvManifoldPressure)
+        tvEngineLoad = findViewById(R.id.tvEngineLoad)
+        tvMassAirFlow = findViewById(R.id.tvMassAirFlow)
+        tvSprintTime = findViewById(R.id.tvSprintTime)
+        tvFuelLoopStatus = findViewById(R.id.tvFuelLoopStatus)
         sparkline = findViewById(R.id.sparkline)
+
+        setupCollapsibleSettingsAndMenu()
+
         val etApiUrl = findViewById<EditText>(R.id.etApiUrl)
         val etApiKey = findViewById<EditText>(R.id.etApiKey)
         val btnApiSave = findViewById<Button>(R.id.btnApiSave)
@@ -374,6 +427,115 @@ class MainActivity : AppCompatActivity() {
 
         btnAddVehicle.setOnClickListener { showAddVehicleDialog() }
         btnPairDevice?.setOnClickListener { showPairingDialog() }
+    }
+
+    private fun setupCollapsibleSettingsAndMenu() {
+        val btnToggleSettings = findViewById<Button?>(R.id.btnToggleSettings)
+        val settingsContainer = findViewById<View?>(R.id.settingsContainer)
+        val mainScrollView = findViewById<ScrollView?>(R.id.mainScrollView)
+        val btnMainMenu = findViewById<ImageButton?>(R.id.btnMainMenu)
+
+        fun updateToggleText(visible: Boolean) {
+            btnToggleSettings?.text = if (visible) {
+                getString(R.string.btn_hide_settings)
+            } else {
+                getString(R.string.btn_show_settings)
+            }
+        }
+
+        fun scrollToChild(target: View) {
+            mainScrollView?.post {
+                var topOffset = 0
+                var current: View? = target
+                while (current != null && current != mainScrollView) {
+                    topOffset += current.top
+                    val parent = current.parent
+                    current = if (parent is View) parent else null
+                }
+                mainScrollView.smoothScrollTo(0, topOffset)
+            }
+        }
+
+        btnToggleSettings?.setOnClickListener {
+            val isCurrentlyVisible = settingsContainer?.visibility == View.VISIBLE
+            val makeVisible = !isCurrentlyVisible
+            settingsContainer?.visibility = if (makeVisible) View.VISIBLE else View.GONE
+            updateToggleText(makeVisible)
+            if (makeVisible) {
+                scrollToChild(btnToggleSettings)
+            }
+        }
+
+        btnMainMenu?.setOnClickListener { v ->
+            val popup = PopupMenu(this, v)
+            val isVisible = settingsContainer?.visibility == View.VISIBLE
+            popup.menu.add(0, 1, 0, if (isVisible) getString(R.string.menu_hide_settings) else getString(R.string.menu_show_settings))
+            popup.menu.add(0, 2, 1, getString(R.string.menu_add_vehicle))
+            popup.menu.add(0, 3, 2, getString(R.string.menu_bluetooth_adapter))
+            popup.menu.add(0, 4, 3, getString(R.string.menu_pair_device))
+            popup.menu.add(0, 5, 4, getString(R.string.menu_api_config))
+            popup.menu.add(0, 6, 5, getString(R.string.menu_log_fuel))
+
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    1 -> {
+                        val makeVisible = !(settingsContainer?.visibility == View.VISIBLE)
+                        settingsContainer?.visibility = if (makeVisible) View.VISIBLE else View.GONE
+                        updateToggleText(makeVisible)
+                        if (makeVisible && btnToggleSettings != null) {
+                            scrollToChild(btnToggleSettings)
+                        }
+                        true
+                    }
+                    2 -> {
+                        settingsContainer?.visibility = View.VISIBLE
+                        updateToggleText(true)
+                        val vehicleSpinner = findViewById<View?>(R.id.vehicleSpinner)
+                        if (vehicleSpinner != null) {
+                            scrollToChild(vehicleSpinner)
+                        }
+                        showAddVehicleDialog()
+                        true
+                    }
+                    3 -> {
+                        settingsContainer?.visibility = View.VISIBLE
+                        updateToggleText(true)
+                        val bluetoothSpinner = findViewById<View?>(R.id.bluetoothDeviceSpinner)
+                        bluetoothSpinner?.let {
+                            scrollToChild(it)
+                            it.performClick()
+                        }
+                        true
+                    }
+                    4 -> {
+                        showPairingDialog()
+                        true
+                    }
+                    5 -> {
+                        settingsContainer?.visibility = View.VISIBLE
+                        updateToggleText(true)
+                        val etApiUrl = findViewById<View?>(R.id.etApiUrl)
+                        etApiUrl?.let {
+                            scrollToChild(it)
+                            it.requestFocus()
+                        }
+                        true
+                    }
+                    6 -> {
+                        settingsContainer?.visibility = View.VISIBLE
+                        updateToggleText(true)
+                        val etFuelLitres = findViewById<View?>(R.id.etFuelLitres)
+                        etFuelLitres?.let {
+                            scrollToChild(it)
+                            it.requestFocus()
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
+            popup.show()
+        }
     }
 
     private fun updateDeviceStatusUi() {

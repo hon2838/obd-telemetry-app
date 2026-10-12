@@ -6,8 +6,9 @@
     android:padding="16dp"
     android:baselineAligned="false">
 
-    <!-- Left Column: Controls and Status -->
+    <!-- Left Column: Controls, Status and Collapsible Settings -->
     <ScrollView
+        android:id="@+id/mainScrollView"
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_weight="1"
@@ -22,11 +23,43 @@
             <include layout="@layout/view_nav_bar" />
             <include layout="@layout/view_title_header" />
             <include layout="@layout/view_status_card" />
-            <include layout="@layout/view_vehicle_card" />
-            <include layout="@layout/view_bluetooth_card" />
-            <include layout="@layout/view_api_config_card" />
-            <include layout="@layout/view_settings_card" />
-            <include layout="@layout/view_fuel_card" />
+
+            <!-- Collapsible Accordion Dropdown for Settings & Hardware Management -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/card_bg"
+                android:padding="16dp"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="16dp">
+
+                <Button
+                    android:id="@+id/btnToggleSettings"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:background="@drawable/btn_stop_bg"
+                    android:text="@string/btn_show_settings"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:gravity="center" />
+
+                <LinearLayout
+                    android:id="@+id/settingsContainer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone"
+                    android:layout_marginTop="16dp">
+
+                    <include layout="@layout/view_vehicle_card" />
+                    <include layout="@layout/view_bluetooth_card" />
+                    <include layout="@layout/view_api_config_card" />
+                    <include layout="@layout/view_settings_card" />
+                    <include layout="@layout/view_fuel_card" />
+                </LinearLayout>
+            </LinearLayout>
         </LinearLayout>
     </ScrollView>
 
