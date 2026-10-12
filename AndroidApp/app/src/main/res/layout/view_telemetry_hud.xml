@@ -113,6 +113,60 @@
                     android:text="N/A" />
             </LinearLayout>
 
+            <!-- Intake Air Temp (IAT) -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Intake Air Temp" />
+                <TextView
+                    android:id="@+id/tvIntakeAirTemp"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Manifold Absolute Pressure (MAP) -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Manifold Pressure" />
+                <TextView
+                    android:id="@+id/tvManifoldPressure"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Engine Load -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Engine Load" />
+                <TextView
+                    android:id="@+id/tvEngineLoad"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- Mass Air Flow (MAF) -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Mass Air Flow" />
+                <TextView
+                    android:id="@+id/tvMassAirFlow"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
+            <!-- 0-100 km/h Sprint -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="0-100 km/h Sprint" />
+                <TextView
+                    android:id="@+id/tvSprintTime"
+                    style="@style/HudValue"
+                    android:text="Ready" />
+            </LinearLayout>
+
+            <!-- Fuel Loop Status -->
+            <LinearLayout style="@style/HudCell">
+                <TextView style="@style/HudLabel" android:text="Fuel Loop Status" />
+                <TextView
+                    android:id="@+id/tvFuelLoopStatus"
+                    style="@style/HudValue"
+                    android:text="N/A" />
+            </LinearLayout>
+
             <!-- Estimated instantaneous fuel economy (petrol MAF estimate) -->
             <LinearLayout style="@style/HudCell" android:layout_columnSpan="2">
                 <TextView style="@style/HudLabel" android:text="Estimated fuel economy (Petrol estimate)" />

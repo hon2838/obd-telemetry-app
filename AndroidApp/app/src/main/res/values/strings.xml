@@ -3,4 +3,14 @@
     <string name="telemetry_waiting">Waiting for data…</string>
     <string name="telemetry_live">Live</string>
     <string name="telemetry_updated">Updated %1$ds ago</string>
+    <string name="menu_show_settings">Show Settings &amp; Hardware</string>
+    <string name="menu_hide_settings">Hide Settings &amp; Hardware</string>
+    <string name="menu_add_vehicle">Add / Switch Vehicle</string>
+    <string name="menu_bluetooth_adapter">Select Bluetooth Adapter</string>
+    <string name="menu_pair_device">Pair New ELM327 Adapter</string>
+    <string name="menu_api_config">API Server Configuration</string>
+    <string name="menu_log_fuel">Log Fuel Fill-Up</string>
+    <string name="btn_show_settings">▼  SETTINGS &amp; HARDWARE CONFIG</string>
+    <string name="btn_hide_settings">▲  HIDE SETTINGS &amp; HARDWARE CONFIG</string>
+    <string name="cd_quick_settings_menu">Quick Settings Menu</string>
 </resources>
