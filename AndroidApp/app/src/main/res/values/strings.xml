@@ -13,4 +13,12 @@
     <string name="btn_show_settings">▼  SETTINGS &amp; HARDWARE CONFIG</string>
     <string name="btn_hide_settings">▲  HIDE SETTINGS &amp; HARDWARE CONFIG</string>
     <string name="cd_quick_settings_menu">Quick Settings Menu</string>
+    <string name="cd_nav_menu">Navigation Menu</string>
+    <string name="nav_gateway">Gateway (Live Telemetry)</string>
+    <string name="nav_diagnostics">Diagnostics (DTCs)</string>
+    <string name="nav_trips">Trips &amp; Drive Sessions</string>
+    <string name="nav_fuel">Fuel Economy &amp; Fill-Ups</string>
+    <string name="nav_perf">Performance &amp; Acceleration</string>
+    <string name="nav_maint">Vehicle Maintenance</string>
+    <string name="menu_gateway_service">Gateway Service Controls</string>
 </resources>

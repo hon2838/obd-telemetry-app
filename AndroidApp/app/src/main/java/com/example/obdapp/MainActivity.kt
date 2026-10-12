@@ -470,11 +470,12 @@ class MainActivity : AppCompatActivity() {
             val popup = PopupMenu(this, v)
             val isVisible = settingsContainer?.visibility == View.VISIBLE
             popup.menu.add(0, 1, 0, if (isVisible) getString(R.string.menu_hide_settings) else getString(R.string.menu_show_settings))
-            popup.menu.add(0, 2, 1, getString(R.string.menu_add_vehicle))
-            popup.menu.add(0, 3, 2, getString(R.string.menu_bluetooth_adapter))
-            popup.menu.add(0, 4, 3, getString(R.string.menu_pair_device))
-            popup.menu.add(0, 5, 4, getString(R.string.menu_api_config))
-            popup.menu.add(0, 6, 5, getString(R.string.menu_log_fuel))
+            popup.menu.add(0, 2, 1, getString(R.string.menu_gateway_service))
+            popup.menu.add(0, 3, 2, getString(R.string.menu_add_vehicle))
+            popup.menu.add(0, 4, 3, getString(R.string.menu_bluetooth_adapter))
+            popup.menu.add(0, 5, 4, getString(R.string.menu_pair_device))
+            popup.menu.add(0, 6, 5, getString(R.string.menu_api_config))
+            popup.menu.add(0, 7, 6, getString(R.string.menu_log_fuel))
 
             popup.setOnMenuItemClickListener { item ->
                 when (item.itemId) {
@@ -490,6 +491,15 @@ class MainActivity : AppCompatActivity() {
                     2 -> {
                         settingsContainer?.visibility = View.VISIBLE
                         updateToggleText(true)
+                        val statusCard = findViewById<View?>(R.id.statusText)
+                        if (statusCard != null) {
+                            scrollToChild(statusCard)
+                        }
+                        true
+                    }
+                    3 -> {
+                        settingsContainer?.visibility = View.VISIBLE
+                        updateToggleText(true)
                         val vehicleSpinner = findViewById<View?>(R.id.vehicleSpinner)
                         if (vehicleSpinner != null) {
                             scrollToChild(vehicleSpinner)
@@ -497,7 +507,7 @@ class MainActivity : AppCompatActivity() {
                         showAddVehicleDialog()
                         true
                     }
-                    3 -> {
+                    4 -> {
                         settingsContainer?.visibility = View.VISIBLE
                         updateToggleText(true)
                         val bluetoothSpinner = findViewById<View?>(R.id.bluetoothDeviceSpinner)
@@ -507,11 +517,11 @@ class MainActivity : AppCompatActivity() {
                         }
                         true
                     }
-                    4 -> {
+                    5 -> {
                         showPairingDialog()
                         true
                     }
-                    5 -> {
+                    6 -> {
                         settingsContainer?.visibility = View.VISIBLE
                         updateToggleText(true)
                         val etApiUrl = findViewById<View?>(R.id.etApiUrl)
@@ -521,7 +531,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         true
                     }
-                    6 -> {
+                    7 -> {
                         settingsContainer?.visibility = View.VISIBLE
                         updateToggleText(true)
                         val etFuelLitres = findViewById<View?>(R.id.etFuelLitres)
