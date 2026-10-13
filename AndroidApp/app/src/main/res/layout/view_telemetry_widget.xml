@@ -59,7 +59,8 @@
                 android:text="0.0"
                 android:textColor="@color/text_primary"
                 android:textSize="24sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:fontFeatureSettings="tnum" />
 
             <TextView
                 android:id="@+id/tvDigitalUnit"
@@ -119,7 +120,8 @@
                 android:text="0.0"
                 android:textColor="@color/accent_cyan"
                 android:textSize="13sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:fontFeatureSettings="tnum" />
         </LinearLayout>
 
         <com.example.obdapp.SparklineView

@@ -80,7 +80,7 @@ class Migration7To8Test {
         }
         openHelper.close()
         return Room.databaseBuilder(ctx, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10)
+            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11)
             .build()
     }
 
@@ -234,7 +234,8 @@ class Migration7To8Test {
                 AppDatabase.MIGRATION_6_7,
                 AppDatabase.MIGRATION_7_8,
                 AppDatabase.MIGRATION_8_9,
-                AppDatabase.MIGRATION_9_10
+                AppDatabase.MIGRATION_9_10,
+                AppDatabase.MIGRATION_10_11
             )
             .build()
         try {

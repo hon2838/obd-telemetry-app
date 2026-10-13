@@ -130,4 +130,75 @@ class CockpitDashboardTest {
         bar.currentValue = 150f
         assertEquals(120f, bar.currentValue)
     }
+
+    @Test
+    fun saveAllCustomSlotsPreservesBaseSlotsWhenTransitioningToCustom() {
+        val cruiserSlots = configManager.getSlotConfigs(DashboardPreset.CRUISER)
+        configManager.saveAllCustomSlots(cruiserSlots)
+        // Modify slot 0
+        configManager.saveCustomSlot(0, SlotConfig(TelemetryMetric.COOLANT, DisplayStyle.DIAL))
+        configManager.setActivePreset(DashboardPreset.CUSTOM)
+
+        val customSlots = configManager.loadCustomSlots()
+        assertEquals(12, customSlots.size)
+        // Slot 0 is modified
+        assertEquals(TelemetryMetric.COOLANT, customSlots[0].metric)
+        assertEquals(DisplayStyle.DIAL, customSlots[0].style)
+        // Slot 1 retains Cruiser's RPM
+        assertEquals(cruiserSlots[1].metric, customSlots[1].metric)
+        assertEquals(cruiserSlots[1].style, customSlots[1].style)
+        // Slot 6 retains Cruiser's FUEL_ECONOMY
+        assertEquals(TelemetryMetric.FUEL_ECONOMY, customSlots[6].metric)
+        assertEquals(DisplayStyle.DIGITAL, customSlots[6].style)
+    }
+
+    @Test
+    fun bindMetricResetsPeakValueToNewMetricMin() {
+        val widget = TelemetryWidgetView(context)
+        widget.bindMetric(TelemetryMetric.RPM, DisplayStyle.DIAL)
+        widget.updateValue(6000.0)
+
+        val dial = widget.findViewById<CircularGaugeView>(R.id.dialGaugeView)
+        assertEquals(6000f, dial.peakValue)
+
+        // Rebind to SPEED (maxVal 240, minVal 0)
+        widget.bindMetric(TelemetryMetric.SPEED, DisplayStyle.DIAL)
+        assertEquals(TelemetryMetric.SPEED.minVal, dial.peakValue)
+        assertEquals(TelemetryMetric.SPEED.minVal, dial.currentValue)
+    }
+
+    @Test
+    fun invertedAndStandardThresholdsEvaluateWithoutError() {
+        val gauge = CircularGaugeView(context)
+        gauge.minValue = 0f
+        gauge.maxValue = 100f
+        // Inverted: lower values are critical (e.g. Fuel Level: warn 15, crit 8)
+        gauge.warningThreshold = 15f
+        gauge.criticalThreshold = 8f
+
+        // High fuel should be normal
+        gauge.currentValue = 80f
+        assertEquals(80f, gauge.currentValue)
+
+        // Low fuel triggers warning/crit
+        gauge.currentValue = 10f
+        assertEquals(10f, gauge.currentValue)
+        gauge.currentValue = 5f
+        assertEquals(5f, gauge.currentValue)
+
+        // Linear bar test with inverted threshold
+        val bar = LinearBarGaugeView(context)
+        bar.minValue = 0f
+        bar.maxValue = 100f
+        bar.warningThreshold = 15f
+        bar.criticalThreshold = 8f
+        bar.currentValue = 6f
+        assertEquals(6f, bar.currentValue)
+
+        // Standard threshold (warn < crit)
+        bar.warningThreshold = 80f
+        bar.criticalThreshold = 95f
+        bar.currentValue = 90f
+        assertEquals(90f, bar.currentValue)
+    }
 }

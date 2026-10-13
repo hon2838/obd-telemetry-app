@@ -249,13 +249,10 @@ class MainActivity : AppCompatActivity() {
                 TelemetryMetric.FUEL_RATE -> if (lastFuelRate != null && lastFuelRate!! >= 0.0) lastFuelRate else null
                 TelemetryMetric.GPS_ALTITUDE -> if (hasAltitude) alt else null
                 TelemetryMetric.FUEL_LEVEL -> {
-                    val fl = it.getIntExtra("fuel_level", -1)
+                    val fl = it.getIntOrNumber("fuel_level", -1)
                     if (fl >= 0) fl.toDouble() else null
                 }
-                TelemetryMetric.TIMING_ADVANCE -> {
-                    val t = it.getDoubleExtra("timing", 0.0)
-                    t
-                }
+                TelemetryMetric.TIMING_ADVANCE -> if (it.hasExtra("timing")) it.getDoubleOrNumber("timing", 0.0) else null
                 TelemetryMetric.MANIFOLD_PRESSURE -> if (map != -1) map.toDouble() else null
                 TelemetryMetric.MASS_AIR_FLOW -> if (maf >= 0.0) maf else null
             }
@@ -718,11 +715,12 @@ class MainActivity : AppCompatActivity() {
                 showSlotCustomizerDialog(index)
             }
             slot.onStyleChangedListener = { newStyle ->
-                dashboardConfigManager.saveCustomSlot(index, SlotConfig(slot.currentMetric, newStyle))
                 if (dashboardConfigManager.getActivePreset() != DashboardPreset.CUSTOM) {
+                    dashboardConfigManager.saveAllCustomSlots(cockpitSlots.map { SlotConfig(it.currentMetric, it.currentStyle) })
                     dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
                     btnPresetSelector?.text = "CUSTOM ▾"
                 }
+                dashboardConfigManager.saveCustomSlot(index, SlotConfig(slot.currentMetric, newStyle))
             }
         }
     }
@@ -784,9 +782,12 @@ class MainActivity : AppCompatActivity() {
                 val chosenMetric = metrics[spinnerMetric.selectedItemPosition]
                 val chosenStyle = styles[spinnerStyle.selectedItemPosition]
                 slot.bindMetric(chosenMetric, chosenStyle)
+                if (dashboardConfigManager.getActivePreset() != DashboardPreset.CUSTOM) {
+                    dashboardConfigManager.saveAllCustomSlots(cockpitSlots.map { SlotConfig(it.currentMetric, it.currentStyle) })
+                    dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
+                    btnPresetSelector?.text = "CUSTOM ▾"
+                }
                 dashboardConfigManager.saveCustomSlot(slotIndex, SlotConfig(chosenMetric, chosenStyle))
-                dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
-                btnPresetSelector?.text = "CUSTOM ▾"
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1225,7 +1226,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Unprivileged receiver for automated test emulators and local simulation
-        registerReceiver(mockTelemetryReceiver, android.content.IntentFilter("com.example.obdapp.MOCK_TELEMETRY"))
+        ContextCompat.registerReceiver(
+            this,
+            mockTelemetryReceiver,
+            android.content.IntentFilter("com.example.obdapp.MOCK_TELEMETRY"),
+            ContextCompat.RECEIVER_EXPORTED
+        )
 
         // The collector runs in this process. Its published lifecycle state is
         // reliable on modern Android, unlike deprecated service enumeration.

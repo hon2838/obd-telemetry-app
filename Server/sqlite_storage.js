@@ -7,7 +7,8 @@ const SUPPORTED_RECORD_FIELDS = new Set([
   'engineLoad', 'throttlePos', 'fuelLevel', 'ambientTemp', 'voltage', 'batteryVoltage',
   'accelTime', 'alertCoolant', 'alertVoltage', 'accOn', 'headlightOn', 'volume',
   'wifiSsid', 'btConnected',
-  'mafGps', 'fuelSystemStatus', 'estimatedFuelRateLph', 'estimatedFuelEconomyKmL'
+  'mafGps', 'fuelSystemStatus', 'estimatedFuelRateLph', 'estimatedFuelEconomyKmL',
+  'iat', 'map'
 ]);
 
 function initSqliteStorage(sqlitePath) {
@@ -46,7 +47,13 @@ function initSqliteStorage(sqlitePath) {
       wifi_ssid TEXT,
       bt_connected INTEGER,
       received_at INTEGER NOT NULL,
-      ingest_seq INTEGER
+      ingest_seq INTEGER,
+      maf_gps REAL,
+      fuel_system_status INTEGER,
+      estimated_fuel_rate_lph REAL,
+      estimated_fuel_economy_kml REAL,
+      iat REAL,
+      map REAL
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_telemetry_vehicle_event
@@ -63,14 +70,15 @@ function initSqliteStorage(sqlitePath) {
   `);
 
   // Upgrade existing WAL databases in place; older telemetry stays nullable.
-  const fuelColumns = {
+  const extendedColumns = {
     maf_gps: 'REAL', fuel_system_status: 'INTEGER',
-    estimated_fuel_rate_lph: 'REAL', estimated_fuel_economy_kml: 'REAL'
+    estimated_fuel_rate_lph: 'REAL', estimated_fuel_economy_kml: 'REAL',
+    iat: 'REAL', map: 'REAL'
   };
   const existingColumns = new Set(db.prepare('PRAGMA table_info(telemetry)').all().map(row => row.name));
   db.exec('BEGIN IMMEDIATE');
   try {
-    for (const [name, type] of Object.entries(fuelColumns)) {
+    for (const [name, type] of Object.entries(extendedColumns)) {
       if (!existingColumns.has(name)) db.exec(`ALTER TABLE telemetry ADD COLUMN ${name} ${type}`);
     }
     db.exec('COMMIT');
@@ -130,14 +138,16 @@ function initSqliteStorage(sqlitePath) {
       throttle_pos, fuel_level, ambient_temp, voltage, battery_voltage,
       accel_time, alert_coolant, alert_voltage, acc_on, headlight_on,
       volume, wifi_ssid, bt_connected, received_at, ingest_seq,
-      maf_gps, fuel_system_status, estimated_fuel_rate_lph, estimated_fuel_economy_kml
+      maf_gps, fuel_system_status, estimated_fuel_rate_lph, estimated_fuel_economy_kml,
+      iat, map
     ) VALUES (
       ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
-      ?, ?, ?, ?
+      ?, ?, ?, ?,
+      ?, ?
     )
   `);
 
@@ -172,7 +182,9 @@ function initSqliteStorage(sqlitePath) {
       r.mafGps ?? null,
       r.fuelSystemStatus ?? null,
       r.estimatedFuelRateLph ?? null,
-      r.estimatedFuelEconomyKmL ?? null
+      r.estimatedFuelEconomyKmL ?? null,
+      r.iat ?? null,
+      r.map ?? null
     );
   }
 
@@ -209,6 +221,8 @@ function initSqliteStorage(sqlitePath) {
     if (row.fuel_system_status !== null) record.fuelSystemStatus = row.fuel_system_status;
     if (row.estimated_fuel_rate_lph !== null) record.estimatedFuelRateLph = row.estimated_fuel_rate_lph;
     if (row.estimated_fuel_economy_kml !== null) record.estimatedFuelEconomyKmL = row.estimated_fuel_economy_kml;
+    if (row.iat !== null) record.iat = row.iat;
+    if (row.map !== null) record.map = row.map;
     return record;
   }
 
@@ -306,7 +320,8 @@ function initSqliteStorage(sqlitePath) {
         ['wifiSsid', 'wifi_ssid'], ['btConnected', 'bt_connected'],
         ['mafGps', 'maf_gps'], ['fuelSystemStatus', 'fuel_system_status'],
         ['estimatedFuelRateLph', 'estimated_fuel_rate_lph'],
-        ['estimatedFuelEconomyKmL', 'estimated_fuel_economy_kml']
+        ['estimatedFuelEconomyKmL', 'estimated_fuel_economy_kml'],
+        ['iat', 'iat'], ['map', 'map']
       ];
       function sameRecord(existing, input) {
         if (existing.timestamp !== input.timestamp || existing.vehicle_id !== (input.vehicleId || 'default') ||

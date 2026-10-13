@@ -1845,6 +1845,8 @@ const telemetryRecordSchema = {
     fuelSystemStatus: { type: ['integer', 'null'] },
     estimatedFuelRateLph: { type: ['number', 'null'] },
     estimatedFuelEconomyKmL: { type: ['number', 'null'] },
+    iat: { type: ['number', 'null'] },
+    map: { type: ['number', 'null'] },
     ambientTemp: { type: ['number', 'null'] },
     voltage: { type: ['number', 'null'] },
     batteryVoltage: { type: ['number', 'null'] },
@@ -1892,6 +1894,8 @@ fastify.post('/api/telemetry/batch', {
         fuelSystemStatus: [0, 255],
         estimatedFuelRateLph: [0, 1000],
         estimatedFuelEconomyKmL: [0, 1000000],
+        iat: [-50, 150],
+        map: [0, 500],
         batteryVoltage: [0, 36],
         voltage: [0, 36]
       };
@@ -1933,6 +1937,8 @@ fastify.post('/api/telemetry/batch', {
         fuelSystemStatus: record.fuelSystemStatus,
         estimatedFuelRateLph: record.estimatedFuelRateLph,
         estimatedFuelEconomyKmL: record.estimatedFuelEconomyKmL,
+        iat: record.iat,
+        map: record.map,
         ambientTemp: record.ambientTemp,
         voltage: record.voltage,
         batteryVoltage: record.batteryVoltage,
@@ -2454,7 +2460,9 @@ fastify.get('/api/telemetry/changes', async (request, reply) => {
 // Run the server!
 const start = async () => {
   try {
-    await fastify.listen({ port: 3000, host: '0.0.0.0' })
+    const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000
+    const host = process.env.HOST || '0.0.0.0'
+    await fastify.listen({ port, host })
     SERVER_STARTED_AT = Date.now()
     fastify.log.info(`Server listening on ${fastify.server.address().port}`)
 

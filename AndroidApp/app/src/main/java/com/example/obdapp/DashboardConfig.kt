@@ -98,6 +98,17 @@ class DashboardConfigManager(context: Context) {
             .apply()
     }
 
+    fun saveAllCustomSlots(configs: List<SlotConfig>) {
+        val editor = prefs.edit()
+        configs.forEachIndexed { index, config ->
+            if (index < SLOT_COUNT) {
+                editor.putString("slot_${index}_metric", config.metric.name)
+                editor.putString("slot_${index}_style", config.style.name)
+            }
+        }
+        editor.apply()
+    }
+
     fun loadCustomSlots(): List<SlotConfig> {
         val list = mutableListOf<SlotConfig>()
         for (i in 0 until SLOT_COUNT) {

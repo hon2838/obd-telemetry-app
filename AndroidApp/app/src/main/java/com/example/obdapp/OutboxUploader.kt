@@ -371,6 +371,8 @@ object OutboxUploader {
                 put("fuelSystemStatus", record.fuelSystemStatus ?: JSONObject.NULL)
                 put("estimatedFuelRateLph", record.estimatedFuelRateLph ?: JSONObject.NULL)
                 put("estimatedFuelEconomyKmL", record.estimatedFuelEconomyKmL ?: JSONObject.NULL)
+                put("iat", record.iat ?: JSONObject.NULL)
+                put("map", record.map ?: JSONObject.NULL)
                 put("ambientTemp", record.ambientTemp ?: JSONObject.NULL)
                 put("voltage", record.voltage?.toDouble() ?: JSONObject.NULL)
                 put("accelTime", record.accelTime ?: JSONObject.NULL)
