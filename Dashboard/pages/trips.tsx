@@ -221,7 +221,7 @@ export default function TripsDashboard() {
     switch (activeLeaderboardTab) {
       case 'efficiency': return formatTripMetric(d.summary.estimatedFuelEconomyKmL, 2, 'km/L');
       case 'distance': return formatTripMetric(d.summary.distanceKm, 2, 'km');
-      case 'speed': return `${d.summary.maxSpeed.toFixed(2)} km/h`;
+      case 'speed': return typeof d.summary?.maxSpeed === 'number' ? `${d.summary.maxSpeed.toFixed(2)} km/h` : 'N/A';
       case 'duration': return `${d.summary.durationMin} mins`;
     }
   };
@@ -437,7 +437,7 @@ export default function TripsDashboard() {
                       <td style={styles.td}>{drive.summary.durationMin} mins</td>
                       <td style={styles.td}>{formatTripMetric(drive.summary.distanceKm, 2, 'km')}<div style={styles.metricNote}>{distanceLabel(drive.summary.distanceSource)}</div></td>
                        <td style={styles.td}>{formatTripMetric(drive.summary.avgSpeed, 2, 'km/h')}</td>
-                       <td style={styles.td}>{drive.summary.maxSpeed.toFixed(2)} km/h</td>
+                       <td style={styles.td}>{typeof drive.summary?.maxSpeed === 'number' ? `${drive.summary.maxSpeed.toFixed(2)} km/h` : 'N/A'}</td>
                        <td style={styles.td}>
                          {formatTripMetric(drive.summary.estimatedFuelUsedLitres, 3, 'L')}
                          <div style={styles.metricNote}>Covered intervals only · petrol estimate</div>
@@ -495,7 +495,7 @@ export default function TripsDashboard() {
               </div>
               <div>
                 <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {formatTripMetric(selectedDrive.summary.avgSpeed, 2, 'km/h')}<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {selectedDrive.summary.maxSpeed.toFixed(2)} km/h<br/>
+                <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {typeof selectedDrive.summary?.maxSpeed === 'number' ? `${selectedDrive.summary.maxSpeed.toFixed(2)} km/h` : 'N/A'}<br/>
                 <strong style={{color: 'var(--text-secondary)'}}>Estimated Fuel Used:</strong> {formatTripMetric(selectedDrive.summary.estimatedFuelUsedLitres, 3, 'L')}<br/>
                 <strong style={{color: 'var(--text-secondary)'}}>Estimated Economy:</strong> {formatTripMetric(economyValue(selectedDrive.summary), 2, 'km/L')} ({economyLabel(selectedDrive.summary)})<br/>
                 <strong style={{color: 'var(--text-secondary)'}}>Recorded Idling:</strong> {formatTripMetric(selectedDrive.summary.idleSeconds, 0, 'seconds')}<br/>
