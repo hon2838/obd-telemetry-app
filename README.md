@@ -65,3 +65,7 @@ For the experimental phone app projected through Android Auto, see [Android Auto
 - **Android:** Kotlin, Room, Coroutines, Foreground Services
 - **Backend:** Node.js, Fastify
 - **Frontend:** Next.js, React, Recharts, CSS Modules
+
+## OBD Explorer test app
+
+For a separate, local-only adapter and vehicle capability probe, see [OBD Explorer](docs/OBD_EXPLORER.md). Build its independent APK with `make apk-probe`.

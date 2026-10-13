@@ -1,19 +1,162 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/mainScrollView"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:background="@color/background">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:padding="16dp">
 
         <include layout="@layout/view_nav_bar" />
 
-        <!-- Live Telemetry HUD & Head Unit State directly on primary screen -->
+        <!-- Cockpit Header Bar -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#FF111317"
+            android:paddingHorizontal="12dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OBD COCKPIT"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08" />
+
+            <View
+                android:id="@+id/cockpitStatusDot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/circle_indicator"
+                android:backgroundTint="@color/accent_green" />
+
+            <TextView
+                android:id="@+id/tvCockpitStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="Connected"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/btnPresetSelector"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:paddingHorizontal="10dp"
+                android:gravity="center"
+                android:background="@drawable/nav_pill_active"
+                android:text="SPORT ▾"
+                android:textColor="@color/accent_cyan"
+                android:textSize="11.5sp"
+                android:textStyle="bold"
+                android:clickable="true"
+                android:focusable="true" />
+
+            <ImageButton
+                android:id="@+id/btnCustomizeCockpit"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@android:color/transparent"
+                android:src="@drawable/ic_tune"
+                android:tint="@color/text_secondary"
+                android:contentDescription="Customize Dashboard" />
+
+            <TextView
+                android:id="@+id/tvCockpitAge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="LIVE"
+                android:textColor="@color/accent_cyan"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Modern Customizable Cockpit Slots -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:orientation="horizontal"
+            android:layout_marginBottom="8dp">
+
+            <com.example.obdapp.TelemetryWidgetView
+                android:id="@+id/widgetSlot0"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp" />
+
+            <com.example.obdapp.TelemetryWidgetView
+                android:id="@+id/widgetSlot1"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="90dp"
+            android:orientation="horizontal"
+            android:layout_marginBottom="8dp">
+
+            <com.example.obdapp.TelemetryWidgetView
+                android:id="@+id/widgetSlot2"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp" />
+
+            <com.example.obdapp.TelemetryWidgetView
+                android:id="@+id/widgetSlot3"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="90dp"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <com.example.obdapp.TelemetryWidgetView
+                android:id="@+id/widgetSlot4"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp" />
+
+            <com.example.obdapp.TelemetryWidgetView
+                android:id="@+id/widgetSlot5"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp" />
+        </LinearLayout>
+
+        <!-- Live Telemetry HUD & Head Unit State directly visible -->
         <include layout="@layout/view_telemetry_hud" />
         <include layout="@layout/view_head_unit_card" />
 

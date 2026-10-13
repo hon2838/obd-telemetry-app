@@ -23,6 +23,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.GravityCompat
+import androidx.drawerlayout.widget.DrawerLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -61,6 +63,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvSprintTime: TextView
     private lateinit var tvFuelLoopStatus: TextView
 
+    private var drawerLayout: DrawerLayout? = null
+    private var btnNavDrawer: ImageButton? = null
+    private var btnDrawerClose: ImageButton? = null
+    private var btnPresetSelector: TextView? = null
+    private var btnCustomizeCockpit: ImageButton? = null
+    private var cockpitStatusDot: View? = null
+    private var tvCockpitStatus: TextView? = null
+    private var tvCockpitAge: TextView? = null
+    private var cockpitSlots: List<TelemetryWidgetView> = emptyList()
+    private lateinit var dashboardConfigManager: DashboardConfigManager
+
     private val mainJob = kotlinx.coroutines.Job()
     private val mainScope = CoroutineScope(Dispatchers.Main + mainJob)
     private val PERMISSION_REQUEST_CODE = 101
@@ -72,102 +85,22 @@ class MainActivity : AppCompatActivity() {
     private var ageTicker: kotlinx.coroutines.Job? = null
     private var sparkline: SparklineView? = null
 
+    private var btnSimulateData: Button? = null
+    private var demoJob: kotlinx.coroutines.Job? = null
+    var isDemoMode = false
+        private set
+
+    private val mockTelemetryReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            intent?.let { handleTelemetryIntent(it) }
+        }
+    }
+
     private val telemetryReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             intent?.let {
                 if (it.action == "com.example.obdapp.TELEMETRY_UPDATE") {
-                    val lat = it.getDoubleExtra("lat", 0.0)
-                    val lon = it.getDoubleExtra("lon", 0.0)
-                    val alt = it.getDoubleExtra("alt", 0.0)
-                    val speed = it.getFloatExtra("speed", -1.0f)
-                    val speedSource = it.getStringExtra("speed_source") ?: "GPS"
-                    val hasGpsFix = it.getBooleanExtra("gps_fix", lat != 0.0 || lon != 0.0)
-                    val hasAltitude = it.getBooleanExtra("gps_altitude_valid", hasGpsFix)
-                    val obdStatus = it.getStringExtra("obd_status") ?: "N/A"
-                    val rpm = it.getIntExtra("rpm", -1)
-                    val coolant = it.getIntExtra("coolant", -1)
-                    val throttle = it.getIntExtra("throttle", -1)
-                    val volt = it.getFloatExtra("volt", -1.0f)
-                    val accOn = it.getBooleanExtra("accOn", false)
-                    val headlightOn = it.getBooleanExtra("headlightOn", false)
-                    val volume = it.getIntExtra("volume", -1)
-                    val wifiSsid = it.getStringExtra("wifiSsid") ?: ""
-                    val btConnected = it.getBooleanExtra("btConnected", false)
-                    val ts = it.getLongExtra("timestamp", 0L)
-                    lastTelemetryAt = ts.coerceAtLeast(0L)
-
-                    tvGpsPosition.text = if (hasGpsFix) String.format("%.6f, %.6f", lat, lon) else "Waiting for GPS fix"
-                    tvGpsSpeed.text = if (speed >= 0f) String.format("%.1f km/h (%s)", speed, speedSource) else "N/A"
-                    tvAltitude.text = if (hasAltitude) String.format("%.0f m", alt) else "N/A"
-                    tvObdStatus.text = obdStatus
-
-                    tvEngineRpm.text = if (rpm != -1) "$rpm RPM" else "N/A"
-                    tvCoolantTemp.text = if (coolant != -1) "$coolant °C" else "N/A"
-                    tvCoolantTemp.setTextColor(if (coolant > 105) getColor(R.color.accent_red) else getColor(R.color.text_primary))
-                    tvThrottlePos.text = if (throttle != -1) "$throttle %" else "N/A"
-                    tvVoltage.text = if (volt >= 0f) String.format("%.1f V", volt) else "N/A"
-                    tvVoltage.setTextColor(
-                        when {
-                            volt < 0f -> getColor(R.color.text_primary)
-                            volt < 11.8f -> getColor(R.color.accent_red)
-                            volt < 12.5f -> getColor(R.color.accent_amber)
-                            else -> getColor(R.color.text_primary)
-                        }
-                    )
-
-                    // Preserve a genuine zero at idle, but never show old data
-                    // as a current consumption estimate.
-                    lastFuelEconomy = it.getDoubleExtra("estimated_fuel_economy_kml", -1.0)
-                    lastFuelRate = it.getDoubleExtra("estimated_fuel_rate_lph", -1.0)
-                    fuelConnectionOk = obdStatus == "Connected"
-                    updateFuelEstimate()
-
-                    sparkline?.push(if (rpm != -1) rpm else null, speed.takeIf { value -> value >= 0f })
-
-                    tvAccState.text = if (accOn) "ON" else "OFF"
-                    tvHeadlightState.text = if (headlightOn) "ON" else "OFF"
-                    tvVolume.text = if (volume != -1) volume.toString() else "N/A"
-                    tvWifiSsid.text = if (wifiSsid.isNotEmpty()) wifiSsid else "N/A"
-                    tvBtConnected.text = if (btConnected) "Connected" else "Disconnected"
-
-                    // Expanded OBD gauges
-                    val iat = it.getIntExtra("iat", -1)
-                    val map = it.getIntExtra("map", -1)
-                    val load = it.getIntExtra("load", -1)
-                    val maf = it.getDoubleExtra("maf", -1.0)
-                    val fuelStatus = it.getIntExtra("fuel_status", -1)
-
-                    tvIntakeAirTemp.text = if (iat != -1) "$iat °C" else "N/A"
-                    tvManifoldPressure.text = if (map != -1) "$map kPa" else "N/A"
-                    tvEngineLoad.text = if (load != -1) "$load %" else "N/A"
-                    tvMassAirFlow.text = if (maf >= 0.0) String.format(Locale.getDefault(), "%.1f g/s", maf) else "N/A"
-                    
-                    tvFuelLoopStatus.text = when (fuelStatus) {
-                        1 -> "Open (Cold)"
-                        2 -> "Closed Loop"
-                        4 -> "Open (Load)"
-                        8 -> "Open (Fault)"
-                        16 -> "Closed (Fault)"
-                        else -> "N/A"
-                    }
-                    tvFuelLoopStatus.setTextColor(
-                        when (fuelStatus) {
-                            2 -> getColor(R.color.accent_green)
-                            1, 4 -> getColor(R.color.accent_amber)
-                            8, 16 -> getColor(R.color.accent_red)
-                            else -> getColor(R.color.text_primary)
-                        }
-                    )
-
-                    val accelTime = if (it.hasExtra("accelTime")) it.getDoubleExtra("accelTime", -1.0) else -1.0
-                    if (accelTime > 0.0) {
-                        tvSprintTime.text = String.format(Locale.getDefault(), "%.2fs", accelTime)
-                        tvSprintTime.setTextColor(getColor(R.color.accent_cyan))
-                        Toast.makeText(this@MainActivity, String.format(Locale.getDefault(), "⚡ 0-100 km/h: %.2fs", accelTime), Toast.LENGTH_LONG).show()
-                    } else if (tvSprintTime.text.isEmpty() || tvSprintTime.text.toString() == "N/A") {
-                        tvSprintTime.text = "Ready"
-                        tvSprintTime.setTextColor(getColor(R.color.text_primary))
-                    }
+                    handleTelemetryIntent(it)
                 } else if (it.action == "com.example.obdapp.STATUS_UPDATE") {
                     val status = it.getStringExtra("status") ?: "Service Stopped"
                     val running = it.getBooleanExtra("running", status != "Service Stopped")
@@ -183,6 +116,165 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun Intent.getFloatOrNumber(key: String, default: Float): Float {
+        val v = extras?.get(key) ?: return default
+        return when (v) {
+            is Number -> v.toFloat()
+            is String -> v.toFloatOrNull() ?: default
+            else -> default
+        }
+    }
+
+    private fun Intent.getIntOrNumber(key: String, default: Int): Int {
+        val v = extras?.get(key) ?: return default
+        return when (v) {
+            is Number -> v.toInt()
+            is String -> v.toIntOrNull() ?: default
+            else -> default
+        }
+    }
+
+    private fun Intent.getDoubleOrNumber(key: String, default: Double): Double {
+        val v = extras?.get(key) ?: return default
+        return when (v) {
+            is Number -> v.toDouble()
+            is String -> v.toDoubleOrNull() ?: default
+            else -> default
+        }
+    }
+
+    private fun handleTelemetryIntent(it: Intent) {
+        val lat = it.getDoubleOrNumber("lat", 0.0)
+        val lon = it.getDoubleOrNumber("lon", 0.0)
+        val alt = it.getDoubleOrNumber("alt", 0.0)
+        val speed = it.getFloatOrNumber("speed", -1.0f)
+        val speedSource = it.getStringExtra("speed_source") ?: "GPS"
+        val hasGpsFix = it.getBooleanExtra("gps_fix", lat != 0.0 || lon != 0.0)
+        val hasAltitude = it.getBooleanExtra("gps_altitude_valid", hasGpsFix)
+        val obdStatus = it.getStringExtra("obd_status") ?: "Connected"
+        val rpm = it.getIntOrNumber("rpm", -1)
+        val coolant = it.getIntOrNumber("coolant", -1)
+        val throttle = it.getIntOrNumber("throttle", -1)
+        val volt = it.getFloatOrNumber("volt", -1.0f)
+        val accOn = it.getBooleanExtra("accOn", false)
+        val headlightOn = it.getBooleanExtra("headlightOn", false)
+        val volume = it.getIntOrNumber("volume", -1)
+        val wifiSsid = it.getStringExtra("wifiSsid") ?: ""
+        val btConnected = it.getBooleanExtra("btConnected", false)
+        val ts = it.getLongExtra("timestamp", System.currentTimeMillis())
+        lastTelemetryAt = ts.coerceAtLeast(0L)
+
+        tvGpsPosition.text = if (hasGpsFix) String.format("%.6f, %.6f", lat, lon) else "Waiting for GPS fix"
+        tvGpsSpeed.text = if (speed >= 0f) String.format("%.1f km/h (%s)", speed, speedSource) else "N/A"
+        tvAltitude.text = if (hasAltitude) String.format("%.0f m", alt) else "N/A"
+        tvObdStatus.text = obdStatus
+
+        tvEngineRpm.text = if (rpm != -1) "$rpm RPM" else "N/A"
+        tvCoolantTemp.text = if (coolant != -1) "$coolant °C" else "N/A"
+        tvCoolantTemp.setTextColor(if (coolant > 105) getColor(R.color.accent_red) else getColor(R.color.text_primary))
+        tvThrottlePos.text = if (throttle != -1) "$throttle %" else "N/A"
+        tvVoltage.text = if (volt >= 0f) String.format("%.1f V", volt) else "N/A"
+        tvVoltage.setTextColor(
+            when {
+                volt < 0f -> getColor(R.color.text_primary)
+                volt < 11.8f -> getColor(R.color.accent_red)
+                volt < 12.5f -> getColor(R.color.accent_amber)
+                else -> getColor(R.color.text_primary)
+            }
+        )
+
+        lastFuelEconomy = if (it.hasExtra("estimated_fuel_economy_kml")) it.getDoubleOrNumber("estimated_fuel_economy_kml", -1.0) else null
+        lastFuelRate = if (it.hasExtra("estimated_fuel_rate_lph")) it.getDoubleOrNumber("estimated_fuel_rate_lph", -1.0) else null
+        fuelConnectionOk = obdStatus == "Connected"
+        updateFuelEstimate()
+
+        sparkline?.push(if (rpm != -1) rpm else null, speed.takeIf { value -> value >= 0f })
+
+        tvAccState.text = if (accOn) "ON" else "OFF"
+        tvHeadlightState.text = if (headlightOn) "ON" else "OFF"
+        tvVolume.text = if (volume != -1) volume.toString() else "N/A"
+        tvWifiSsid.text = if (wifiSsid.isNotEmpty()) wifiSsid else "N/A"
+        tvBtConnected.text = if (btConnected) "Connected" else "Disconnected"
+
+        // Expanded OBD gauges
+        val iat = it.getIntOrNumber("iat", -1)
+        val map = it.getIntOrNumber("map", -1)
+        val load = it.getIntOrNumber("load", -1)
+        val maf = it.getDoubleOrNumber("maf", -1.0)
+        val fuelStatus = it.getIntOrNumber("fuel_status", -1)
+
+        tvIntakeAirTemp.text = if (iat != -1) "$iat °C" else "N/A"
+        tvManifoldPressure.text = if (map != -1) "$map kPa" else "N/A"
+        tvEngineLoad.text = if (load != -1) "$load %" else "N/A"
+        tvMassAirFlow.text = if (maf >= 0.0) String.format(Locale.getDefault(), "%.1f g/s", maf) else "N/A"
+        
+        tvFuelLoopStatus.text = when (fuelStatus) {
+            1 -> "Open (Cold)"
+            2 -> "Closed Loop"
+            4 -> "Open (Load)"
+            8 -> "Open (Fault)"
+            16 -> "Closed (Fault)"
+            else -> "N/A"
+        }
+        tvFuelLoopStatus.setTextColor(
+            when (fuelStatus) {
+                2 -> getColor(R.color.accent_green)
+                1, 4 -> getColor(R.color.accent_amber)
+                8, 16 -> getColor(R.color.accent_red)
+                else -> getColor(R.color.text_primary)
+            }
+        )
+
+        val accelTime = if (it.hasExtra("accelTime")) it.getDoubleExtra("accelTime", -1.0) else -1.0
+        if (accelTime > 0.0) {
+            tvSprintTime.text = String.format(Locale.getDefault(), "%.2fs", accelTime)
+            tvSprintTime.setTextColor(getColor(R.color.accent_cyan))
+            Toast.makeText(this@MainActivity, String.format(Locale.getDefault(), "⚡ 0-100 km/h: %.2fs", accelTime), Toast.LENGTH_LONG).show()
+        } else if (tvSprintTime.text.isEmpty() || tvSprintTime.text.toString() == "N/A") {
+            tvSprintTime.text = "Ready"
+            tvSprintTime.setTextColor(getColor(R.color.text_primary))
+        }
+
+        // Update modern customizable cockpit slots
+        for (slot in cockpitSlots) {
+            val value: Double? = when (slot.currentMetric) {
+                TelemetryMetric.SPEED -> if (speed >= 0f) speed.toDouble() else null
+                TelemetryMetric.RPM -> if (rpm >= 0) rpm.toDouble() else null
+                TelemetryMetric.COOLANT -> if (coolant != -1) coolant.toDouble() else null
+                TelemetryMetric.BATTERY -> if (volt >= 0f) volt.toDouble() else null
+                TelemetryMetric.THROTTLE -> if (throttle != -1) throttle.toDouble() else null
+                TelemetryMetric.ENGINE_LOAD -> if (load != -1) load.toDouble() else null
+                TelemetryMetric.INTAKE_TEMP -> if (iat != -1) iat.toDouble() else null
+                TelemetryMetric.FUEL_ECONOMY -> if (lastFuelEconomy != null && lastFuelEconomy!! >= 0.0) lastFuelEconomy else null
+                TelemetryMetric.FUEL_RATE -> if (lastFuelRate != null && lastFuelRate!! >= 0.0) lastFuelRate else null
+                TelemetryMetric.GPS_ALTITUDE -> if (hasAltitude) alt else null
+                TelemetryMetric.FUEL_LEVEL -> {
+                    val fl = it.getIntExtra("fuel_level", -1)
+                    if (fl >= 0) fl.toDouble() else null
+                }
+                TelemetryMetric.TIMING_ADVANCE -> {
+                    val t = it.getDoubleExtra("timing", 0.0)
+                    t
+                }
+                TelemetryMetric.MANIFOLD_PRESSURE -> if (map != -1) map.toDouble() else null
+                TelemetryMetric.MASS_AIR_FLOW -> if (maf >= 0.0) maf else null
+            }
+            if (value != null) {
+                slot.updateValue(value)
+            }
+        }
+
+        tvCockpitStatus?.text = obdStatus
+        val dotColor = when {
+            obdStatus.contains("Connected", true) -> R.color.accent_green
+            obdStatus.contains("GPS Only", true) || obdStatus.contains("Connecting", true) -> R.color.accent_amber
+            else -> R.color.accent_red
+        }
+        cockpitStatusDot?.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(getColor(dotColor))
+        tvCockpitAge?.text = if (speed >= 0f || rpm != -1) "LIVE" else "WAITING"
+    }
+
     private fun updateStatusUi(status: String) {
         statusText.text = status
         val colorRes = when {
@@ -194,6 +286,9 @@ class MainActivity : AppCompatActivity() {
             else -> R.color.text_muted
         }
         statusIndicator.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(getColor(colorRes))
+        tvCockpitStatus?.text = status
+        cockpitStatusDot?.backgroundTintList =
             android.content.res.ColorStateList.valueOf(getColor(colorRes))
     }
 
@@ -215,11 +310,15 @@ class MainActivity : AppCompatActivity() {
         if (lastTelemetryAt == 0L) {
             tvTelemetryAge.text = getString(R.string.telemetry_waiting)
             tvTelemetryAge.setTextColor(getColor(R.color.text_muted))
+            tvCockpitAge?.text = "WAITING"
+            tvCockpitAge?.setTextColor(getColor(R.color.text_muted))
             return
         }
         val ageSec = (System.currentTimeMillis() - lastTelemetryAt) / 1000
         tvTelemetryAge.text = if (ageSec < 5) getString(R.string.telemetry_live) else getString(R.string.telemetry_updated, ageSec)
         tvTelemetryAge.setTextColor(if (ageSec > 90) getColor(R.color.accent_red) else getColor(R.color.text_muted))
+        tvCockpitAge?.text = if (ageSec < 5) "LIVE" else "${ageSec}s"
+        tvCockpitAge?.setTextColor(if (ageSec > 90) getColor(R.color.accent_red) else getColor(R.color.accent_cyan))
     }
 
     private fun updateFuelEstimate() {
@@ -265,6 +364,45 @@ class MainActivity : AppCompatActivity() {
         sparkline = findViewById(R.id.sparkline)
 
         setupCollapsibleSettingsAndMenu()
+
+        drawerLayout = findViewById(R.id.drawerLayout)
+        btnNavDrawer = findViewById(R.id.btnNavDrawer)
+        btnDrawerClose = findViewById(R.id.btnDrawerClose)
+        btnPresetSelector = findViewById(R.id.btnPresetSelector)
+        btnCustomizeCockpit = findViewById(R.id.btnCustomizeCockpit)
+        cockpitStatusDot = findViewById(R.id.cockpitStatusDot)
+        tvCockpitStatus = findViewById(R.id.tvCockpitStatus)
+        tvCockpitAge = findViewById(R.id.tvCockpitAge)
+
+        btnNavDrawer?.setOnClickListener {
+            drawerLayout?.openDrawer(GravityCompat.START)
+        }
+        btnDrawerClose?.setOnClickListener {
+            drawerLayout?.closeDrawer(GravityCompat.START)
+        }
+
+        val slotIds = listOf(
+            R.id.widgetSlot0, R.id.widgetSlot1, R.id.widgetSlot2, R.id.widgetSlot3,
+            R.id.widgetSlot4, R.id.widgetSlot5, R.id.widgetSlot6, R.id.widgetSlot7,
+            R.id.widgetSlot8, R.id.widgetSlot9, R.id.widgetSlot10, R.id.widgetSlot11
+        )
+        cockpitSlots = slotIds.mapNotNull { findViewById<TelemetryWidgetView?>(it) }
+
+        dashboardConfigManager = DashboardConfigManager(this)
+        setupCockpitPresetsAndSlots()
+
+        btnSimulateData = findViewById(R.id.btnSimulateData)
+        btnSimulateData?.setOnClickListener {
+            if (isDemoMode) {
+                stopDemoMode()
+            } else {
+                startDemoMode()
+            }
+        }
+
+        if (intent?.getBooleanExtra("demo_mode", false) == true) {
+            startDemoMode()
+        }
 
         val etApiUrl = findViewById<EditText>(R.id.etApiUrl)
         val etApiKey = findViewById<EditText>(R.id.etApiKey)
@@ -546,6 +684,112 @@ class MainActivity : AppCompatActivity() {
             }
             popup.show()
         }
+    }
+
+    private fun setupCockpitPresetsAndSlots() {
+        val activePreset = dashboardConfigManager.getActivePreset()
+        applyPresetToSlots(activePreset)
+
+        btnPresetSelector?.setOnClickListener { v ->
+            val popup = PopupMenu(this, v)
+            DashboardPreset.values().forEachIndexed { index, preset ->
+                val item = popup.menu.add(0, index, index, preset.displayName)
+                if (preset == dashboardConfigManager.getActivePreset()) {
+                    item.setIcon(android.R.drawable.checkbox_on_background)
+                }
+            }
+            popup.setOnMenuItemClickListener { menuItem ->
+                val selected = DashboardPreset.values().getOrNull(menuItem.itemId)
+                if (selected != null) {
+                    dashboardConfigManager.setActivePreset(selected)
+                    applyPresetToSlots(selected)
+                }
+                true
+            }
+            popup.show()
+        }
+
+        btnCustomizeCockpit?.setOnClickListener {
+            showSlotSelectorDialog()
+        }
+
+        cockpitSlots.forEachIndexed { index, slot ->
+            slot.onEditRequestedListener = {
+                showSlotCustomizerDialog(index)
+            }
+            slot.onStyleChangedListener = { newStyle ->
+                dashboardConfigManager.saveCustomSlot(index, SlotConfig(slot.currentMetric, newStyle))
+                if (dashboardConfigManager.getActivePreset() != DashboardPreset.CUSTOM) {
+                    dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
+                    btnPresetSelector?.text = "CUSTOM ▾"
+                }
+            }
+        }
+    }
+
+    private fun applyPresetToSlots(preset: DashboardPreset) {
+        btnPresetSelector?.text = when (preset) {
+            DashboardPreset.SPORT -> "SPORT ▾"
+            DashboardPreset.CRUISER -> "CRUISER ▾"
+            DashboardPreset.HEALTH -> "HEALTH ▾"
+            DashboardPreset.CUSTOM -> "CUSTOM ▾"
+        }
+        val configs = dashboardConfigManager.getSlotConfigs(preset)
+        cockpitSlots.forEachIndexed { index, slot ->
+            if (index < configs.size) {
+                val cfg = configs[index]
+                slot.bindMetric(cfg.metric, cfg.style)
+            }
+        }
+    }
+
+    private fun showSlotSelectorDialog() {
+        val items = Array(cockpitSlots.size) { i ->
+            "Slot ${i + 1}: ${cockpitSlots[i].currentMetric.displayName} (${cockpitSlots[i].currentStyle.displayName})"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Choose Slot to Customize")
+            .setItems(items) { _, which ->
+                showSlotCustomizerDialog(which)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showSlotCustomizerDialog(slotIndex: Int) {
+        if (slotIndex !in cockpitSlots.indices) return
+        val slot = cockpitSlots[slotIndex]
+
+        val metrics = TelemetryMetric.values()
+        val metricNames = metrics.map { it.displayName }.toTypedArray()
+        val styles = DisplayStyle.values()
+        val styleNames = styles.map { it.displayName }.toTypedArray()
+
+        val currentMetricIndex = metrics.indexOf(slot.currentMetric).coerceAtLeast(0)
+
+        val view = layoutInflater.inflate(R.layout.dialog_customize_slot, null)
+        val spinnerMetric = view.findViewById<Spinner>(R.id.spinnerMetric)
+        val spinnerStyle = view.findViewById<Spinner>(R.id.spinnerStyle)
+
+        spinnerMetric.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, metricNames)
+        spinnerMetric.setSelection(currentMetricIndex)
+
+        spinnerStyle.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, styleNames)
+        spinnerStyle.setSelection(styles.indexOf(slot.currentStyle).coerceAtLeast(0))
+
+        AlertDialog.Builder(this)
+            .setTitle("Customize Slot ${slotIndex + 1}")
+            .setView(view)
+            .setPositiveButton("Save") { _, _ ->
+                val chosenMetric = metrics[spinnerMetric.selectedItemPosition]
+                val chosenStyle = styles[spinnerStyle.selectedItemPosition]
+                slot.bindMetric(chosenMetric, chosenStyle)
+                dashboardConfigManager.saveCustomSlot(slotIndex, SlotConfig(chosenMetric, chosenStyle))
+                dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
+                btnPresetSelector?.text = "CUSTOM ▾"
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun updateDeviceStatusUi() {
@@ -957,6 +1201,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent?.getBooleanExtra("demo_mode", false) == true) {
+            startDemoMode()
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         // Pairing happens in Android settings; refresh when returning to the app.
@@ -971,6 +1223,9 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerLegacyTelemetryReceiver(filter)
         }
+
+        // Unprivileged receiver for automated test emulators and local simulation
+        registerReceiver(mockTelemetryReceiver, android.content.IntentFilter("com.example.obdapp.MOCK_TELEMETRY"))
 
         // The collector runs in this process. Its published lifecycle state is
         // reliable on modern Android, unlike deprecated service enumeration.
@@ -995,6 +1250,9 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        try {
+            unregisterReceiver(mockTelemetryReceiver)
+        } catch (_: Exception) { }
         ageTicker?.cancel()
         ageTicker = null
     }
@@ -1006,8 +1264,105 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(telemetryReceiver, filter, "$packageName.permission.INTERNAL_BROADCAST", null)
     }
 
+    fun startDemoMode() {
+        if (isDemoMode) return
+        isDemoMode = true
+        tvCockpitStatus?.text = "Demo Simulation"
+        cockpitStatusDot?.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(getColor(R.color.accent_green))
+        statusText.text = "Simulation Running"
+        btnSimulateData?.text = "Stop Simulation"
+        btnSimulateData?.setTextColor(getColor(R.color.accent_red))
+
+        demoJob = mainScope.launch {
+            var speed = 0.0
+            var rpm = 850.0
+            var gear = 1
+            var coolant = 75.0
+            var throttle = 20.0
+            var load = 25.0
+            val volt = 14.2
+            var timeStep = 0
+
+            val gearRatios = listOf(3.5, 2.1, 1.4, 1.0, 0.8)
+            val maxSpeedPerGear = listOf(35.0, 65.0, 95.0, 130.0, 180.0)
+
+            while (isActive && isDemoMode) {
+                timeStep++
+                val isBraking = (timeStep % 250) > 190
+                if (isBraking) {
+                    throttle = (throttle - 6.0).coerceAtLeast(0.0)
+                    speed = (speed - 2.0).coerceAtLeast(0.0)
+                    load = (load - 4.0).coerceAtLeast(15.0)
+                    gear = when {
+                        speed > 90 -> 4
+                        speed > 60 -> 3
+                        speed > 30 -> 2
+                        else -> 1
+                    }
+                    rpm = if (speed > 5) (850 + speed * 35.0 * gearRatios[gear - 1]).coerceIn(850.0, 6500.0) else 850.0
+                } else {
+                    throttle = (35.0 + 30.0 * kotlin.math.sin(timeStep * 0.05)).coerceIn(15.0, 90.0)
+                    load = (throttle * 0.85).coerceIn(15.0, 95.0)
+                    speed = (speed + (throttle * 0.015)).coerceAtMost(160.0)
+                    if (gear < 5 && speed > maxSpeedPerGear[gear - 1]) {
+                        gear++
+                    }
+                    val targetRpm = 850.0 + (speed / maxSpeedPerGear[gear - 1]) * 5500.0
+                    rpm = targetRpm.coerceIn(850.0, 6800.0)
+                }
+
+                if (coolant < 92.0) coolant += 0.03
+
+                for (slot in cockpitSlots) {
+                    val value: Double = when (slot.currentMetric) {
+                        TelemetryMetric.SPEED -> speed
+                        TelemetryMetric.RPM -> rpm
+                        TelemetryMetric.COOLANT -> coolant
+                        TelemetryMetric.BATTERY -> volt + 0.1 * kotlin.math.sin(timeStep * 0.1)
+                        TelemetryMetric.THROTTLE -> throttle
+                        TelemetryMetric.ENGINE_LOAD -> load
+                        TelemetryMetric.INTAKE_TEMP -> 32.0 + 2.0 * kotlin.math.sin(timeStep * 0.02)
+                        TelemetryMetric.FUEL_ECONOMY -> if (speed > 10) (14.0 + 3.0 * kotlin.math.cos(timeStep * 0.03)) else 0.0
+                        TelemetryMetric.FUEL_RATE -> (1.2 + (throttle * 0.06))
+                        TelemetryMetric.GPS_ALTITUDE -> 145.0 + 5.0 * kotlin.math.sin(timeStep * 0.01)
+                        TelemetryMetric.FUEL_LEVEL -> 68.0
+                        TelemetryMetric.TIMING_ADVANCE -> 15.0 + 10.0 * (rpm / 6000.0)
+                        TelemetryMetric.MANIFOLD_PRESSURE -> 32.0 + (load * 0.8)
+                        TelemetryMetric.MASS_AIR_FLOW -> 2.5 + (rpm / 800.0) * (load / 25.0) * 3.2
+                    }
+                    slot.updateValue(value)
+                }
+
+                tvGpsSpeed.text = String.format(Locale.US, "%.1f km/h (SIM)", speed)
+                tvEngineRpm.text = "${rpm.toInt()} RPM"
+                tvCoolantTemp.text = "${coolant.toInt()} °C"
+                tvThrottlePos.text = "${throttle.toInt()} %"
+                tvVoltage.text = String.format(Locale.US, "%.1f V", volt)
+                tvEngineLoad.text = "${load.toInt()} %"
+                sparkline?.push(rpm.toInt(), speed.toFloat())
+                tvCockpitAge?.text = "LIVE"
+                lastTelemetryAt = System.currentTimeMillis()
+
+                delay(100)
+            }
+        }
+    }
+
+    fun stopDemoMode() {
+        isDemoMode = false
+        demoJob?.cancel()
+        demoJob = null
+        btnSimulateData?.text = "Start Telemetry Simulation"
+        btnSimulateData?.setTextColor(getColor(R.color.accent_cyan))
+        tvCockpitStatus?.text = "Service Stopped"
+        cockpitStatusDot?.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(getColor(R.color.text_muted))
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        stopDemoMode()
         mainJob.cancel()
     }
 
