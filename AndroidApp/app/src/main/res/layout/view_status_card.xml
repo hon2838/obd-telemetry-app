@@ -90,5 +90,16 @@
                 android:background="@drawable/btn_stop_bg"
                 android:layout_marginStart="6dp" />
         </LinearLayout>
+
+        <Button
+            android:id="@+id/btnSimulateData"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="10dp"
+            android:text="Start Telemetry Simulation"
+            android:textColor="@color/accent_cyan"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:background="@drawable/nav_pill_inactive" />
     </LinearLayout>
 </merge>

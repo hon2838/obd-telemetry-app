@@ -15,7 +15,7 @@ BUILD_TIME      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 SERVER_IMAGE    ?= obd-telemetry-server
 DASH_IMAGE      ?= obd-telemetry-dashboard
 
-.PHONY: help build build-server build-dashboard build-all apk apk-androidauto test-android apk-bundle apk-and-server version test test-server lint lint-fix clean
+.PHONY: help build build-server build-dashboard build-all apk apk-androidauto apk-probe test-probe test-android apk-bundle apk-and-server version test test-server lint lint-fix clean
 
 help:
 	@echo "OBD Telemetry — make targets"
@@ -23,6 +23,8 @@ help:
 	@echo "  make version         print the build identity that will be baked in"
 	@echo "  make apk            build the Android APK from AndroidApp/"
 	@echo "  make apk-androidauto build the phone Android Auto debug APK"
+	@echo "  make apk-probe      build the separate read-only OBD Explorer APK"
+	@echo "  make test-probe     test and lint the separate OBD Explorer app"
 	@echo "  make test-android   run head-unit and Android Auto JVM tests"
 	@echo "  make apk-bundle     stage the APK + version.json into Server/agent/ for Docker build"
 	@echo "  make build          build both images (server + dashboard) with build identity"
@@ -50,6 +52,14 @@ apk:
 apk-androidauto:
 	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
 	  ./gradlew :app:assembleAndroidautoDebug --no-daemon
+
+apk-probe:
+	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
+	  ./gradlew :probe:assembleDebug --no-daemon
+
+test-probe:
+	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
+	  ./gradlew :probe:testDebugUnitTest :probe:lintDebug --no-daemon --max-workers=1
 
 test-android:
 	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
