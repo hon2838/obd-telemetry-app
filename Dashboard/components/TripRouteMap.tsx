@@ -121,9 +121,12 @@ export default function TripRouteMap({ points, startLocation, endLocation }: Tri
 
       const boundsPoints = routeCoordinates.length > 1 ? routeCoordinates : [start, end].filter(Boolean);
       if (boundsPoints.length > 1) {
-        map.fitBounds(L.latLngBounds(boundsPoints), { padding: [30, 30], maxZoom: 15 });
-      } else {
-        map.setView(boundsPoints[0], 15);
+        const bounds = L.latLngBounds(boundsPoints);
+        if (bounds.isValid()) {
+          map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15, animate: false });
+        }
+      } else if (boundsPoints[0]) {
+        map.setView(boundsPoints[0], 15, { animate: false });
       }
       requestAnimationFrame(() => { if (!disposed) map.invalidateSize(); });
     }).catch(() => {
@@ -132,7 +135,12 @@ export default function TripRouteMap({ points, startLocation, endLocation }: Tri
 
     return () => {
       disposed = true;
-      if (map) map.remove();
+      if (map) {
+        try {
+          map.stop();
+          map.remove();
+        } catch (_) {}
+      }
     };
   }, [routeCoordinates, start?.[0], start?.[1], end?.[0], end?.[1]]);
 

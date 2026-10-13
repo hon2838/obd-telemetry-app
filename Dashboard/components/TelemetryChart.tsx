@@ -123,7 +123,13 @@ const StaleDataNotice = ({ connectionOk, timestamp }: { connectionOk: boolean; t
 };
 
 const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
-  const routeCoords = React.useMemo(() => routeData.filter(p => typeof p.latitude === 'number' && typeof p.longitude === 'number' && p.latitude !== 0 && p.longitude !== 0).map(p => [p.latitude!, p.longitude!]), [routeData]);
+  const routeCoords = React.useMemo(() => {
+    return routeData
+      .filter(p => typeof p.latitude === 'number' && typeof p.longitude === 'number' && Number.isFinite(p.latitude) && Number.isFinite(p.longitude) && p.latitude !== 0 && p.longitude !== 0)
+      .map(p => [p.latitude!, p.longitude!]);
+  }, [routeData]);
+
+  const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
   const polylineRef = useRef<any>(null);
@@ -164,71 +170,84 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
   }, []);
 
   useEffect(() => {
-    if (!loaded || latitude === 0 || longitude === 0) return;
+    if (!loaded || !mapContainerRef.current) return;
+    if (typeof latitude !== 'number' || typeof longitude !== 'number' || !Number.isFinite(latitude) || !Number.isFinite(longitude) || (latitude === 0 && longitude === 0)) return;
+
     const L = (window as any).L;
     if (!L) return;
 
     if (!mapInstanceRef.current) {
-      // Initialize map once
-      mapInstanceRef.current = L.map('leaflet-map-div', {
-        zoomControl: true,
-        attributionControl: false
-      }).setView([latitude, longitude], 15);
+      try {
+        // Initialize map once with containerRef
+        const map = L.map(mapContainerRef.current, {
+          zoomControl: true,
+          attributionControl: false
+        }).setView([latitude, longitude], 15);
+        mapInstanceRef.current = map;
 
-      // Dark theme tiles (ESRI World Dark Gray Base + Reference Labels)
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 19,
-        maxNativeZoom: 16,
-        attribution: 'Tiles &copy; Esri'
-      }).addTo(mapInstanceRef.current);
+        // Dark theme tiles (ESRI World Dark Gray Base + Reference Labels)
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+          maxZoom: 19,
+          maxNativeZoom: 16,
+          attribution: 'Tiles &copy; Esri'
+        }).addTo(map);
 
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 19,
-        maxNativeZoom: 16
-      }).addTo(mapInstanceRef.current);
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+          maxZoom: 19,
+          maxNativeZoom: 16
+        }).addTo(map);
 
-      // Marker
-      markerRef.current = L.marker([latitude, longitude]).addTo(mapInstanceRef.current);
+        // Marker
+        markerRef.current = L.marker([latitude, longitude]).addTo(map);
 
-      // Polyline route history
-      polylineRef.current = L.polyline(routeCoords, {
-        color: '#3b82f6',
-        weight: 4,
-        opacity: 0.8
-      }).addTo(mapInstanceRef.current);
+        // Polyline route history
+        polylineRef.current = L.polyline(routeCoords, {
+          color: '#3b82f6',
+          weight: 4,
+          opacity: 0.8
+        }).addTo(map);
 
-      if (routeCoords.length > 1) {
-        mapInstanceRef.current.fitBounds(polylineRef.current.getBounds(), { padding: [30, 30] });
-      }
+        if (routeCoords.length > 1) {
+          const bounds = polylineRef.current.getBounds();
+          if (bounds && bounds.isValid && bounds.isValid()) {
+            map.fitBounds(bounds, { padding: [30, 30], animate: false });
+          }
+        }
+      } catch (_) {}
     } else {
       // Update existing map layers dynamically (prevents reloading/flashing)
       const map = mapInstanceRef.current;
       const marker = markerRef.current;
       const polyline = polylineRef.current;
 
-      if (marker) {
-        marker.setLatLng([latitude, longitude]);
-      }
+      try {
+        if (marker) {
+          marker.setLatLng([latitude, longitude]);
+        }
 
-      if (polyline) {
-        polyline.setLatLngs(routeCoords);
-      }
+        if (polyline) {
+          polyline.setLatLngs(routeCoords);
+        }
 
-      map.panTo([latitude, longitude]);
+        map.panTo([latitude, longitude], { animate: false });
+      } catch (_) {}
     }
   }, [loaded, latitude, longitude, routeCoords]);
 
   useEffect(() => {
     return () => {
       if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
+        try {
+          mapInstanceRef.current.stop();
+          mapInstanceRef.current.remove();
+        } catch (_) {}
         mapInstanceRef.current = null;
       }
     };
   }, []);
 
   return (
-    <div id="leaflet-map-div" style={{ width: '100%', height: '100%', borderRadius: '12px', minHeight: '450px', background: '#121214' }}>
+    <div ref={mapContainerRef} style={{ width: '100%', height: '100%', borderRadius: '12px', minHeight: '450px', background: '#121214' }}>
       {!loaded && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' }}>
           Loading Map Layers...
