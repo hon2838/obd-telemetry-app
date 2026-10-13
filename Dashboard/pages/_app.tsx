@@ -1,4 +1,5 @@
 import type { AppProps } from 'next/app';
+import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { Outfit } from 'next/font/google';
 import '../styles/globals.css';
@@ -11,9 +12,17 @@ const outfit = Outfit({ subsets: ['latin'], variable: '--font-outfit' });
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
   const isLogin = router.pathname === '/login';
-  return <main className={`${outfit.variable} font-sans`}>
-    <AuthProvider>
-      {isLogin ? <Component {...pageProps} /> : <VehicleProvider><Layout><Component {...pageProps} /></Layout></VehicleProvider>}
-    </AuthProvider>
-  </main>;
+  return (
+    <>
+      <Head>
+        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link rel="shortcut icon" href="/favicon.ico" />
+      </Head>
+      <main className={`${outfit.variable} font-sans`}>
+        <AuthProvider>
+          {isLogin ? <Component {...pageProps} /> : <VehicleProvider><Layout><Component {...pageProps} /></Layout></VehicleProvider>}
+        </AuthProvider>
+      </main>
+    </>
+  );
 }
