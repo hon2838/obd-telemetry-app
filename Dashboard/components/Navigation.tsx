@@ -189,6 +189,7 @@ export default function Navigation() {
 
             <Link
               href="/garage"
+              prefetch={false}
               onClick={() => setDropdownOpen(false)}
               style={{
                 display: 'flex',
@@ -214,7 +215,7 @@ export default function Navigation() {
           const Icon = item.icon;
           
           return (
-            <Link key={item.name} href={item.href} className={`nav-item ${isActive ? 'active' : ''}`}>
+            <Link key={item.name} href={item.href} prefetch={false} className={`nav-item ${isActive ? 'active' : ''}`}>
               <Icon size={18} />
               <span>{item.name}</span>
             </Link>
