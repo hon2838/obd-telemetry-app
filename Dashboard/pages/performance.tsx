@@ -96,7 +96,7 @@ export default function PerformanceDashboard() {
             <Zap size={20} style={{ color: 'var(--accent-amber)' }} />
           </div>
           <span style={{ ...styles.statsCardValue, color: 'var(--accent-amber)' }}>
-            {records.best0to100 ? `${records.best0to100.time.toFixed(2)}s` : 'N/A'}
+            {records.best0to100 && typeof records.best0to100.time === 'number' ? `${records.best0to100.time.toFixed(2)}s` : 'N/A'}
           </span>
           <span style={styles.statsCardSubtext}>
             {records.best0to100 
@@ -110,11 +110,11 @@ export default function PerformanceDashboard() {
             <span style={styles.statsCardTitle}>Top Speed Ever</span>
             <Gauge size={20} style={{ color: 'var(--accent-cyan)' }} />
           </div>
-          <span style={styles.statsCardValue}>
-            {records.topSpeed && records.topSpeed.speed > 0 ? `${records.topSpeed.speed.toFixed(2)} km/h` : 'N/A'}
+          <span style={{ ...styles.statsCardValue }}>
+            {records.topSpeed && typeof records.topSpeed.speed === 'number' && records.topSpeed.speed > 0 ? `${records.topSpeed.speed.toFixed(2)} km/h` : 'N/A'}
           </span>
           <span style={styles.statsCardSubtext}>
-            {records.topSpeed && records.topSpeed.speed > 0
+            {records.topSpeed && typeof records.topSpeed.speed === 'number' && records.topSpeed.speed > 0
               ? `Drive #${records.topSpeed.driveId} on ${new Date(records.topSpeed.timestamp).toLocaleDateString()}`
               : 'No telemetry logged'}
           </span>
@@ -126,10 +126,10 @@ export default function PerformanceDashboard() {
             <Activity size={20} style={{ color: 'var(--accent-red)' }} />
           </div>
           <span style={styles.statsCardValue}>
-            {records.highestRpm && records.highestRpm.rpm > 0 ? `${records.highestRpm.rpm.toFixed(2)} RPM` : 'N/A'}
+            {records.highestRpm && typeof records.highestRpm.rpm === 'number' && records.highestRpm.rpm > 0 ? `${records.highestRpm.rpm.toFixed(2)} RPM` : 'N/A'}
           </span>
           <span style={styles.statsCardSubtext}>
-            {records.highestRpm && records.highestRpm.rpm > 0
+            {records.highestRpm && typeof records.highestRpm.rpm === 'number' && records.highestRpm.rpm > 0
               ? `Drive #${records.highestRpm.driveId} on ${new Date(records.highestRpm.timestamp).toLocaleDateString()}`
               : 'No RPM data recorded'}
           </span>
@@ -184,9 +184,9 @@ export default function PerformanceDashboard() {
                           {isPersonalBest && <span style={styles.pbTag}>🏆 PB</span>}
                         </td>
                         <td style={{ ...styles.td, color: 'var(--accent-amber)', fontWeight: 700 }}>
-                          {run.accelTime.toFixed(2)}s
+                          {typeof run.accelTime === 'number' ? `${run.accelTime.toFixed(2)}s` : 'N/A'}
                         </td>
-                        <td style={styles.td}>{run.maxSpeedReached.toFixed(2)} km/h</td>
+                        <td style={styles.td}>{typeof run.maxSpeedReached === 'number' ? `${run.maxSpeedReached.toFixed(2)} km/h` : 'N/A'}</td>
                         <td style={styles.td}>Drive #{run.driveId}</td>
                       </tr>
                     );

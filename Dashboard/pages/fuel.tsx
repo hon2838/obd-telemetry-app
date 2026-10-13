@@ -204,11 +204,11 @@ export default function FuelTracker() {
               <TrendingUp size={20} color="var(--accent-green)" />
             </div>
             <div style={styles.cardValContainer}>
-              <span style={styles.cardValue}>{(stats.cycleCount || 0) > 0 ? stats.averageKmPerLitre.toFixed(2) : 'N/A'}</span>
-              {stats.averageKmPerLitre > 0 && <span style={styles.cardUnit}>km/L</span>}
+              <span style={styles.cardValue}>{(stats.cycleCount || 0) > 0 && typeof stats.averageKmPerLitre === 'number' ? stats.averageKmPerLitre.toFixed(2) : 'N/A'}</span>
+              {typeof stats.averageKmPerLitre === 'number' && stats.averageKmPerLitre > 0 && <span style={styles.cardUnit}>km/L</span>}
             </div>
             <div style={styles.cardSubtext}>
-              {(stats.cycleCount || 0) > 0
+              {(stats.cycleCount || 0) > 0 && typeof stats.worstKmPerLitre === 'number' && typeof stats.bestKmPerLitre === 'number'
                 ? `${stats.cycleCount} full-tank cycles • Range: ${stats.worstKmPerLitre.toFixed(2)} - ${stats.bestKmPerLitre.toFixed(2)} km/L`
                 : 'Need two confirmed full fills for one vehicle'}
             </div>
@@ -239,7 +239,7 @@ export default function FuelTracker() {
             </div>
             <div style={styles.cardSubtext}>
               {activeVehicle
-                ? (logs.length > 0 ? `Current Odo: ${Math.max(...logs.map(l => l.odometer)).toFixed(2)} km` : 'No odometer reading logged')
+                ? (logs.length > 0 && Number.isFinite(Math.max(...logs.map(l => l.odometer))) ? `Current Odo: ${Math.max(...logs.map(l => l.odometer)).toFixed(2)} km` : 'No odometer reading logged')
                 : 'Sum of each vehicle’s recorded odometer span'}
             </div>
           </div>

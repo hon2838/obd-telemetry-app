@@ -24,21 +24,21 @@ const formatAge = (ms: number): string => {
 
 interface TelemetryData {
   timestamp: number;
-  rpm: number;
-  speed: number | null;
-  coolantTemp: number;
-  latitude: number;
-  longitude: number;
-  altitude: number;
-  gpsSpeed: number;
-  engineLoad: number;
-  throttlePos: number;
-  fuelLevel: number;
-  ambientTemp: number;
-  voltage: number;
-  accelTime: number | null;
-  alertCoolant: boolean;
-  alertVoltage: boolean;
+  rpm?: number | null;
+  speed?: number | null;
+  coolantTemp?: number | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  altitude?: number | null;
+  gpsSpeed?: number | null;
+  engineLoad?: number | null;
+  throttlePos?: number | null;
+  fuelLevel?: number | null;
+  ambientTemp?: number | null;
+  voltage?: number | null;
+  accelTime?: number | null;
+  alertCoolant?: boolean;
+  alertVoltage?: boolean;
   // Optional instantaneous fuel-estimate fields (petrol MAF model).
   // Absent on older payloads; never derived from mismatched samples.
   mafGps?: number | null;
@@ -123,7 +123,7 @@ const StaleDataNotice = ({ connectionOk, timestamp }: { connectionOk: boolean; t
 };
 
 const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
-  const routeCoords = React.useMemo(() => routeData.filter(p => p.latitude !== 0 && p.longitude !== 0).map(p => [p.latitude, p.longitude]), [routeData]);
+  const routeCoords = React.useMemo(() => routeData.filter(p => typeof p.latitude === 'number' && typeof p.longitude === 'number' && p.latitude !== 0 && p.longitude !== 0).map(p => [p.latitude!, p.longitude!]), [routeData]);
   const mapInstanceRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
   const polylineRef = useRef<any>(null);
@@ -405,12 +405,28 @@ export default function TelemetryDashboard() {
 
   const latestTimestamp = data.length > 0 ? data[data.length - 1].timestamp : null;
 
-  const latest = data[data.length - 1] || {
-    rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
-    gpsSpeed: 0, engineLoad: null, throttlePos: null, fuelLevel: null, ambientTemp: null, voltage: null,
-    accelTime: null, alertCoolant: false, alertVoltage: false,
-    estimatedFuelEconomyKmL: null, estimatedFuelRateLph: null,
-    iat: null, map: null
+  const rawLatest = data.length > 0 ? data[data.length - 1] : null;
+  const latest: TelemetryData = {
+    rpm: rawLatest?.rpm ?? null,
+    speed: rawLatest?.speed ?? null,
+    coolantTemp: rawLatest?.coolantTemp ?? null,
+    latitude: rawLatest?.latitude ?? 0,
+    longitude: rawLatest?.longitude ?? 0,
+    altitude: rawLatest?.altitude ?? null,
+    gpsSpeed: rawLatest?.gpsSpeed ?? null,
+    engineLoad: rawLatest?.engineLoad ?? null,
+    throttlePos: rawLatest?.throttlePos ?? null,
+    fuelLevel: rawLatest?.fuelLevel ?? null,
+    ambientTemp: rawLatest?.ambientTemp ?? null,
+    voltage: rawLatest?.voltage ?? null,
+    accelTime: rawLatest?.accelTime ?? null,
+    alertCoolant: rawLatest?.alertCoolant ?? false,
+    alertVoltage: rawLatest?.alertVoltage ?? false,
+    estimatedFuelEconomyKmL: rawLatest?.estimatedFuelEconomyKmL ?? null,
+    estimatedFuelRateLph: rawLatest?.estimatedFuelRateLph ?? null,
+    iat: rawLatest?.iat ?? null,
+    map: rawLatest?.map ?? null,
+    timestamp: rawLatest?.timestamp ?? 0
   };
 
   const formatVal = (val: any, decimals = 2) => {
@@ -451,7 +467,7 @@ export default function TelemetryDashboard() {
             <div key={`item-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '4px 0' }}>
               <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: entry.color }}></span>
               <span style={{ color: 'var(--text-primary)' }}>{entry.name}:</span>
-              <span style={{ fontWeight: 700, color: entry.color }}>{entry.value !== null ? Number(entry.value).toFixed(2) : 'N/A'}</span>
+              <span style={{ fontWeight: 700, color: entry.color }}>{entry.value !== null && entry.value !== undefined && !Number.isNaN(Number(entry.value)) ? Number(entry.value).toFixed(2) : 'N/A'}</span>
             </div>
           ))}
         </div>
@@ -482,7 +498,7 @@ export default function TelemetryDashboard() {
               boxShadow: '0 0 20px rgba(239, 68, 68, 0.2)'
             }}>
               <AlertCircle size={20} />
-              <span>ENGINE TEMPERATURE OVERHEATING DANGER: Coolant at {latest.coolantTemp?.toFixed(2)}°C! Pull over immediately!</span>
+              <span>ENGINE TEMPERATURE OVERHEATING DANGER: Coolant at {typeof latest.coolantTemp === 'number' ? `${latest.coolantTemp.toFixed(2)}°C` : 'N/A'}! Pull over immediately!</span>
             </div>
           )}
           {latest.alertVoltage && (
@@ -500,7 +516,7 @@ export default function TelemetryDashboard() {
               boxShadow: '0 0 20px rgba(245, 158, 11, 0.2)'
             }}>
               <Battery size={20} />
-              <span>BATTERY VOLTAGE CRITICAL: Battery is low ({latest.voltage?.toFixed(2)}V). Alternator charging failure or weak battery.</span>
+              <span>BATTERY VOLTAGE CRITICAL: Battery is low ({typeof latest.voltage === 'number' ? `${latest.voltage.toFixed(2)}V` : 'N/A'}). Alternator charging failure or weak battery.</span>
             </div>
           )}
         </div>
@@ -515,14 +531,14 @@ export default function TelemetryDashboard() {
               <span style={styles.cardTitle}>Live Route Tracking Map</span>
             </div>
             <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>
-              <span>Altitude: {latest.altitude.toFixed(2)}m</span>
+              <span>Altitude: {typeof latest.altitude === 'number' ? `${latest.altitude.toFixed(2)}m` : 'N/A'}</span>
               <span>•</span>
-              <span>GPS Speed: {latest.gpsSpeed.toFixed(2)} km/h</span>
+              <span>GPS Speed: {typeof latest.gpsSpeed === 'number' ? `${latest.gpsSpeed.toFixed(2)} km/h` : 'N/A'}</span>
             </div>
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: '450px', position: 'relative' }}>
-          {latest.latitude !== 0 && latest.longitude !== 0 ? (
+          {typeof latest.latitude === 'number' && typeof latest.longitude === 'number' && latest.latitude !== 0 && latest.longitude !== 0 ? (
             <div style={{ flex: 1, borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--border)', background: '#1c1c1e' }}>
               <DynamicLeafletMap latitude={latest.latitude} longitude={latest.longitude} routeData={data} />
             </div>
@@ -533,7 +549,7 @@ export default function TelemetryDashboard() {
           )}
           
           {/* Floating HUD-like badge */}
-          {latest.latitude !== 0 && latest.longitude !== 0 && (
+          {typeof latest.latitude === 'number' && typeof latest.longitude === 'number' && latest.latitude !== 0 && latest.longitude !== 0 && (
             <div className="glass-panel-static" style={styles.mapFloatingBadge}>
               <a
                 href={`https://www.google.com/maps/search/?api=1&query=${latest.latitude},${latest.longitude}`}
@@ -570,7 +586,7 @@ export default function TelemetryDashboard() {
           icon={<Navigation size={20} color="var(--accent-cyan)" />}
           progress={getProgress(latest.speed, 180)}
           progressColor="var(--accent-cyan)"
-           subtext={`GPS: ${latest.gpsSpeed.toFixed(2)} km/h`}
+          subtext={`GPS: ${typeof latest.gpsSpeed === 'number' ? `${latest.gpsSpeed.toFixed(2)} km/h` : 'N/A'}`}
         />
         <MetricCard
           title="Coolant Temp"
@@ -580,16 +596,16 @@ export default function TelemetryDashboard() {
           progress={getProgress(latest.coolantTemp, 120)}
           progressColor={getTempColor(latest.coolantTemp)}
           valueColor={getTempColor(latest.coolantTemp)}
-          subtext={latest.ambientTemp !== null ? `Ambient: ${latest.ambientTemp}°C` : 'Ambient: N/A'}
+          subtext={latest.ambientTemp !== null && latest.ambientTemp !== undefined ? `Ambient: ${latest.ambientTemp}°C` : 'Ambient: N/A'}
         />
         <MetricCard
           title="Fuel Reserve"
           value={formatVal(latest.fuelLevel)}
           unit="%"
-          icon={<Flame size={20} color={latest.fuelLevel !== null ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--text-muted)'} />}
+          icon={<Flame size={20} color={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--text-muted)'} />}
           progress={getProgress(latest.fuelLevel, 100)}
-          progressColor={latest.fuelLevel !== null ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--border)'}
-          subtext={latest.fuelLevel !== null ? (latest.fuelLevel < 15 ? "Low Fuel Warning" : "Level Normal") : "N/A"}
+          progressColor={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--border)'}
+          subtext={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? "Low Fuel Warning" : "Level Normal") : "N/A"}
         />
         <FuelEconomyCard value={latest.estimatedFuelEconomyKmL} rate={latest.estimatedFuelRateLph} timestamp={latestTimestamp} connectionOk={connectionOk} />
         <MetricCard
@@ -600,16 +616,16 @@ export default function TelemetryDashboard() {
           progress={getProgress(latest.voltage, 15)}
           progressColor={getVoltageColor(latest.voltage)}
           valueColor={getVoltageColor(latest.voltage)}
-          subtext={latest.voltage !== null ? (latest.voltage > 13 ? "Alternator Charging" : "Discharging") : "N/A"}
+          subtext={latest.voltage !== null && latest.voltage !== undefined ? (latest.voltage > 13 ? "Alternator Charging" : "Discharging") : "N/A"}
         />
         <MetricCard
           title="0-100 km/h Accel"
-          value={latest.accelTime !== null ? `${latest.accelTime.toFixed(2)}` : 'N/A'}
-          unit={latest.accelTime !== null ? 's' : ''}
+          value={typeof latest.accelTime === 'number' ? `${latest.accelTime.toFixed(2)}` : 'N/A'}
+          unit={typeof latest.accelTime === 'number' ? 's' : ''}
           icon={<Flame size={20} color="var(--accent-amber)" />}
-          progress={latest.accelTime !== null ? Math.min(100, (12.0 / latest.accelTime) * 100) : 0}
+          progress={typeof latest.accelTime === 'number' && latest.accelTime > 0 ? Math.min(100, (12.0 / latest.accelTime) * 100) : 0}
           progressColor="var(--accent-amber)"
-          subtext={latest.accelTime !== null ? "Sprint Completed!" : "Awaiting acceleration..."}
+          subtext={typeof latest.accelTime === 'number' ? "Sprint Completed!" : "Awaiting acceleration..."}
         />
         <MetricCard
           title="Intake Air (IAT)"
@@ -619,7 +635,7 @@ export default function TelemetryDashboard() {
           progress={getProgress(latest.iat, 100)}
           progressColor="var(--accent-amber)"
           valueColor="var(--accent-amber)"
-          subtext={latest.iat !== null ? "Manifold Intake Temp" : "N/A"}
+          subtext={latest.iat !== null && latest.iat !== undefined ? "Manifold Intake Temp" : "N/A"}
         />
         <MetricCard
           title="Manifold (MAP)"
@@ -629,7 +645,7 @@ export default function TelemetryDashboard() {
           progress={getProgress(latest.map, 255)}
           progressColor="var(--accent-cyan)"
           valueColor="var(--accent-cyan)"
-          subtext={latest.map !== null ? (latest.map > 101 ? `${(latest.map - 101.3).toFixed(1)} kPa Boost` : `${(101.3 - latest.map).toFixed(1)} kPa Vacuum`) : "N/A"}
+          subtext={typeof latest.map === 'number' ? (latest.map > 101 ? `${(latest.map - 101.3).toFixed(1)} kPa Boost` : `${(101.3 - latest.map).toFixed(1)} kPa Vacuum`) : "N/A"}
         />
       </div>
 

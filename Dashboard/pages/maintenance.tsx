@@ -385,7 +385,7 @@ export default function MaintenanceDashboard() {
                       <div>
                         <h3 style={styles.itemName}>{item.name}</h3>
                         <span style={styles.itemMeta}>
-                          Last: {item.lastServiceOdo ? `${item.lastServiceOdo.toFixed(2)} km` : '0.00 km'} | {item.lastServiceDate ? new Date(item.lastServiceDate).toLocaleDateString() : 'Never'}
+                          Last: {typeof item.lastServiceOdo === 'number' ? `${item.lastServiceOdo.toFixed(2)} km` : '0.00 km'} | {item.lastServiceDate ? new Date(item.lastServiceDate).toLocaleDateString() : 'Never'}
                         </span>
                       </div>
                       <div style={styles.itemActions}>
@@ -414,7 +414,7 @@ export default function MaintenanceDashboard() {
                         <div style={styles.detailText}>
                           <Gauge size={12} />
                           <span>
-                            {item.kmSinceService.toFixed(2)} / {item.intervalKm.toFixed(2)} km ({item.kmUntilDue !== null && item.kmUntilDue <= 0 ? 'Overdue!' : `${item.kmUntilDue?.toFixed(2)} km left`})
+                            {typeof item.kmSinceService === 'number' ? item.kmSinceService.toFixed(2) : '0.00'} / {typeof item.intervalKm === 'number' ? item.intervalKm.toFixed(2) : '0.00'} km ({item.kmUntilDue !== null && item.kmUntilDue !== undefined && item.kmUntilDue <= 0 ? 'Overdue!' : `${typeof item.kmUntilDue === 'number' ? item.kmUntilDue.toFixed(2) : '0.00'} km left`})
                           </span>
                         </div>
                       )}
