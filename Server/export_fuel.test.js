@@ -34,14 +34,15 @@ test('drive CSV appends fuel units, preserves zero and leaves legacy/null fields
     ]);
     expect(header.slice(17)).toEqual([
       'MAF (g/s)', 'FuelSystemStatus (code)', 'EstimatedFuelRate (L/h)', 'EstimatedFuelEconomy (km/L)',
+      'IAT (°C)', 'MAP (kPa)',
     ]);
     expect(rows).toHaveLength(4);
     for (const row of rows) expect(row).toHaveLength(header.length);
     expect(rows[0].slice(0, 4)).toEqual([String(timestamp), new Date(timestamp).toISOString(), '1000', '0']);
-    expect(rows[0].slice(17)).toEqual(['3.24', '2', '1.057959184', '0']);
-    expect(rows[1].slice(17)).toEqual(['', '', '', '']);
-    expect(rows[2].slice(17)).toEqual(['', '', '', '']);
-    expect(rows[3].slice(17)).toEqual(['0', '0', '0', '0']);
+    expect(rows[0].slice(17)).toEqual(['3.24', '2', '1.057959184', '0', '', '']);
+    expect(rows[1].slice(17)).toEqual(['', '', '', '', '', '']);
+    expect(rows[2].slice(17)).toEqual(['', '', '', '', '', '']);
+    expect(rows[3].slice(17)).toEqual(['0', '0', '0', '0', '', '']);
     expect((await app.inject('/api/drives/missing/export/csv')).statusCode).toBe(404);
   } finally { await app.close(); }
 });

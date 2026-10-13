@@ -957,6 +957,8 @@ class OBDGatewayService : Service(), LocationListener {
                         fuelSystemStatus = fuelSystemStatus,
                         estimatedFuelRateLph = fuelEstimate?.litresPerHour,
                         estimatedFuelEconomyKmL = fuelEstimate?.kilometresPerLitre,
+                        iat = cachedIntakeAirTemp,
+                        map = cachedManifoldPressure,
                         ambientTemp = ambientTemp,
                         voltage = voltage,
                         accelTime = completedAccelTime,

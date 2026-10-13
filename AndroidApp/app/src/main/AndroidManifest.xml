@@ -30,6 +30,7 @@
 
     <application
         android:allowBackup="false"
+        android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"
         android:label="OBD Telemetry"
         android:theme="@style/Theme.OBDGateway">

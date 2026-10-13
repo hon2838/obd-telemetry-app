@@ -78,7 +78,7 @@ dependencies {
   "androidautoImplementation"("androidx.car.app:app:1.7.0")
   "androidautoImplementation"("androidx.car.app:app-projected:1.7.0")
   "testAndroidautoImplementation"("androidx.car.app:app-testing:1.7.0")
-  implementation("androidx.core:core-ktx:1.3.2")
+  implementation("androidx.core:core-ktx:1.12.0")
   implementation("androidx.appcompat:appcompat:1.2.0")
 
   // Room
@@ -105,6 +105,7 @@ dependencies {
   androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
   androidTestImplementation("androidx.test:core:1.7.0")
   androidTestImplementation("androidx.test:runner:1.7.0")
+  androidTestImplementation("androidx.test:rules:1.6.1")
 }
 
 configurations.all {

@@ -119,6 +119,8 @@ class TelemetryWidgetView @JvmOverloads constructor(
         dialView.unit = metric.unit
         dialView.minValue = metric.minVal
         dialView.maxValue = metric.maxVal
+        dialView.currentValue = metric.minVal
+        dialView.peakValue = metric.minVal
         dialView.warningThreshold = metric.warnThresh
         dialView.criticalThreshold = metric.critThresh
         dialView.majorTickInterval = when {
@@ -132,6 +134,7 @@ class TelemetryWidgetView @JvmOverloads constructor(
         barView.unit = metric.unit
         barView.minValue = metric.minVal
         barView.maxValue = metric.maxVal
+        barView.currentValue = metric.minVal
         barView.warningThreshold = metric.warnThresh
         barView.criticalThreshold = metric.critThresh
 
@@ -170,6 +173,7 @@ class TelemetryWidgetView @JvmOverloads constructor(
     }
 
     fun updateValue(value: Double) {
+        if (!value.isFinite()) return
         this.currentValue = value
         val fVal = value.toFloat()
 

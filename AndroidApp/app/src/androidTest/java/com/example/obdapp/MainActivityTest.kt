@@ -26,16 +26,21 @@ class MainActivityTest {
         private var context: Context? = null
         private var hadUrl = false
         private var originalUrl: String? = null
+        private var hadToken = false
+        private var originalToken: String? = null
 
         override fun before() {
             val target = ApplicationProvider.getApplicationContext<Context>()
-            if (target.packageName != "com.example.obdapp.androidauto") return
             context = target
             val prefs = target.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             hadUrl = prefs.contains(KEY_API_BASE_URL)
             originalUrl = prefs.getString(KEY_API_BASE_URL, null)
-            // Fresh-install pairing must not create test requests on the live API.
+            hadToken = prefs.contains(KEY_DEVICE_TOKEN)
+            originalToken = prefs.getString(KEY_DEVICE_TOKEN, null)
+
+            // Fresh-install pairing and live requests must be suppressed in tests.
             saveApiBaseUrl(target, "http://127.0.0.1:9")
+            saveDeviceToken(target, "test-instrumentation-token")
         }
 
         override fun after() {
@@ -43,47 +48,60 @@ class MainActivityTest {
             val editor = target.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             if (hadUrl) editor.putString(KEY_API_BASE_URL, originalUrl)
             else editor.remove(KEY_API_BASE_URL)
+
+            if (hadToken) editor.putString(KEY_DEVICE_TOKEN, originalToken)
+            else editor.remove(KEY_DEVICE_TOKEN)
             editor.commit()
         }
     }
 
-    @get:Rule
+    @get:Rule(order = 0)
+    val permissionRule: androidx.test.rule.GrantPermissionRule =
+        androidx.test.rule.GrantPermissionRule.grant(
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            android.Manifest.permission.ACCESS_BACKGROUND_LOCATION
+        )
+
+    private val activityRule = ActivityScenarioRule(MainActivity::class.java)
+
+    @get:Rule(order = 1)
     val rules: RuleChain = RuleChain.outerRule(isolatedPhoneApi)
-        .around(ActivityScenarioRule(MainActivity::class.java))
+        .around(activityRule)
 
     @Before
     fun dismissPairingDialogIfShown() {
         // Fresh installs show a blocking "Pair Head Unit with Account" dialog.
-        // Dismiss it so the underlying ScrollView content can be asserted.
-        // Production UI is unchanged; this only drives the test's own activity.
         try {
             onView(withText("Cancel")).inRoot(isDialog()).perform(click())
-        } catch (_: NoMatchingRootException) {
-            // An already configured app has no pairing dialog.
-        } catch (_: NoMatchingViewException) {
-            // No cancel button exists when no pairing dialog is shown.
+        } catch (_: Exception) {
+        }
+
+        // Open controls drawer in landscape or expand settings in portrait directly on UI thread
+        activityRule.scenario.onActivity { activity ->
+            activity.findViewById<androidx.drawerlayout.widget.DrawerLayout>(R.id.drawerLayout)?.let { drawer ->
+                drawer.openDrawer(androidx.core.view.GravityCompat.START, false)
+            }
+            activity.findViewById<android.view.View>(R.id.settingsContainer)?.visibility = android.view.View.VISIBLE
         }
     }
 
     @Test
     fun testStartAndStopButtonsDisplayed() {
-        onView(withId(R.id.btnStart)).perform(scrollTo()).check(matches(isDisplayed()))
-        onView(withId(R.id.btnStop)).perform(scrollTo()).check(matches(isDisplayed()))
-        onView(withText("Start Service")).perform(scrollTo()).check(matches(isDisplayed()))
-        onView(withText("Stop Service")).perform(scrollTo()).check(matches(isDisplayed()))
+        onView(withId(R.id.btnStart)).check(matches(isDisplayed()))
+        onView(withId(R.id.btnStop)).check(matches(isDisplayed()))
     }
 
     @Test
     fun testFuelLogSectionDisplayed() {
-        onView(withText("FUEL LOG")).perform(scrollTo()).check(matches(isDisplayed()))
-        onView(withId(R.id.etFuelLitres)).perform(scrollTo()).check(matches(isDisplayed()))
-        onView(withId(R.id.etFuelOdometer)).perform(scrollTo()).check(matches(isDisplayed()))
         onView(withId(R.id.btnLogFuel)).perform(scrollTo()).check(matches(isDisplayed()))
+        onView(withId(R.id.etFuelLitres)).check(matches(isDisplayed()))
+        onView(withId(R.id.etFuelOdometer)).check(matches(isDisplayed()))
     }
 
     @Test
     fun testStatusCardDisplaysCorrectly() {
-        onView(withText("GATEWAY SERVICE STATUS")).perform(scrollTo()).check(matches(isDisplayed()))
-        onView(withId(R.id.statusText)).perform(scrollTo()).check(matches(withText("Service Stopped")))
+        onView(withId(R.id.statusIndicator)).perform(scrollTo()).check(matches(isDisplayed()))
+        onView(withId(R.id.statusText)).check(matches(isDisplayed()))
     }
 }

@@ -46,7 +46,7 @@ class Migration9To10JvmTest {
         helper.writableDatabase.execSQL("INSERT INTO telemetry_data (eventId,timestamp,latitude,longitude,altitude,gpsSpeed,vehicleId,synced) VALUES ('pending-old',1234,0,0,0,0,'car',0)")
         helper.close()
         val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_9_10).build()
+            .addMigrations(AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11).build()
         try {
             val original = db.telemetryDao().getUnsyncedRecordsForVehicle("car").single()
             assertEquals("pending-old", original.eventId)

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
 } from 'recharts';
-import { Activity, Map as MapIcon, Thermometer, Battery, Flame, Fuel, Navigation, AlertCircle, Clock, Car } from 'lucide-react';
+import { Activity, Map as MapIcon, Thermometer, Battery, Flame, Fuel, Navigation, AlertCircle, Clock, Car, Gauge, Wind } from 'lucide-react';
 import { apiFetch, isAbortError } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
@@ -45,6 +45,8 @@ interface TelemetryData {
   fuelSystemStatus?: number | null;
   estimatedFuelRateLph?: number | null;
   estimatedFuelEconomyKmL?: number | null;
+  iat?: number | null;
+  map?: number | null;
   timeLabel?: string;
 }
 
@@ -407,7 +409,8 @@ export default function TelemetryDashboard() {
     rpm: null, speed: null, coolantTemp: null, latitude: 0, longitude: 0, altitude: 0,
     gpsSpeed: 0, engineLoad: null, throttlePos: null, fuelLevel: null, ambientTemp: null, voltage: null,
     accelTime: null, alertCoolant: false, alertVoltage: false,
-    estimatedFuelEconomyKmL: null, estimatedFuelRateLph: null
+    estimatedFuelEconomyKmL: null, estimatedFuelRateLph: null,
+    iat: null, map: null
   };
 
   const formatVal = (val: any, decimals = 2) => {
@@ -608,6 +611,26 @@ export default function TelemetryDashboard() {
           progressColor="var(--accent-amber)"
           subtext={latest.accelTime !== null ? "Sprint Completed!" : "Awaiting acceleration..."}
         />
+        <MetricCard
+          title="Intake Air (IAT)"
+          value={formatVal(latest.iat)}
+          unit="°C"
+          icon={<Wind size={20} color="var(--accent-amber)" />}
+          progress={getProgress(latest.iat, 100)}
+          progressColor="var(--accent-amber)"
+          valueColor="var(--accent-amber)"
+          subtext={latest.iat !== null ? "Manifold Intake Temp" : "N/A"}
+        />
+        <MetricCard
+          title="Manifold (MAP)"
+          value={formatVal(latest.map)}
+          unit="kPa"
+          icon={<Gauge size={20} color="var(--accent-cyan)" />}
+          progress={getProgress(latest.map, 255)}
+          progressColor="var(--accent-cyan)"
+          valueColor="var(--accent-cyan)"
+          subtext={latest.map !== null ? (latest.map > 101 ? `${(latest.map - 101.3).toFixed(1)} kPa Boost` : `${(101.3 - latest.map).toFixed(1)} kPa Vacuum`) : "N/A"}
+        />
       </div>
 
       {/* CHART AREA */}
@@ -653,6 +676,7 @@ export default function TelemetryDashboard() {
                   <Line yAxisId="left" type="monotone" dataKey="rpm" stroke="var(--accent-purple)" strokeWidth={3} name="RPM" dot={false} activeDot={{ r: 6, fill: 'var(--accent-purple)', stroke: '#fff', strokeWidth: 2 }} />
                   <Line yAxisId="right" type="monotone" dataKey="speed" stroke="var(--accent-cyan)" strokeWidth={3} name="OBD Speed" dot={false} />
                   <Line yAxisId="right" type="monotone" dataKey="gpsSpeed" stroke="var(--accent-blue)" strokeWidth={2} strokeDasharray="5 5" name="GPS Speed" dot={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="map" stroke="var(--accent-amber)" strokeWidth={2} name="MAP (kPa)" dot={false} connectNulls />
                 </LineChart>
               ) : activeTab === 'temperatures' ? (
                 <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -664,6 +688,7 @@ export default function TelemetryDashboard() {
                   <Brush dataKey="timeLabel" height={30} stroke="var(--accent-red)" fill="rgba(0,0,0,0.2)" />
                   <Line type="monotone" dataKey="coolantTemp" stroke="var(--accent-red)" strokeWidth={3} name="Coolant" dot={false} />
                   <Line type="monotone" dataKey="ambientTemp" stroke="var(--accent-green)" strokeWidth={3} name="Ambient" dot={false} />
+                  <Line type="monotone" dataKey="iat" stroke="var(--accent-amber)" strokeWidth={3} name="Intake Air (IAT)" dot={false} connectNulls />
                 </LineChart>
               ) : (
                 <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>

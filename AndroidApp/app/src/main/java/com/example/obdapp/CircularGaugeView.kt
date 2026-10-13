@@ -24,19 +24,26 @@ class CircularGaugeView @JvmOverloads constructor(
 
     var minValue: Float = 0f
         set(value) {
+            if (!value.isFinite() || field == value) return
             field = value
             invalidate()
         }
 
     var maxValue: Float = 160f
         set(value) {
-            field = if (value > minValue) value else minValue + 1f
+            if (!value.isFinite()) return
+            val target = if (value > minValue) value else minValue + 1f
+            if (field == target) return
+            field = target
             invalidate()
         }
 
     var currentValue: Float = 0f
         set(value) {
-            field = value.coerceIn(minValue, maxValue)
+            if (!value.isFinite()) return
+            val clamped = value.coerceIn(minValue, maxValue)
+            if (field == clamped && peakValue >= clamped) return
+            field = clamped
             if (field > peakValue) {
                 peakValue = field
             }
@@ -45,18 +52,23 @@ class CircularGaugeView @JvmOverloads constructor(
 
     var peakValue: Float = 0f
         set(value) {
-            field = value.coerceIn(minValue, maxValue)
+            if (!value.isFinite()) return
+            val clamped = value.coerceIn(minValue, maxValue)
+            if (field == clamped) return
+            field = clamped
             invalidate()
         }
 
     var warningThreshold: Float = 120f
         set(value) {
+            if (!value.isFinite() || field == value) return
             field = value
             invalidate()
         }
 
     var criticalThreshold: Float = 140f
         set(value) {
+            if (!value.isFinite() || field == value) return
             field = value
             invalidate()
         }
@@ -111,6 +123,12 @@ class CircularGaugeView @JvmOverloads constructor(
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
 
+    private val unitTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        color = Color.parseColor("#9CA3AF")
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+    }
+
     private val valueTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
         color = Color.WHITE
@@ -149,11 +167,6 @@ class CircularGaugeView @JvmOverloads constructor(
     private val startAngle = 135f
     private val sweepAngle = 270f
 
-    init {
-        // Hardware acceleration is optimal for custom canvas gauges
-        setLayerType(LAYER_TYPE_HARDWARE, null)
-    }
-
     fun resetPeak() {
         peakValue = currentValue
         invalidate()
@@ -173,6 +186,7 @@ class CircularGaugeView @JvmOverloads constructor(
         arcBounds.set(cx - radius, cy - radius, cx + radius, cy + radius)
 
         textPaint.textSize = diameter * 0.06f
+        unitTextPaint.textSize = radius * 0.13f
         valueTextPaint.textSize = diameter * 0.19f
         titleTextPaint.textSize = diameter * 0.075f
     }
@@ -187,11 +201,20 @@ class CircularGaugeView @JvmOverloads constructor(
         // 1. Background Arc Track
         canvas.drawArc(arcBounds, startAngle, sweepAngle, false, trackPaint)
 
-        // 2. Determine Color Zone based on current value
-        val currentColor = when {
-            currentValue >= criticalThreshold -> Color.parseColor("#EF4444") // Alert Red
-            currentValue >= warningThreshold -> Color.parseColor("#F59E0B") // Amber Warning
-            else -> Color.parseColor("#5ED7D0") // Cyan Nominal
+        // 2. Determine Color Zone based on current value (handles inverted thresholds)
+        val isLowCritical = criticalThreshold < warningThreshold
+        val currentColor = if (isLowCritical) {
+            when {
+                currentValue <= criticalThreshold -> Color.parseColor("#EF4444")
+                currentValue <= warningThreshold -> Color.parseColor("#F59E0B")
+                else -> Color.parseColor("#5ED7D0")
+            }
+        } else {
+            when {
+                currentValue >= criticalThreshold -> Color.parseColor("#EF4444")
+                currentValue >= warningThreshold -> Color.parseColor("#F59E0B")
+                else -> Color.parseColor("#5ED7D0")
+            }
         }
         activeArcPaint.color = currentColor
         needlePaint.color = currentColor
@@ -298,8 +321,7 @@ class CircularGaugeView @JvmOverloads constructor(
         canvas.drawText(formattedValue, cx, valueY, valueTextPaint)
 
         // Unit label below value
-        textPaint.textSize = radius * 0.13f
-        canvas.drawText(unit, cx, valueY + (radius * 0.18f), textPaint)
+        canvas.drawText(unit, cx, valueY + (radius * 0.18f), unitTextPaint)
 
         // Title at upper center
         canvas.drawText(title, cx, cy - (radius * 0.42f), titleTextPaint)
