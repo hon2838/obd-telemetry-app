@@ -6,6 +6,7 @@ import { useVehicle } from '../context/VehicleContext';
 import {
   Fuel, Gauge, Clock, ArrowLeft, Trash2, PlusCircle, ActivitySquare, TrendingUp, Car
 } from 'lucide-react';
+import Pagination from '../components/Pagination';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area
 } from 'recharts';
@@ -47,12 +48,18 @@ export default function FuelTracker() {
     logCount: 0
   });
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [litresInput, setLitresInput] = useState('');
   const [odoInput, setOdoInput] = useState('');
   const [fillStateInput, setFillStateInput] = useState<'full' | 'partial' | 'unknown'>('unknown');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  useEffect(() => {
+    setPage(1);
+  }, [activeVehicleId]);
 
   const fetchData = async (signal?: AbortSignal) => {
     const [logsRes, statsRes] = await Promise.all([
@@ -156,6 +163,12 @@ export default function FuelTracker() {
       alert('Network error, could not delete log.');
     }
   };
+
+  // Paginated logs for the history table
+  const paginatedLogs = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return logs.slice(start, start + pageSize);
+  }, [logs, page, pageSize]);
 
   // Format data for Recharts line chart (sorted chronologically)
   const chartData = useMemo(() => [...logs]
@@ -351,6 +364,7 @@ export default function FuelTracker() {
               <h2 style={styles.cardTitle}>Refuel Log History</h2>
               <div style={styles.tableContainer}>
                 {logs.length > 0 ? (
+                  <>
                   <table style={styles.table}>
                     <thead>
                       <tr style={styles.trHead}>
@@ -365,7 +379,7 @@ export default function FuelTracker() {
                       </tr>
                     </thead>
                     <tbody>
-                      {logs.map((log) => (
+                      {paginatedLogs.map((log) => (
                         <tr key={log.id} style={styles.trRow}>
                           <td style={styles.td}>
                             {new Date(log.timestamp).toLocaleDateString(undefined, {
@@ -414,6 +428,15 @@ export default function FuelTracker() {
                       ))}
                     </tbody>
                   </table>
+                  <Pagination
+                    currentPage={page}
+                    totalItems={logs.length}
+                    pageSize={pageSize}
+                    onPageChange={setPage}
+                    onPageSizeChange={setPageSize}
+                    itemLabel="refuel logs"
+                  />
+                  </>
                 ) : (
                   <div style={styles.noDataPlaceholder}>
                     No refuel records found.

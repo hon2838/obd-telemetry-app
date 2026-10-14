@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import Head from 'next/head';
+import Pagination from '../components/Pagination';
 import { apiFetch } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
@@ -55,9 +56,24 @@ export default function DiagnosticsDashboard() {
   const [commandPolling, setCommandPolling] = useState(false);
   const [recentCommands, setRecentCommands] = useState<DiagnosticCommand[]>([]);
   const [error, setError] = useState('');
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState(10);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastDtcCodesRef = useRef('');
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [activeVehicleId]);
+
+  const reversedHistory = useMemo(() => {
+    return data.history.slice().reverse();
+  }, [data.history]);
+
+  const paginatedHistory = useMemo(() => {
+    const start = (historyPage - 1) * historyPageSize;
+    return reversedHistory.slice(start, start + historyPageSize);
+  }, [reversedHistory, historyPage, historyPageSize]);
 
   useEffect(() => {
     return () => {
@@ -325,49 +341,60 @@ export default function DiagnosticsDashboard() {
         {data.history.length === 0 ? (
           <div style={styles.noHistory}>No historical diagnostic events recorded.</div>
         ) : (
-          <div style={styles.historyTimeline}>
-            {data.history.slice().reverse().map(event => {
-              const timeStr = new Date(event.timestamp).toLocaleString();
-              const isRead = event.type === 'read';
-              return (
-                <div key={event.id} style={styles.timelineItem}>
-                  <div style={styles.timelinePoint(isRead ? 'read' : 'clear')}></div>
-                  <div style={styles.timelineContent}>
-                    <div style={styles.timelineHeader}>
-                      <span style={styles.timelineType(isRead ? 'read' : 'clear')}>
-                        {isRead ? 'DTC READ SCAN' : 'DTC CLEAR COMMAND'}
-                      </span>
-                      <span style={styles.timelineTime}>{timeStr}</span>
-                    </div>
-                    <div style={styles.timelineDetails}>
-                      {isRead ? (
-                        event.success === false ? <span style={{ color: 'var(--accent-amber)' }}>Scan failed: {event.error || 'No confirmed result'}</span> : event.codes.length > 0 ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            <span style={{ color: 'var(--text-primary)' }}>Codes Found:</span>
-                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                              {event.codes.map(c => (
-                                <span key={c} style={styles.miniBadge}>{c}</span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <span style={{ color: 'var(--accent-green)' }}>No codes found in this confirmed scan.</span>
-                        )
-                      ) : (
-                        <span>
-                          Status: {event.success ? (
-                            <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>SUCCESSFULLY CLEARED</span>
-                          ) : (
-                            <span style={{ color: 'var(--accent-red)', fontWeight: 700 }}>CLEAR COMMAND FAILED / EXECUTING</span>
-                          )}
+          <>
+            <div style={styles.historyTimeline}>
+              {paginatedHistory.map(event => {
+                const timeStr = new Date(event.timestamp).toLocaleString();
+                const isRead = event.type === 'read';
+                return (
+                  <div key={event.id} style={styles.timelineItem}>
+                    <div style={styles.timelinePoint(isRead ? 'read' : 'clear')}></div>
+                    <div style={styles.timelineContent}>
+                      <div style={styles.timelineHeader}>
+                        <span style={styles.timelineType(isRead ? 'read' : 'clear')}>
+                          {isRead ? 'DTC READ SCAN' : 'DTC CLEAR COMMAND'}
                         </span>
-                      )}
+                        <span style={styles.timelineTime}>{timeStr}</span>
+                      </div>
+                      <div style={styles.timelineDetails}>
+                        {isRead ? (
+                          event.success === false ? <span style={{ color: 'var(--accent-amber)' }}>Scan failed: {event.error || 'No confirmed result'}</span> : event.codes.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                              <span style={{ color: 'var(--text-primary)' }}>Codes Found:</span>
+                              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                {event.codes.map(c => (
+                                  <span key={c} style={styles.miniBadge}>{c}</span>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--accent-green)' }}>No codes found in this confirmed scan.</span>
+                          )
+                        ) : (
+                          <span>
+                            Status: {event.success ? (
+                              <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>SUCCESSFULLY CLEARED</span>
+                            ) : (
+                              <span style={{ color: 'var(--accent-red)', fontWeight: 700 }}>CLEAR COMMAND FAILED / EXECUTING</span>
+                            )}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+            <Pagination
+              currentPage={historyPage}
+              totalItems={data.history.length}
+              pageSize={historyPageSize}
+              onPageChange={setHistoryPage}
+              onPageSizeChange={setHistoryPageSize}
+              pageSizeOptions={[5, 10, 25]}
+              itemLabel="events"
+            />
+          </>
         )}
       </div>
       
