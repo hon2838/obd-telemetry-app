@@ -5,6 +5,7 @@ import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
 import TripRouteMap from '../components/TripRouteMap';
 import type { GpsPoint } from '../components/TripRouteMap';
+import Pagination from '../components/Pagination';
 import {
   Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X, Car
 } from 'lucide-react';
@@ -99,6 +100,8 @@ export default function TripsDashboard() {
   });
   const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<'efficiency' | 'distance' | 'speed' | 'duration'>('distance');
   const [loaded, setLoaded] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [selectedDrive, setSelectedDrive] = useState<DriveSession | null>(null);
   const [selectedDrivePoints, setSelectedDrivePoints] = useState<any[]>([]);
   const [selectedDriveRoutePoints, setSelectedDriveRoutePoints] = useState<GpsPoint[]>([]);
@@ -180,6 +183,7 @@ export default function TripsDashboard() {
     setSelectedDriveRoutePoints([]);
     setDetailLoading(false);
     setDetailError(false);
+    setPage(1);
   }, [activeVehicleId]);
 
   useEffect(() => {
@@ -197,6 +201,12 @@ export default function TripsDashboard() {
   const efficiencies = leaderboard.best_efficiency.map(d => d.summary.estimatedFuelEconomyKmL).filter((e): e is number => typeof e === 'number' && e > 0);
   const bestEfficiency = efficiencies.length > 0 ? Math.max(...efficiencies) : 0;
   const longestTrip = distances.length > 0 ? Math.max(...distances) : null;
+
+  // Paginated drives for the history table
+  const paginatedDrives = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return drives.slice(start, start + pageSize);
+  }, [drives, page, pageSize]);
 
   // Chart data sorted chronologically
   const chartData = useMemo(() => [...drives]
@@ -419,7 +429,7 @@ export default function TripsDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {drives.map(drive => {
+                {paginatedDrives.map(drive => {
                   const startStr = new Date(drive.startTime).toLocaleString(undefined, {
                     month: 'short',
                     day: 'numeric',
@@ -469,6 +479,14 @@ export default function TripsDashboard() {
                 })}
               </tbody>
             </table>
+            <Pagination
+              currentPage={page}
+              totalItems={drives.length}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+              itemLabel="trips"
+            />
           </div>
         )}
       </div>

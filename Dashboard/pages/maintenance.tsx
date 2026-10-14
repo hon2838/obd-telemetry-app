@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
+import Pagination from '../components/Pagination';
 import { apiFetch } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
@@ -94,7 +95,19 @@ export default function MaintenanceDashboard() {
     }
   };
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    setPage(1);
+  }, [activeVehicleId]);
+
   useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
+
+  const paginatedItems = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return items.slice(start, start + pageSize);
+  }, [items, page, pageSize]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -372,72 +385,85 @@ export default function MaintenanceDashboard() {
             <h2 style={styles.cardTitle}>Current Schedules ({items.length})</h2>
           </div>
 
-          <div style={styles.listContainer}>
-            {items.length === 0 ? (
+          {items.length === 0 ? (
+            <div style={styles.listContainer}>
               <div style={styles.noData}>Create a schedule to begin tracking engine parts degradation.</div>
-            ) : (
-              items.map(item => {
-                const pct = getProgressPercentage(item);
-                const color = getProgressColor(item.status);
-                return (
-                  <div key={item.id} className="glass-panel-static" style={styles.itemCard}>
-                    <div style={styles.itemHeader}>
-                      <div>
-                        <h3 style={styles.itemName}>{item.name}</h3>
-                        <span style={styles.itemMeta}>
-                          Last: {typeof item.lastServiceOdo === 'number' ? `${item.lastServiceOdo.toFixed(2)} km` : '0.00 km'} | {item.lastServiceDate ? new Date(item.lastServiceDate).toLocaleDateString() : 'Never'}
-                        </span>
-                      </div>
-                      <div style={styles.itemActions}>
-                        <button 
-                          onClick={() => handleMarkServiced(item.id)}
-                          style={{ ...styles.itemActionBtn, color: 'var(--accent-green)', backgroundColor: 'rgba(16, 185, 129, 0.1)' }}
-                        >
-                          Mark Completed
-                        </button>
-                        <button 
-                          onClick={() => handleDelete(item.id)}
-                          style={{ ...styles.itemActionBtn, color: 'var(--accent-red)', backgroundColor: 'rgba(239, 68, 68, 0.1)', padding: '6px' }}
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Progress Bar */}
-                    <div style={styles.progressTrack}>
-                      <div style={{ ...styles.progressBar, width: `${pct}%`, backgroundColor: color }}></div>
-                    </div>
-
-                    <div style={styles.itemDetails}>
-                      {item.intervalKm && (
-                        <div style={styles.detailText}>
-                          <Gauge size={12} />
-                          <span>
-                            {typeof item.kmSinceService === 'number' ? item.kmSinceService.toFixed(2) : '0.00'} / {typeof item.intervalKm === 'number' ? item.intervalKm.toFixed(2) : '0.00'} km ({item.kmUntilDue !== null && item.kmUntilDue !== undefined && item.kmUntilDue <= 0 ? 'Overdue!' : `${typeof item.kmUntilDue === 'number' ? item.kmUntilDue.toFixed(2) : '0.00'} km left`})
+            </div>
+          ) : (
+            <>
+              <div style={styles.listContainer}>
+                {paginatedItems.map(item => {
+                  const pct = getProgressPercentage(item);
+                  const color = getProgressColor(item.status);
+                  return (
+                    <div key={item.id} className="glass-panel-static" style={styles.itemCard}>
+                      <div style={styles.itemHeader}>
+                        <div>
+                          <h3 style={styles.itemName}>{item.name}</h3>
+                          <span style={styles.itemMeta}>
+                            Last: {typeof item.lastServiceOdo === 'number' ? `${item.lastServiceOdo.toFixed(2)} km` : '0.00 km'} | {item.lastServiceDate ? new Date(item.lastServiceDate).toLocaleDateString() : 'Never'}
                           </span>
                         </div>
-                      )}
-                      {item.intervalDays && (
-                        <div style={styles.detailText}>
-                          <Calendar size={12} />
-                          <span>
-                            {item.daysSinceService} / {item.intervalDays} days ({item.daysUntilDue !== null && item.daysUntilDue <= 0 ? 'Overdue!' : `${item.daysUntilDue} days left`})
-                          </span>
+                        <div style={styles.itemActions}>
+                          <button 
+                            onClick={() => handleMarkServiced(item.id)}
+                            style={{ ...styles.itemActionBtn, color: 'var(--accent-green)', backgroundColor: 'rgba(16, 185, 129, 0.1)' }}
+                          >
+                            Mark Completed
+                          </button>
+                          <button 
+                            onClick={() => handleDelete(item.id)}
+                            style={{ ...styles.itemActionBtn, color: 'var(--accent-red)', backgroundColor: 'rgba(239, 68, 68, 0.1)', padding: '6px' }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
                         </div>
-                      )}
-                      {item.notes && (
-                        <div style={styles.notesText}>
-                          <FileText size={12} />
-                          <span>Notes: "{item.notes}"</span>
-                        </div>
-                      )}
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div style={styles.progressTrack}>
+                        <div style={{ ...styles.progressBar, width: `${pct}%`, backgroundColor: color }}></div>
+                      </div>
+
+                      <div style={styles.itemDetails}>
+                        {item.intervalKm && (
+                          <div style={styles.detailText}>
+                            <Gauge size={12} />
+                            <span>
+                              {typeof item.kmSinceService === 'number' ? item.kmSinceService.toFixed(2) : '0.00'} / {typeof item.intervalKm === 'number' ? item.intervalKm.toFixed(2) : '0.00'} km ({item.kmUntilDue !== null && item.kmUntilDue !== undefined && item.kmUntilDue <= 0 ? 'Overdue!' : `${typeof item.kmUntilDue === 'number' ? item.kmUntilDue.toFixed(2) : '0.00'} km left`})
+                            </span>
+                          </div>
+                        )}
+                        {item.intervalDays && (
+                          <div style={styles.detailText}>
+                            <Calendar size={12} />
+                            <span>
+                              {item.daysSinceService} / {item.intervalDays} days ({item.daysUntilDue !== null && item.daysUntilDue <= 0 ? 'Overdue!' : `${item.daysUntilDue} days left`})
+                            </span>
+                          </div>
+                        )}
+                        {item.notes && (
+                          <div style={styles.notesText}>
+                            <FileText size={12} />
+                            <span>Notes: "{item.notes}"</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
+                  );
+                })}
+              </div>
+              <Pagination
+                currentPage={page}
+                totalItems={items.length}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+                pageSizeOptions={[5, 10, 20]}
+                itemLabel="schedules"
+              />
+            </>
+          )}
         </div>
       </div>
     </div>

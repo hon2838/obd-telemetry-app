@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
+import Pagination from '../components/Pagination';
 import { apiFetch } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
@@ -45,6 +46,12 @@ export default function PerformanceDashboard() {
     totalDrives: 0
   });
   const [runs, setRuns] = useState<AccelerationRun[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    setPage(1);
+  }, [activeVehicleId]);
 
   const fetchData = async (signal: AbortSignal) => {
     const [recordsRes, runsRes] = await Promise.all([
@@ -62,6 +69,12 @@ export default function PerformanceDashboard() {
   };
 
   useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
+
+  // Paginated runs for the acceleration history table
+  const paginatedRuns = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return runs.slice(start, start + pageSize);
+  }, [runs, page, pageSize]);
 
   // Format line chart data only when the source data changes.
   const chartData = useMemo(() => [...runs]
@@ -164,36 +177,46 @@ export default function PerformanceDashboard() {
           {runs.length === 0 ? (
             <div style={styles.noData}>Perform a 0-100 km/h run in your car to log metrics.</div>
           ) : (
-            <div style={styles.tableContainer}>
-              <table style={styles.table}>
-                <thead>
-                  <tr style={styles.trHead}>
-                    <th style={styles.th}>Date & Time</th>
-                    <th style={styles.th}>Accel Time</th>
-                    <th style={styles.th}>Max Speed</th>
-                    <th style={styles.th}>Session ID</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {runs.map(run => {
-                    const isPersonalBest = records.best0to100 && records.best0to100.timestamp === run.timestamp;
-                    return (
-                      <tr key={run.id} style={{ ...styles.trRow, backgroundColor: isPersonalBest ? 'rgba(245, 158, 11, 0.05)' : 'transparent' }}>
-                        <td style={styles.td}>
-                          {new Date(run.timestamp).toLocaleString()}
-                          {isPersonalBest && <span style={styles.pbTag}>🏆 PB</span>}
-                        </td>
-                        <td style={{ ...styles.td, color: 'var(--accent-amber)', fontWeight: 700 }}>
-                          {typeof run.accelTime === 'number' ? `${run.accelTime.toFixed(2)}s` : 'N/A'}
-                        </td>
-                        <td style={styles.td}>{typeof run.maxSpeedReached === 'number' ? `${run.maxSpeedReached.toFixed(2)} km/h` : 'N/A'}</td>
-                        <td style={styles.td}>Drive #{run.driveId}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div style={styles.tableContainer}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr style={styles.trHead}>
+                      <th style={styles.th}>Date & Time</th>
+                      <th style={styles.th}>Accel Time</th>
+                      <th style={styles.th}>Max Speed</th>
+                      <th style={styles.th}>Session ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedRuns.map(run => {
+                      const isPersonalBest = records.best0to100 && records.best0to100.timestamp === run.timestamp;
+                      return (
+                        <tr key={run.id} style={{ ...styles.trRow, backgroundColor: isPersonalBest ? 'rgba(245, 158, 11, 0.05)' : 'transparent' }}>
+                          <td style={styles.td}>
+                            {new Date(run.timestamp).toLocaleString()}
+                            {isPersonalBest && <span style={styles.pbTag}>🏆 PB</span>}
+                          </td>
+                          <td style={{ ...styles.td, color: 'var(--accent-amber)', fontWeight: 700 }}>
+                            {typeof run.accelTime === 'number' ? `${run.accelTime.toFixed(2)}s` : 'N/A'}
+                          </td>
+                          <td style={styles.td}>{typeof run.maxSpeedReached === 'number' ? `${run.maxSpeedReached.toFixed(2)} km/h` : 'N/A'}</td>
+                          <td style={styles.td}>Drive #{run.driveId}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination
+                currentPage={page}
+                totalItems={runs.length}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+                itemLabel="runs"
+              />
+            </>
           )}
         </div>
 
