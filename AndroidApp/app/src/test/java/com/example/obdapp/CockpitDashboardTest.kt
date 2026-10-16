@@ -201,4 +201,39 @@ class CockpitDashboardTest {
         bar.currentValue = 90f
         assertEquals(90f, bar.currentValue)
     }
+
+    @Test
+    fun linearBarGaugeHandlesUnavailableState() {
+        val bar = LinearBarGaugeView(context)
+        bar.minValue = 0f
+        bar.maxValue = 100f
+        assertTrue(bar.isAvailable)
+
+        bar.isAvailable = false
+        org.junit.Assert.assertFalse(bar.isAvailable)
+
+        bar.currentValue = 50f
+        assertTrue(bar.isAvailable)
+    }
+
+    @Test
+    fun telemetryWidgetViewHandlesNullAndUnavailableValues() {
+        val widget = TelemetryWidgetView(context)
+        widget.bindMetric(TelemetryMetric.FUEL_LEVEL, DisplayStyle.BAR)
+        org.junit.Assert.assertFalse(widget.isMetricAvailable)
+
+        val bar = widget.findViewById<LinearBarGaugeView>(R.id.barGaugeView)
+        org.junit.Assert.assertFalse(bar.isAvailable)
+
+        // Passing null keeps it unavailable
+        widget.updateValue(null)
+        org.junit.Assert.assertFalse(widget.isMetricAvailable)
+        org.junit.Assert.assertFalse(bar.isAvailable)
+
+        // Passing valid value makes it available
+        widget.updateValue(45.0)
+        assertTrue(widget.isMetricAvailable)
+        assertTrue(bar.isAvailable)
+        assertEquals(45f, bar.currentValue)
+    }
 }

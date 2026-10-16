@@ -31,12 +31,20 @@ class LinearBarGaugeView @JvmOverloads constructor(
             invalidate()
         }
 
+    var isAvailable: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
     var currentValue: Float = 0f
         set(value) {
             if (!value.isFinite()) return
             val clamped = value.coerceIn(minValue, maxValue)
-            if (field == clamped) return
+            if (field == clamped && isAvailable) return
             field = clamped
+            isAvailable = true
             invalidate()
         }
 
@@ -125,11 +133,15 @@ class LinearBarGaugeView @JvmOverloads constructor(
         val iconClearance = 32f
 
         // 2. Format Value + Unit
-        val formattedValue = if (currentValue == currentValue.toInt().toFloat()) {
+        val formattedValue = if (!isAvailable) {
+            "N/A"
+        } else if (currentValue == currentValue.toInt().toFloat()) {
             "${currentValue.toInt()} $unit"
         } else {
             String.format(java.util.Locale.US, "%.1f %s", currentValue, unit)
         }
+
+        valuePaint.color = if (isAvailable) Color.WHITE else Color.parseColor("#6B7280")
 
         // Adjust text sizes if title + value collide
         val availableW = w - paddingH - iconClearance
@@ -159,28 +171,30 @@ class LinearBarGaugeView @JvmOverloads constructor(
         canvas.drawRoundRect(trackBounds, barCorner, barCorner, trackPaint)
 
         // 4. Fill Bar with Dynamic Threshold Color (supports inverted thresholds)
-        val fraction = ((currentValue - minValue) / (maxValue - minValue)).coerceIn(0f, 1f)
-        val fillRight = paddingH + (fraction * (w - 2 * paddingH))
+        if (isAvailable) {
+            val fraction = ((currentValue - minValue) / (maxValue - minValue)).coerceIn(0f, 1f)
+            val fillRight = paddingH + (fraction * (w - 2 * paddingH))
 
-        val isLowCritical = criticalThreshold < warningThreshold
-        val barColor = if (isLowCritical) {
-            when {
-                currentValue <= criticalThreshold -> Color.parseColor("#EF4444")
-                currentValue <= warningThreshold -> Color.parseColor("#F59E0B")
-                else -> Color.parseColor("#5ED7D0")
+            val isLowCritical = criticalThreshold < warningThreshold
+            val barColor = if (isLowCritical) {
+                when {
+                    currentValue <= criticalThreshold -> Color.parseColor("#EF4444")
+                    currentValue <= warningThreshold -> Color.parseColor("#F59E0B")
+                    else -> Color.parseColor("#5ED7D0")
+                }
+            } else {
+                when {
+                    currentValue >= criticalThreshold -> Color.parseColor("#EF4444")
+                    currentValue >= warningThreshold -> Color.parseColor("#F59E0B")
+                    else -> Color.parseColor("#5ED7D0")
+                }
             }
-        } else {
-            when {
-                currentValue >= criticalThreshold -> Color.parseColor("#EF4444")
-                currentValue >= warningThreshold -> Color.parseColor("#F59E0B")
-                else -> Color.parseColor("#5ED7D0")
-            }
-        }
-        fillPaint.color = barColor
+            fillPaint.color = barColor
 
-        if (fillRight > paddingH) {
-            fillBounds.set(paddingH, barTop, fillRight, barBottom)
-            canvas.drawRoundRect(fillBounds, barCorner, barCorner, fillPaint)
+            if (fillRight > paddingH) {
+                fillBounds.set(paddingH, barTop, fillRight, barBottom)
+                canvas.drawRoundRect(fillBounds, barCorner, barCorner, fillPaint)
+            }
         }
 
         // 5. Min / Max Labels (Bottom Row)
