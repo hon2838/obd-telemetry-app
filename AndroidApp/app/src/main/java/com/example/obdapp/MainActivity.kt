@@ -199,7 +199,10 @@ class MainActivity : AppCompatActivity() {
         // Expanded OBD gauges
         val iat = it.getIntOrNumber("iat", -1)
         val map = it.getIntOrNumber("map", -1)
-        val load = it.getIntOrNumber("load", -1)
+        val rawLoad = it.getIntOrNumber("load", -1)
+        // Axia ECU Quirk: Denso returns 100% (255) load at stoplight idle (0 km/h, 600-900 RPM)
+        val isIdleQuirk = rawLoad >= 95 && speed <= 0f && (rpm in 1..1000)
+        val load = if (rawLoad != -1 && isIdleQuirk) 20 else rawLoad
         val maf = it.getDoubleOrNumber("maf", -1.0)
         val fuelStatus = it.getIntOrNumber("fuel_status", -1)
 
@@ -256,9 +259,7 @@ class MainActivity : AppCompatActivity() {
                 TelemetryMetric.MANIFOLD_PRESSURE -> if (map != -1) map.toDouble() else null
                 TelemetryMetric.MASS_AIR_FLOW -> if (maf >= 0.0) maf else null
             }
-            if (value != null) {
-                slot.updateValue(value)
-            }
+            slot.updateValue(value)
         }
 
         tvCockpitStatus?.text = obdStatus

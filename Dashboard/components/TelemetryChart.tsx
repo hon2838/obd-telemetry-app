@@ -261,6 +261,16 @@ export default function TelemetryDashboard() {
   const [data, setData] = useState<TelemetryData[]>([]);
   const [activeTab, setActiveTab] = useState<'engine' | 'temperatures' | 'fuel_load'>('engine');
   const [connectionOk, setConnectionOk] = useState(true);
+  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({});
+
+  const toggleSeries = useCallback((entry: any) => {
+    const dataKey = entry?.dataKey;
+    if (!dataKey) return;
+    setHiddenSeries(prev => ({
+      ...prev,
+      [dataKey]: !prev[dataKey]
+    }));
+  }, []);
 
   const recordsRef = useRef<globalThis.Map<string, TelemetryData>>(new globalThis.Map());
   const cursorRef = useRef(0);
@@ -495,6 +505,38 @@ export default function TelemetryDashboard() {
     return null;
   };
 
+  const coolantChip = useMemo(() => {
+    const c = latest.coolantTemp;
+    if (typeof c !== 'number') return null;
+    if (c < 65) return <StatusChip label="Warm-up" color="#38bdf8" bg="rgba(56, 189, 248, 0.12)" />;
+    if (c <= 100) return <StatusChip label="Optimal" color="#4ade80" bg="rgba(74, 222, 128, 0.12)" />;
+    return <StatusChip label="Hot" color="#f87171" bg="rgba(248, 113, 113, 0.16)" />;
+  }, [latest.coolantTemp]);
+
+  const voltageChip = useMemo(() => {
+    const v = latest.voltage;
+    if (typeof v !== 'number') return null;
+    if (v >= 13.2) return <StatusChip label="Charging" color="#38bdf8" bg="rgba(56, 189, 248, 0.12)" />;
+    if (v >= 12.0) return <StatusChip label="Battery OK" color="#4ade80" bg="rgba(74, 222, 128, 0.12)" />;
+    return <StatusChip label="Low Voltage" color="#f87171" bg="rgba(248, 113, 113, 0.16)" />;
+  }, [latest.voltage]);
+
+  const mapChip = useMemo(() => {
+    const m = latest.map;
+    if (typeof m !== 'number') return null;
+    if (m > 101.3) return <StatusChip label="Boost" color="#fbbf24" bg="rgba(251, 191, 36, 0.12)" />;
+    return <StatusChip label="Vacuum" color="#2dd4bf" bg="rgba(45, 212, 191, 0.12)" />;
+  }, [latest.map]);
+
+  const fuelChip = useMemo(() => {
+    const fl = latest.fuelLevel;
+    if (fl === null || fl === undefined) {
+      return <StatusChip label="PID 2F N/A" color="var(--text-muted)" bg="rgba(255, 255, 255, 0.05)" />;
+    }
+    if (fl < 15) return <StatusChip label="Low" color="#f87171" bg="rgba(248, 113, 113, 0.15)" />;
+    return <StatusChip label="OK" color="#4ade80" bg="rgba(74, 222, 128, 0.12)" />;
+  }, [latest.fuelLevel]);
+
   const renderTelemetryWorkspace = () => (
     <>
       <StaleDataNotice connectionOk={connectionOk} timestamp={latestTimestamp} />
@@ -616,26 +658,29 @@ export default function TelemetryDashboard() {
           progressColor={getTempColor(latest.coolantTemp)}
           valueColor={getTempColor(latest.coolantTemp)}
           subtext={latest.ambientTemp !== null && latest.ambientTemp !== undefined ? `Ambient: ${latest.ambientTemp}°C` : 'Ambient: N/A'}
+          chip={coolantChip}
         />
         <MetricCard
           title="Fuel Reserve"
           value={formatVal(latest.fuelLevel)}
-          unit="%"
+          unit={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? "%" : ""}
           icon={<Flame size={20} color={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--text-muted)'} />}
-          progress={getProgress(latest.fuelLevel, 100)}
+          progress={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? getProgress(latest.fuelLevel, 100) : undefined}
           progressColor={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--border)'}
-          subtext={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? "Low Fuel Warning" : "Level Normal") : "N/A"}
+          subtext={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? "Low Fuel Warning" : "Level Normal") : "PID 2F not broadcast by cluster"}
+          chip={fuelChip}
         />
         <FuelEconomyCard value={latest.estimatedFuelEconomyKmL} rate={latest.estimatedFuelRateLph} timestamp={latestTimestamp} connectionOk={connectionOk} />
         <MetricCard
           title="System Voltage"
-           value={formatVal(latest.voltage)}
+          value={formatVal(latest.voltage)}
           unit="V"
           icon={<Battery size={20} color={getVoltageColor(latest.voltage)} />}
           progress={getProgress(latest.voltage, 15)}
           progressColor={getVoltageColor(latest.voltage)}
           valueColor={getVoltageColor(latest.voltage)}
           subtext={latest.voltage !== null && latest.voltage !== undefined ? (latest.voltage > 13 ? "Alternator Charging" : "Discharging") : "N/A"}
+          chip={voltageChip}
         />
         <MetricCard
           title="0-100 km/h Accel"
@@ -665,6 +710,7 @@ export default function TelemetryDashboard() {
           progressColor="var(--accent-cyan)"
           valueColor="var(--accent-cyan)"
           subtext={typeof latest.map === 'number' ? (latest.map > 101 ? `${(latest.map - 101.3).toFixed(1)} kPa Boost` : `${(101.3 - latest.map).toFixed(1)} kPa Vacuum`) : "N/A"}
+          chip={mapChip}
         />
       </div>
 
@@ -706,12 +752,12 @@ export default function TelemetryDashboard() {
                   <YAxis yAxisId="left" stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
                   <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
                   <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                  <Legend wrapperStyle={{ paddingTop: '20px', cursor: 'pointer', userSelect: 'none' }} onClick={toggleSeries} />
                   <Brush dataKey="timeLabel" height={30} stroke="var(--accent-purple)" fill="rgba(0,0,0,0.2)" />
-                  <Line yAxisId="left" type="monotone" dataKey="rpm" stroke="var(--accent-purple)" strokeWidth={3} name="RPM" dot={false} activeDot={{ r: 6, fill: 'var(--accent-purple)', stroke: '#fff', strokeWidth: 2 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="speed" stroke="var(--accent-cyan)" strokeWidth={3} name="OBD Speed" dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="gpsSpeed" stroke="var(--accent-blue)" strokeWidth={2} strokeDasharray="5 5" name="GPS Speed" dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="map" stroke="var(--accent-amber)" strokeWidth={2} name="MAP (kPa)" dot={false} connectNulls />
+                  <Line yAxisId="left" type="monotone" dataKey="rpm" stroke="var(--accent-purple)" strokeWidth={3} name="RPM" dot={false} activeDot={{ r: 6, fill: 'var(--accent-purple)', stroke: '#fff', strokeWidth: 2 }} hide={!!hiddenSeries.rpm} />
+                  <Line yAxisId="right" type="monotone" dataKey="speed" stroke="var(--accent-cyan)" strokeWidth={3} name="OBD Speed" dot={false} hide={!!hiddenSeries.speed} />
+                  <Line yAxisId="right" type="monotone" dataKey="gpsSpeed" stroke="var(--accent-blue)" strokeWidth={2} strokeDasharray="5 5" name="GPS Speed" dot={false} hide={!!hiddenSeries.gpsSpeed} />
+                  <Line yAxisId="right" type="monotone" dataKey="map" stroke="var(--accent-amber)" strokeWidth={2} name="MAP (kPa)" dot={false} connectNulls hide={!!hiddenSeries.map} />
                 </LineChart>
               ) : activeTab === 'temperatures' ? (
                 <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -719,11 +765,11 @@ export default function TelemetryDashboard() {
                   <XAxis dataKey="timeLabel" stroke="var(--text-muted)" tick={{ fontSize: 12 }} dy={10} />
                   <YAxis stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
                   <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                  <Legend wrapperStyle={{ paddingTop: '20px', cursor: 'pointer', userSelect: 'none' }} onClick={toggleSeries} />
                   <Brush dataKey="timeLabel" height={30} stroke="var(--accent-red)" fill="rgba(0,0,0,0.2)" />
-                  <Line type="monotone" dataKey="coolantTemp" stroke="var(--accent-red)" strokeWidth={3} name="Coolant" dot={false} />
-                  <Line type="monotone" dataKey="ambientTemp" stroke="var(--accent-green)" strokeWidth={3} name="Ambient" dot={false} />
-                  <Line type="monotone" dataKey="iat" stroke="var(--accent-amber)" strokeWidth={3} name="Intake Air (IAT)" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="coolantTemp" stroke="var(--accent-red)" strokeWidth={3} name="Coolant" dot={false} hide={!!hiddenSeries.coolantTemp} />
+                  <Line type="monotone" dataKey="ambientTemp" stroke="var(--accent-green)" strokeWidth={3} name="Ambient" dot={false} hide={!!hiddenSeries.ambientTemp} />
+                  <Line type="monotone" dataKey="iat" stroke="var(--accent-amber)" strokeWidth={3} name="Intake Air (IAT)" dot={false} connectNulls hide={!!hiddenSeries.iat} />
                 </LineChart>
               ) : (
                 <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -741,11 +787,11 @@ export default function TelemetryDashboard() {
                   <XAxis dataKey="timeLabel" stroke="var(--text-muted)" tick={{ fontSize: 12 }} dy={10} />
                   <YAxis domain={[0, 100]} stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
                   <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                  <Legend wrapperStyle={{ paddingTop: '20px', cursor: 'pointer', userSelect: 'none' }} onClick={toggleSeries} />
                   <Brush dataKey="timeLabel" height={30} stroke="var(--accent-amber)" fill="rgba(0,0,0,0.2)" />
-                  <Area type="monotone" dataKey="engineLoad" stroke="var(--accent-amber)" strokeWidth={2} fillOpacity={1} fill="url(#colorLoad)" name="Engine Load (%)" dot={false} />
-                  <Area type="monotone" dataKey="throttlePos" stroke="var(--accent-red)" strokeWidth={2} fillOpacity={1} fill="url(#colorThrottle)" name="Throttle (%)" dot={false} />
-                  <Line type="monotone" dataKey="fuelLevel" stroke="var(--accent-green)" strokeWidth={3} name="Fuel Level (%)" dot={false} />
+                  <Area type="monotone" dataKey="engineLoad" stroke="var(--accent-amber)" strokeWidth={2} fillOpacity={1} fill="url(#colorLoad)" name="Engine Load (%)" dot={false} hide={!!hiddenSeries.engineLoad} />
+                  <Area type="monotone" dataKey="throttlePos" stroke="var(--accent-red)" strokeWidth={2} fillOpacity={1} fill="url(#colorThrottle)" name="Throttle (%)" dot={false} hide={!!hiddenSeries.throttlePos} />
+                  <Line type="monotone" dataKey="fuelLevel" stroke="var(--accent-green)" strokeWidth={3} name="Fuel Level (%)" dot={false} hide={!!hiddenSeries.fuelLevel} />
                 </AreaChart>
               )}
             </ResponsiveContainer>
@@ -782,14 +828,37 @@ export default function TelemetryDashboard() {
   );
 }
 
-const MetricCard = ({ title, value, unit, icon, progress, progressColor, subtext, valueColor }: any) => {
+const StatusChip = ({ label, color, bg }: { label: string; color: string; bg: string }) => (
+  <span
+    style={{
+      fontSize: '11px',
+      fontWeight: 700,
+      letterSpacing: '0.04em',
+      textTransform: 'uppercase',
+      padding: '2px 8px',
+      borderRadius: '999px',
+      border: `1px solid ${color}40`,
+      backgroundColor: bg,
+      color: color,
+      lineHeight: '1.4',
+      whiteSpace: 'nowrap'
+    }}
+  >
+    {label}
+  </span>
+);
+
+const MetricCard = ({ title, value, unit, icon, progress, progressColor, subtext, valueColor, chip }: any) => {
   const isUnavailable = value === 'N/A' || value === null || value === undefined;
   return (
-    <div className="glass-panel" style={{ ...styles.card, ...(isUnavailable ? { opacity: 0.55 } : {}) }}>
+    <div className="glass-panel" style={{ ...styles.card, ...(isUnavailable ? { opacity: 0.65 } : {}) }}>
       <div style={styles.cardHeader}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {icon}
-          <span style={styles.cardTitle}>{title}</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {icon}
+            <span style={styles.cardTitle}>{title}</span>
+          </div>
+          {chip}
         </div>
       </div>
       <div style={styles.cardBody}>

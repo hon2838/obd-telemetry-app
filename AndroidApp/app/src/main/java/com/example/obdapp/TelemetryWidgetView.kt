@@ -148,8 +148,18 @@ class TelemetryWidgetView @JvmOverloads constructor(
         sessionMin = Double.MAX_VALUE
         sessionMax = Double.MIN_VALUE
 
+        if (metric == TelemetryMetric.FUEL_LEVEL) {
+            isMetricAvailable = false
+            setUnavailable()
+        } else {
+            isMetricAvailable = true
+        }
+
         applyStyleVisibility()
     }
+
+    var isMetricAvailable: Boolean = true
+        private set
 
     fun setStyle(style: DisplayStyle) {
         if (currentStyle != style) {
@@ -170,10 +180,25 @@ class TelemetryWidgetView @JvmOverloads constructor(
         barView.visibility = if (currentStyle == DisplayStyle.BAR) View.VISIBLE else View.GONE
         digitalContainer.visibility = if (currentStyle == DisplayStyle.DIGITAL) View.VISIBLE else View.GONE
         graphContainer.visibility = if (currentStyle == DisplayStyle.GRAPH) View.VISIBLE else View.GONE
+        if (!isMetricAvailable) {
+            setUnavailable()
+        }
     }
 
-    fun updateValue(value: Double) {
-        if (!value.isFinite()) return
+    fun setUnavailable() {
+        isMetricAvailable = false
+        barView.isAvailable = false
+        tvDigitalValue.text = "N/A"
+        tvDigitalMinMax.text = "--"
+        tvGraphValue.text = "N/A"
+    }
+
+    fun updateValue(value: Double?) {
+        if (value == null || !value.isFinite()) {
+            setUnavailable()
+            return
+        }
+        this.isMetricAvailable = true
         this.currentValue = value
         val fVal = value.toFloat()
 
