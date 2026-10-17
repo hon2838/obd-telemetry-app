@@ -3,8 +3,9 @@ import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { apiFetch } from '../api';
 import { useVehicle } from '../context/VehicleContext';
+import PageHeader from '../components/PageHeader';
 import {
-  Car, ShieldCheck, CheckCircle2, AlertCircle, KeyRound, Radio, Smartphone, QrCode, ArrowRight
+  Car, ShieldCheck, CheckCircle2, AlertCircle, KeyRound, Radio, Smartphone, Info, ArrowRight
 } from 'lucide-react';
 
 export default function PairVehiclePage() {
@@ -50,16 +51,18 @@ export default function PairVehiclePage() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Failed to claim and pair vehicle device');
       }
 
-      setSuccess(`Vehicle successfully paired and linked to "${data.vehicleName || 'Vehicle'}"! Your car head unit is now authorized.`);
+      setSuccess(
+        `Head unit successfully authorized for "${data.vehicleName || 'Vehicle'}"! Next steps: Plug your OBD-II adapter into the vehicle OBD port and start driving. Live telemetry will upload automatically once connected.`
+      );
       await refreshVehicles();
       setTimeout(() => {
         router.push('/garage');
-      }, 2500);
+      }, 3500);
     } catch (err: any) {
       setError(err.message || 'Error pairing device');
     } finally {
@@ -68,250 +71,195 @@ export default function PairVehiclePage() {
   };
 
   return (
-    <>
+    <div style={{ maxWidth: '640px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       <Head>
-        <title>Pair Car Device | OBD Telemetry</title>
+        <title>Pair Car Head Unit | OBD Telemetry</title>
+        <meta name="description" content="Authorize and pair vehicle head unit device to sync telemetry" />
       </Head>
 
-      <div style={{ maxWidth: '680px', margin: '0 auto', padding: '1.5rem 1rem' }}>
-        {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '0.75rem',
-            background: 'rgba(94, 215, 208, 0.12)',
-            borderRadius: '50%',
-            color: 'var(--accent-cyan)',
-            marginBottom: '0.75rem'
-          }}>
-            <Radio size={32} />
+      <PageHeader
+        title="Pair Car Head Unit"
+        subtitle="Authorize your vehicle dashboard or Android head unit to securely sync telemetry."
+      />
+
+      {/* Step Guide */}
+      <div className="glass-panel" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+        <div style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+          Pairing Process
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.5rem', fontSize: '0.78rem' }}>
+          <div style={{ padding: '0.5rem', background: 'var(--surface-inset)', borderRadius: 'var(--radius-sm)' }}>
+            <strong style={{ color: 'var(--accent-cyan)', display: 'block' }}>1. Display PIN</strong>
+            <span style={{ color: 'var(--text-muted)' }}>On car head unit app</span>
           </div>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-            Pair Car Head Unit
-          </h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.35rem' }}>
-            Enter the pairing PIN displayed on your car's screen or scanned via QR code.
-          </p>
-        </div>
-
-        {/* Form Card */}
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: 'var(--radius-lg)' }}>
-          {error && (
-            <div style={{
-              padding: '0.85rem 1rem',
-              borderRadius: 'var(--radius-sm)',
-              background: 'rgba(239, 68, 68, 0.15)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: '#ff8080',
-              fontSize: '0.85rem',
-              marginBottom: '1.5rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.6rem'
-            }}>
-              <AlertCircle size={18} />
-              <span>{error}</span>
-            </div>
-          )}
-
-          {success && (
-            <div style={{
-              padding: '0.85rem 1rem',
-              borderRadius: 'var(--radius-sm)',
-              background: 'rgba(16, 185, 129, 0.15)',
-              border: '1px solid rgba(16, 185, 129, 0.3)',
-              color: 'var(--accent-green)',
-              fontSize: '0.85rem',
-              marginBottom: '1.5rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.6rem'
-            }}>
-              <CheckCircle2 size={18} />
-              <span>{success}</span>
-            </div>
-          )}
-
-          <form onSubmit={handlePair} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            {/* PIN Code Field */}
-            <div>
-              <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
-                6-Digit Pairing PIN
-              </label>
-              <div style={{ position: 'relative' }}>
-                <KeyRound size={20} color="var(--accent-cyan)" style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)' }} />
-                <input
-                  type="text"
-                  required
-                  maxLength={10}
-                  placeholder="e.g. 842-195"
-                  value={pinCode}
-                  onChange={(e) => setPinCode(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.85rem 1rem 0.85rem 3rem',
-                    borderRadius: 'var(--radius-md)',
-                    background: 'var(--surface-inset)',
-                    border: '1px solid var(--border-glow)',
-                    color: 'var(--accent-cyan)',
-                    fontSize: '1.4rem',
-                    fontFamily: 'monospace',
-                    fontWeight: 700,
-                    letterSpacing: '0.2em',
-                    textAlign: 'center',
-                    outline: 'none',
-                    boxShadow: '0 0 16px rgba(94, 215, 208, 0.1) inset',
-                  }}
-                />
-              </div>
-              <p style={{ fontSize: '0.775rem', color: 'var(--text-muted)', marginTop: '0.4rem', textAlign: 'center' }}>
-                PIN expires after 10 minutes. A new code can be generated in the car app.
-              </p>
-            </div>
-
-            {/* Vehicle Assignment */}
-            <div>
-              <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
-                Assign to Vehicle Profile
-              </label>
-
-              <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-                <button
-                  type="button"
-                  onClick={() => setIsNewVehicle(false)}
-                  style={{
-                    flex: 1,
-                    padding: '0.65rem',
-                    borderRadius: 'var(--radius-sm)',
-                    background: !isNewVehicle ? 'rgba(94, 215, 208, 0.15)' : 'var(--surface-inset)',
-                    border: !isNewVehicle ? '1px solid var(--accent-cyan)' : '1px solid var(--border)',
-                    color: !isNewVehicle ? 'var(--accent-cyan)' : 'var(--text-secondary)',
-                    fontWeight: 600,
-                    fontSize: '0.85rem',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s',
-                  }}
-                >
-                  Existing Vehicle
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsNewVehicle(true)}
-                  style={{
-                    flex: 1,
-                    padding: '0.65rem',
-                    borderRadius: 'var(--radius-sm)',
-                    background: isNewVehicle ? 'rgba(94, 215, 208, 0.15)' : 'var(--surface-inset)',
-                    border: isNewVehicle ? '1px solid var(--accent-cyan)' : '1px solid var(--border)',
-                    color: isNewVehicle ? 'var(--accent-cyan)' : 'var(--text-secondary)',
-                    fontWeight: 600,
-                    fontSize: '0.85rem',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s',
-                  }}
-                >
-                  + Add New Vehicle
-                </button>
-              </div>
-
-              {!isNewVehicle ? (
-                <select
-                  value={selectedVehicleId}
-                  onChange={(e) => setSelectedVehicleId(e.target.value)}
-                  className="form-select"
-                >
-                  {vehicles.map((v) => (
-                    <option key={v.id} value={v.id} style={{ background: '#121820', color: '#fff' }}>
-                      {v.name} ({v.id}) {v.tankLitres ? `— ${v.tankLitres}L` : ''}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div style={{
-                  padding: '1rem',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'var(--surface-inset)',
-                  border: '1px solid var(--border)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.85rem'
-                }}>
-                  <div>
-                    <label className="form-label" style={{ fontSize: '0.775rem' }}>
-                      Vehicle Name / Model
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Perodua Axia SE 2024"
-                      value={newVehicleName}
-                      onChange={(e) => setNewVehicleName(e.target.value)}
-                      className="form-input"
-                    />
-                  </div>
-                  <div>
-                    <label className="form-label" style={{ fontSize: '0.775rem' }}>
-                      Fuel Tank Capacity (Litres)
-                    </label>
-                    <input
-                      type="number"
-                      value={newTankLitres}
-                      onChange={(e) => setNewTankLitres(Number(e.target.value))}
-                      className="form-input"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={loading || !pinCode.trim()}
-              className="btn-primary"
-              style={{
-                padding: '0.9rem',
-                borderRadius: 'var(--radius-md)',
-                fontSize: '0.95rem',
-                width: '100%',
-                marginTop: '1.25rem'
-              }}
-            >
-              {loading ? (
-                <span>Authorizing & Pairing...</span>
-              ) : (
-                <>
-                  <ShieldCheck size={20} />
-                  <span>Authorize & Link Car Head Unit</span>
-                </>
-              )}
-            </button>
-          </form>
-        </div>
-
-        {/* Help Info Box */}
-        <div style={{
-          marginTop: '1.5rem',
-          padding: '1.25rem',
-          borderRadius: 'var(--radius-md)',
-          background: 'var(--surface-inset)',
-          border: '1px solid var(--border)',
-          display: 'flex',
-          gap: '1rem',
-          alignItems: 'flex-start'
-        }}>
-          <Smartphone size={22} color="var(--accent-blue)" style={{ flexShrink: 0, marginTop: '0.1rem' }} />
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            <strong style={{ color: 'var(--text-primary)' }}>How Pairing Works:</strong>
-            <ol style={{ paddingLeft: '1.2rem', marginTop: '0.35rem' }}>
-              <li>The Android OBD App generates a secure hardware fingerprint (Bluetooth MAC / VIN).</li>
-              <li>Once you approve the PIN above, a cryptographic token is issued to the car.</li>
-              <li>All subsequent telemetry uploads are verified and securely mapped to your vehicle profile.</li>
-            </ol>
+          <div style={{ padding: '0.5rem', background: 'var(--surface-inset)', borderRadius: 'var(--radius-sm)' }}>
+            <strong style={{ color: 'var(--accent-cyan)', display: 'block' }}>2. Enter Code</strong>
+            <span style={{ color: 'var(--text-muted)' }}>Match PIN in form below</span>
+          </div>
+          <div style={{ padding: '0.5rem', background: 'var(--surface-inset)', borderRadius: 'var(--radius-sm)' }}>
+            <strong style={{ color: 'var(--accent-cyan)', display: 'block' }}>3. Authorize</strong>
+            <span style={{ color: 'var(--text-muted)' }}>Authorize this device</span>
+          </div>
+          <div style={{ padding: '0.5rem', background: 'var(--surface-inset)', borderRadius: 'var(--radius-sm)' }}>
+            <strong style={{ color: 'var(--accent-cyan)', display: 'block' }}>4. Verify Upload</strong>
+            <span style={{ color: 'var(--text-muted)' }}>Plug OBD & test read</span>
           </div>
         </div>
       </div>
-    </>
+
+      {/* Form Card */}
+      <div className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        {error && (
+          <div className="form-error">
+            {error}
+          </div>
+        )}
+
+        {success && (
+          <div style={{
+            padding: '0.85rem 1rem',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--accent-green-bg)',
+            border: '1px solid var(--accent-green)',
+            color: 'var(--accent-green)',
+            fontSize: '0.85rem',
+            lineHeight: 1.45,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '0.6rem'
+          }}>
+            <CheckCircle2 size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+            <span>{success}</span>
+          </div>
+        )}
+
+        <form onSubmit={handlePair} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* PIN Code Field */}
+          <div>
+            <label htmlFor="pin-input" className="form-label" style={{ fontWeight: 600 }}>
+              6-Digit Pairing PIN
+            </label>
+            <div style={{ position: 'relative' }}>
+              <KeyRound size={18} color="var(--accent-cyan)" style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)' }} />
+              <input
+                id="pin-input"
+                type="text"
+                required
+                maxLength={10}
+                placeholder="e.g. 842-195"
+                value={pinCode}
+                onChange={(e) => setPinCode(e.target.value)}
+                className="form-input"
+                style={{
+                  paddingLeft: '2.5rem',
+                  fontSize: '1.25rem',
+                  fontFamily: 'monospace',
+                  fontWeight: 700,
+                  letterSpacing: '0.15em',
+                  textAlign: 'center'
+                }}
+              />
+            </div>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.35rem', textAlign: 'center' }}>
+              Pairing PIN expires after 10 minutes. A fresh PIN can be requested in the car app.
+            </p>
+          </div>
+
+          {/* Vehicle Assignment */}
+          <div>
+            <label className="form-label" style={{ fontWeight: 600 }}>
+              Assign to Vehicle Profile
+            </label>
+
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+              <button
+                type="button"
+                onClick={() => setIsNewVehicle(false)}
+                className={!isNewVehicle ? 'btn-primary' : 'btn-secondary'}
+                style={{ flex: 1, padding: '0.45rem' }}
+              >
+                Existing Vehicle
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsNewVehicle(true)}
+                className={isNewVehicle ? 'btn-primary' : 'btn-secondary'}
+                style={{ flex: 1, padding: '0.45rem' }}
+              >
+                + Add New Vehicle
+              </button>
+            </div>
+
+            {!isNewVehicle ? (
+              <select
+                value={selectedVehicleId}
+                onChange={(e) => setSelectedVehicleId(e.target.value)}
+                className="form-select"
+              >
+                {vehicles.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name} ({v.id}) {v.tankLitres ? `— ${v.tankLitres}L` : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div style={{
+                padding: '0.85rem',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--surface-inset)',
+                border: '1px solid var(--border)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.75rem'
+              }}>
+                <div>
+                  <label className="form-label">
+                    Vehicle Name / Model
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Perodua Axia SE"
+                    value={newVehicleName}
+                    onChange={(e) => setNewVehicleName(e.target.value)}
+                    className="form-input"
+                    required={isNewVehicle}
+                  />
+                </div>
+                <div>
+                  <label className="form-label">
+                    Fuel Tank Capacity (Litres)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="36"
+                    value={newTankLitres}
+                    onChange={(e) => setNewTankLitres(Number(e.target.value))}
+                    className="form-input"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading || !pinCode.trim()}
+            className="btn-primary"
+            style={{ width: '100%', padding: '0.75rem', marginTop: '0.5rem' }}
+          >
+            <ShieldCheck size={18} />
+            <span>{loading ? 'Authorizing & Pairing...' : 'Authorize & Link Car Head Unit'}</span>
+          </button>
+        </form>
+      </div>
+
+      <div className="glass-panel" style={{ padding: '1rem', display: 'flex', gap: '0.75rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+        <Info size={18} color="var(--accent-cyan)" style={{ flexShrink: 0 }} />
+        <span>
+          Authorizing links this vehicle device to your account. Note that pairing alone does not confirm a successful OBD reading or upload until the adapter connects with vehicle ignition on.
+        </span>
+      </div>
+    </div>
   );
 }

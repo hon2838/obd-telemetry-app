@@ -54,10 +54,14 @@ export const VehicleProvider: React.FC<{ children: React.ReactNode }> = ({ child
       // Restore saved vehicle preference if valid
       if (typeof window !== 'undefined') {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved && (saved === 'all' || data.some(v => v.id === saved))) {
+        if (saved === 'all') {
+          setActiveVehicleId('all');
+        } else if (saved && data.some(v => v.id === saved)) {
           setActiveVehicleId(saved);
-        } else if (data.length > 0 && saved !== 'all') {
-          // Default to first vehicle if saved ID is invalid
+        } else if (!saved && data.length === 1) {
+          // One-vehicle installations should open that car when no explicit saved preference exists
+          setActiveVehicleId(data[0].id);
+        } else {
           setActiveVehicleId('all');
         }
       }

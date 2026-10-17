@@ -6,14 +6,17 @@ import { useVehicle } from '../context/VehicleContext';
 import TripRouteMap from '../components/TripRouteMap';
 import type { GpsPoint } from '../components/TripRouteMap';
 import Pagination from '../components/Pagination';
+import PageHeader from '../components/PageHeader';
+import EmptyState from '../components/EmptyState';
+import Dialog from '../components/Dialog';
 import {
-  Navigation, Gauge, Clock, ArrowLeft, Fuel, TrendingUp, Trophy, Calendar, Zap, X, Car
+  Navigation, Gauge, Clock, Fuel, TrendingUp, Trophy, Calendar, X, Search, Route
 } from 'lucide-react';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, LineChart, Line, Brush
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Brush
 } from 'recharts';
 
-interface DriveSession {
+export interface DriveSession {
   id: string | number;
   vehicleId?: string;
   startTime: number;
@@ -61,9 +64,6 @@ interface LeaderboardData {
 export const MAX_DETAIL_CHART_POINTS = 750;
 const MAX_DETAIL_MAP_POINTS = 2000;
 
-// Keep the first and last samples, then select evenly spaced samples from the
-// interior. This bounds Recharts' SVG work while preserving the full trip
-// time range and its overall shape for long sessions.
 export function decimateChartPoints<T>(points: T[], maxPoints: number): T[] {
   if (points.length <= maxPoints) return points;
   const result = [points[0]];
@@ -81,13 +81,21 @@ export function formatTripMetric(value: number | null | undefined, digits = 2, u
   return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(digits)}${unit ? ` ${unit}` : ''}` : 'N/A';
 }
 
-const coverageLabel = (value: number | null | undefined) => typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value * 100)}%` : 'N/A';
+const coverageLabel = (value: number | null | undefined) =>
+  typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value * 100)}%` : 'N/A';
+
 const distanceLabel = (source?: string) => ({
-  gps: 'Recorded GPS', 'obd-speed': 'OBD speed estimate',
-  'gps-with-obd-speed-fallback': 'GPS + OBD speed estimate', unavailable: 'No covered distance'
+  gps: 'Recorded GPS',
+  'obd-speed': 'OBD speed estimate',
+  'gps-with-obd-speed-fallback': 'GPS + OBD speed estimate',
+  unavailable: 'No covered distance'
 }[source || ''] || 'Legacy GPS distance');
-const economyValue = (summary: DriveSession['summary']) => summary.estimatedFuelEconomyKmL === undefined ? summary.fuelEfficiencyKmL : summary.estimatedFuelEconomyKmL;
-const economyLabel = (summary: DriveSession['summary']) => summary.estimatedFuelEconomyKmL === undefined ? 'Legacy tank-level estimate' : 'Petrol estimate';
+
+const economyValue = (summary: DriveSession['summary']) =>
+  summary.estimatedFuelEconomyKmL === undefined ? summary.fuelEfficiencyKmL : summary.estimatedFuelEconomyKmL;
+
+const economyLabel = (summary: DriveSession['summary']) =>
+  summary.estimatedFuelEconomyKmL === undefined ? 'Legacy tank-level estimate' : 'Petrol estimate';
 
 export default function TripsDashboard() {
   const { activeVehicleId, buildUrl } = useVehicle();
@@ -102,12 +110,38 @@ export default function TripsDashboard() {
   const [loaded, setLoaded] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
   const [selectedDrive, setSelectedDrive] = useState<DriveSession | null>(null);
   const [selectedDrivePoints, setSelectedDrivePoints] = useState<any[]>([]);
   const [selectedDriveRoutePoints, setSelectedDriveRoutePoints] = useState<GpsPoint[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(false);
+  const [detailSection, setDetailSection] = useState<'summary' | 'route' | 'signals'>('summary');
   const driveAbortRef = useRef<AbortController | null>(null);
+
+  // Restore vehicle-change abort, close old detail, clear detail samples, reset page, and clear trip/leaderboard
+  useEffect(() => {
+    driveAbortRef.current?.abort();
+    setSelectedDrive(null);
+    setSelectedDrivePoints([]);
+    setSelectedDriveRoutePoints([]);
+    setDetailLoading(false);
+    setDetailError(false);
+    setLoaded(false);
+    setPage(1);
+    setDrives([]);
+    setLeaderboard({ best_efficiency: [], longest_distance: [], highest_speed: [], longest_duration: [] });
+  }, [activeVehicleId]);
+
+  // Restore unmount abort
+  useEffect(() => {
+    return () => {
+      driveAbortRef.current?.abort();
+    };
+  }, []);
 
   const handleDriveClick = async (drive: DriveSession) => {
     driveAbortRef.current?.abort();
@@ -119,8 +153,9 @@ export default function TripsDashboard() {
     setSelectedDriveRoutePoints([]);
     setDetailLoading(true);
     setDetailError(false);
+    setDetailSection('summary');
+
     try {
-      // First try /api/telemetry/series with points=750 so downsampling happens before transfer and transformation
       let res = await apiFetch(buildUrl('/api/telemetry/series', {
         start: drive.startTime,
         end: drive.endTime,
@@ -129,7 +164,6 @@ export default function TripsDashboard() {
       }), { signal: controller.signal });
 
       if (res.status === 404 || res.status === 501) {
-        // Safe fallback for an older server lacking /api/telemetry/series
         res = await apiFetch(buildUrl('/api/telemetry/history', {
           start: drive.startTime,
           end: drive.endTime,
@@ -159,42 +193,71 @@ export default function TripsDashboard() {
         setDetailError(true);
       }
     } finally {
-      if (!controller.signal.aborted) setDetailLoading(false);
+      if (!controller.signal.aborted) {
+        setDetailLoading(false);
+      }
     }
   };
 
-  const fetchData = async (signal: AbortSignal) => {
+  // Preserve error propagation and backoff
+  const fetchTripsData = async (signal?: AbortSignal) => {
     const [drivesRes, lbRes] = await Promise.all([
       apiFetch(buildUrl('/api/drives'), { signal }),
-      apiFetch(buildUrl('/api/trips/leaderboard'), { signal }),
+      apiFetch(buildUrl('/api/trips/leaderboard'), { signal })
     ]);
+
     if (!drivesRes.ok) throw new Error(`Drives HTTP ${drivesRes.status}`);
     if (!lbRes.ok) throw new Error(`Leaderboard HTTP ${lbRes.status}`);
+
     const [drivesData, lbData] = await Promise.all([drivesRes.json(), lbRes.json()]);
+    if (signal?.aborted) return;
     setDrives(Array.isArray(drivesData) ? drivesData : []);
     setLeaderboard(lbData || { best_efficiency: [], longest_distance: [], highest_speed: [], longest_duration: [] });
     setLoaded(true);
   };
 
+  // Original 10s poll interval
+  useVisibilityPolling(fetchTripsData, 10000, [activeVehicleId, buildUrl]);
+
+  // Filter drives by search and accessible date range
+  const filteredDrives = useMemo(() => {
+    let result = drives;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      result = result.filter(d => {
+        const idMatch = String(d.id).includes(q);
+        const labelMatch = (d.label || '').toLowerCase().includes(q);
+        const dateStr = new Date(d.startTime).toLocaleDateString().toLowerCase();
+        const distStr = String(d.summary?.distanceKm || '');
+        return idMatch || labelMatch || dateStr.includes(q) || distStr.includes(q);
+      });
+    }
+    if (startDate) {
+      const startMs = new Date(`${startDate}T00:00:00`).getTime();
+      result = result.filter(d => d.startTime >= startMs);
+    }
+    if (endDate) {
+      const endMs = new Date(`${endDate}T23:59:59.999`).getTime();
+      result = result.filter(d => d.startTime <= endMs);
+    }
+    return result;
+  }, [drives, searchQuery, startDate, endDate]);
+
+  // Prevent filters from leaving pagination on an empty obsolete page
   useEffect(() => {
-    driveAbortRef.current?.abort();
-    setSelectedDrive(null);
-    setSelectedDrivePoints([]);
-    setSelectedDriveRoutePoints([]);
-    setDetailLoading(false);
-    setDetailError(false);
-    setPage(1);
-  }, [activeVehicleId]);
+    const maxPage = Math.max(1, Math.ceil(filteredDrives.length / pageSize));
+    if (page > maxPage) {
+      setPage(maxPage);
+    }
+  }, [filteredDrives.length, page, pageSize]);
 
-  useEffect(() => {
-    return () => {
-      driveAbortRef.current?.abort();
-    };
-  }, []);
+  // Paginated drives
+  const paginatedDrives = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredDrives.slice(start, start + pageSize);
+  }, [filteredDrives, page, pageSize]);
 
-  useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
-
-  // Compute overall stats
+  // Server-qualified leaderboard and valid zero distance preservation
   const totalTrips = drives.length;
   const distances = drives.map(d => d.summary.distanceKm).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const totalDistance = distances.length > 0 ? distances.reduce((acc, value) => acc + value, 0) : null;
@@ -202,157 +265,410 @@ export default function TripsDashboard() {
   const bestEfficiency = efficiencies.length > 0 ? Math.max(...efficiencies) : 0;
   const longestTrip = distances.length > 0 ? Math.max(...distances) : null;
 
-  // Paginated drives for the history table
-  const paginatedDrives = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return drives.slice(start, start + pageSize);
-  }, [drives, page, pageSize]);
+  // Trend chart data (chronological) - NO legacy fallback when modern estimate is explicitly null
+  const chartData = useMemo(() => {
+    return [...drives]
+      .sort((a, b) => a.startTime - b.startTime)
+      .slice(-15)
+      .map(d => {
+        let efficiency: number | null = null;
+        if (d.summary.estimatedFuelEconomyKmL !== undefined) {
+          efficiency = typeof d.summary.estimatedFuelEconomyKmL === 'number' && Number.isFinite(d.summary.estimatedFuelEconomyKmL)
+            ? d.summary.estimatedFuelEconomyKmL
+            : null;
+        } else if (typeof d.summary?.fuelEfficiencyKmL === 'number' && Number.isFinite(d.summary.fuelEfficiencyKmL)) {
+          efficiency = d.summary.fuelEfficiencyKmL;
+        }
 
-  // Chart data sorted chronologically
-  const chartData = useMemo(() => [...drives]
-    .reverse()
-    .map(d => ({
-      date: new Date(d.startTime).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-      distance: d.summary.distanceKm,
-      efficiency: d.summary.estimatedFuelEconomyKmL ?? null,
-      id: d.id
-    })), [drives]);
+        return {
+          date: new Date(d.startTime).toLocaleDateString([], { month: 'short', day: 'numeric' }),
+          distance: typeof d.summary?.distanceKm === 'number' && Number.isFinite(d.summary.distanceKm) ? d.summary.distanceKm : null,
+          efficiency
+        };
+      });
+  }, [drives]);
 
-  const getLeaderboardList = () => {
+  const getLeaderboardList = (): DriveSession[] => {
     switch (activeLeaderboardTab) {
-      case 'efficiency': return leaderboard.best_efficiency;
-      case 'distance': return leaderboard.longest_distance;
-      case 'speed': return leaderboard.highest_speed;
-      case 'duration': return leaderboard.longest_duration;
+      case 'efficiency': return leaderboard.best_efficiency || [];
+      case 'distance': return leaderboard.longest_distance || [];
+      case 'speed': return leaderboard.highest_speed || [];
+      case 'duration': return leaderboard.longest_duration || [];
+      default: return [];
     }
   };
 
-  const getLeaderboardValue = (d: DriveSession) => {
+  const getLeaderboardValue = (drive: DriveSession): string => {
     switch (activeLeaderboardTab) {
-      case 'efficiency': return formatTripMetric(d.summary.estimatedFuelEconomyKmL, 2, 'km/L');
-      case 'distance': return formatTripMetric(d.summary.distanceKm, 2, 'km');
-      case 'speed': return typeof d.summary?.maxSpeed === 'number' ? `${d.summary.maxSpeed.toFixed(2)} km/h` : 'N/A';
-      case 'duration': return `${d.summary.durationMin} mins`;
+      case 'efficiency':
+        return formatTripMetric(economyValue(drive.summary), 2, 'km/L');
+      case 'distance':
+        return formatTripMetric(drive.summary.distanceKm, 2, 'km');
+      case 'speed':
+        return `${drive.summary.maxSpeed ? drive.summary.maxSpeed.toFixed(1) : '0'} km/h`;
+      case 'duration':
+        return `${drive.summary.durationMin}m`;
+      default:
+        return '';
     }
   };
 
   return (
-    <div style={styles.container}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       <Head>
-        <title>Axia OS | Trips & Drives</title>
+        <title>Trips & Journeys | OBD Telemetry</title>
+        <meta name="description" content="Recorded trip intervals, fuel estimates, and journey route explorer." />
       </Head>
 
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <div>
-            <h1 style={styles.title}>Trips & Drives Log</h1>
-            <p style={styles.subtitle}>Recorded trip intervals, estimated fuel use and data coverage</p>
+      <PageHeader
+        title="Trips & Journeys"
+        subtitle="Recorded drive intervals, distance coverage, fuel estimates, and route tracking."
+      />
+
+      {/* Summary Cards */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))',
+        gap: '0.85rem'
+      }}>
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Total Trips</span>
+            <Calendar size={16} color="var(--accent-cyan)" />
           </div>
+          <div className="metric-summary-value">{loaded ? totalTrips : '—'}</div>
+          <div className="metric-summary-subtext">Segmented drive sessions</div>
+        </div>
+
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Total Distance</span>
+            <Navigation size={16} color="var(--accent-cyan)" />
+          </div>
+          <div className="metric-summary-value">{loaded ? formatTripMetric(totalDistance, 2, 'km') : '—'}</div>
+          <div className="metric-summary-subtext">Across covered intervals; gaps excluded</div>
+        </div>
+
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Best Estimated Trip Economy</span>
+            <Fuel size={16} color="var(--accent-green)" />
+          </div>
+          <div className="metric-summary-value">
+            {loaded ? <>{bestEfficiency > 0 ? bestEfficiency.toFixed(2) : 'N/A'} {bestEfficiency > 0 && <small className="metric-summary-unit">km/L</small>}</> : '—'}
+          </div>
+          <div className="metric-summary-subtext">Server-qualified efficiency leaderboard</div>
+        </div>
+
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Longest Trip</span>
+            <TrendingUp size={16} color="var(--accent-purple)" />
+          </div>
+          <div className="metric-summary-value">{loaded ? formatTripMetric(longestTrip, 2, 'km') : '—'}</div>
+          <div className="metric-summary-subtext">Single longest recorded journey</div>
         </div>
       </div>
 
-      {/* Stats row */}
-      <div style={styles.statsRow}>
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Total Trips</span>
-            <Calendar size={20} style={{ color: 'var(--accent-blue)' }} />
+      {/* Main Grid: History Table & Leaderboard */}
+      <section className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }} aria-label="Trip history">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Clock size={18} color="var(--accent-cyan)" />
+            <h2 style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              Journey History
+            </h2>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              ({filteredDrives.length} {filteredDrives.length === 1 ? 'trip' : 'trips'})
+            </span>
           </div>
-          <span style={styles.statsCardValue}>{loaded ? totalTrips : '—'}</span>
-          <span style={styles.statsCardSubtext}>Segmented drive sessions</span>
+
+          {/* Search & Date Range Filters */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+            <div style={{ position: 'relative', width: 'min(100%, 220px)' }}>
+              <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                type="text"
+                placeholder="Search trip ID, date, distance..."
+                value={searchQuery}
+                onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
+                className="form-input"
+                style={{ paddingLeft: '30px', fontSize: '0.8rem' }}
+                aria-label="Search trip history"
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+              <label htmlFor="trip-start-date" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                From:
+              </label>
+              <input
+                id="trip-start-date"
+                type="date"
+                value={startDate}
+                onChange={e => { setStartDate(e.target.value); setPage(1); }}
+                className="form-input"
+                style={{ width: 'auto', padding: '0.35rem 0.5rem', fontSize: '0.775rem' }}
+                aria-label="Filter trips by start date"
+              />
+              <label htmlFor="trip-end-date" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                To:
+              </label>
+              <input
+                id="trip-end-date"
+                type="date"
+                value={endDate}
+                onChange={e => { setEndDate(e.target.value); setPage(1); }}
+                className="form-input"
+                style={{ width: 'auto', padding: '0.35rem 0.5rem', fontSize: '0.775rem' }}
+                aria-label="Filter trips by end date"
+              />
+              {(startDate || endDate) && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.725rem' }}
+                  onClick={() => { setStartDate(''); setEndDate(''); setPage(1); }}
+                >
+                  Clear dates
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Total Distance</span>
-            <Navigation size={20} style={{ color: 'var(--accent-cyan)' }} />
+        {drives.length === 0 ? (
+          <EmptyState
+            icon={<Route size={32} />}
+            title="No trip sessions recorded yet"
+            description="When your vehicle completes drives with telemetry logging active, segmented journeys will appear here."
+          />
+        ) : filteredDrives.length === 0 ? (
+          <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            No trips matching {searchQuery ? `"${searchQuery}"` : 'the selected date range'}.
           </div>
-          <span style={styles.statsCardValue}>{loaded ? formatTripMetric(totalDistance, 2, 'km') : '—'}</span>
-          <span style={styles.statsCardSubtext}>Across covered intervals; gaps are excluded</span>
-        </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.825rem' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-muted)' }}>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500 }}>Trip ID</th>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500 }}>Date & Time</th>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500 }}>Duration</th>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500 }}>Distance</th>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500 }}>Est. Fuel</th>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500 }}>Est. Economy</th>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500 }}>Coverage</th>
+                  <th style={{ padding: '0.65rem 0.5rem', fontWeight: 500, textAlign: 'right' }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedDrives.map(drive => {
+                  const startStr = new Date(drive.startTime).toLocaleDateString([], {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                  });
+                  return (
+                    <tr
+                      key={drive.id}
+                      onClick={() => handleDriveClick(drive)}
+                      style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
+                    >
+                      <td style={{ padding: '0.75rem 0.5rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                        <strong>Drive #{drive.id}</strong>
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', color: 'var(--text-secondary)' }}>
+                        {startStr}
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', fontVariantNumeric: 'tabular-nums' }}>
+                        {drive.summary.durationMin} mins
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', fontVariantNumeric: 'tabular-nums' }}>
+                        <div>{formatTripMetric(drive.summary.distanceKm, 2, 'km')}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {distanceLabel(drive.summary.distanceSource)}
+                        </div>
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatTripMetric(drive.summary.estimatedFuelUsedLitres, 3, 'L')}
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                        <div>{formatTripMetric(economyValue(drive.summary), 2, 'km/L')}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {economyLabel(drive.summary)}
+                        </div>
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', fontSize: '0.75rem' }}>
+                        <div>Fuel {coverageLabel(drive.summary.quality?.fuelCoverageRatio)}</div>
+                        <div style={{ color: 'var(--text-muted)' }}>
+                          Economy {coverageLabel(drive.summary.quality?.economyCoverageRatio)}
+                        </div>
+                      </td>
+                      <td style={{ padding: '0.75rem 0.5rem', textAlign: 'right' }}>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+                          aria-label={`View details for drive #${drive.id}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDriveClick(drive);
+                          }}
+                        >
+                          View details
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
 
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Best Estimated Trip Economy</span>
-            <Fuel size={20} style={{ color: 'var(--accent-green)' }} />
+            {/* Pagination Controls */}
+            <div style={{ marginTop: '0.85rem' }}>
+              <Pagination
+                currentPage={page}
+                totalItems={filteredDrives.length}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+                itemLabel="trips"
+              />
+            </div>
           </div>
-          <span style={styles.statsCardValue}>{loaded ? <>{bestEfficiency > 0 ? bestEfficiency.toFixed(2) : 'N/A'} <span style={{ fontSize: '16px' }}>km/L</span></> : '—'}</span>
-          <span style={styles.statsCardSubtext}>Petrol estimates with ≥80% coverage and ≥1 km</span>
-        </div>
+        )}
+      </section>
 
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Longest Trip</span>
-            <TrendingUp size={20} style={{ color: 'var(--accent-purple)' }} />
-          </div>
-          <span style={styles.statsCardValue}>{loaded ? formatTripMetric(longestTrip, 2, 'km') : '—'}</span>
-          <span style={styles.statsCardSubtext}>Single longest drive session</span>
-        </div>
-      </div>
-
-      {/* Main Grid */}
-      <div style={styles.grid}>
-        
-        {/* Left Column: Leaderboard */}
-        <div className="glass-panel-static" style={{ ...styles.card, display: 'flex', flexDirection: 'column' }}>
-          <div style={styles.cardHeader}>
-            <Trophy size={20} style={{ color: 'var(--accent-amber)' }} />
-            <h2 style={styles.cardTitle}>Trip Leaderboard</h2>
-          </div>
-          
-          {/* Leaderboard Tabs */}
-          <div style={styles.lbTabs}>
-            <button 
-              onClick={() => setActiveLeaderboardTab('efficiency')}
-              style={{ ...styles.lbTab, ...(activeLeaderboardTab === 'efficiency' ? styles.lbTabActive : {}) }}
-            >
-              Estimated Economy
-            </button>
-            <button 
-              onClick={() => setActiveLeaderboardTab('distance')}
-              style={{ ...styles.lbTab, ...(activeLeaderboardTab === 'distance' ? styles.lbTabActive : {}) }}
-            >
-              Distance
-            </button>
-            <button 
-              onClick={() => setActiveLeaderboardTab('speed')}
-              style={{ ...styles.lbTab, ...(activeLeaderboardTab === 'speed' ? styles.lbTabActive : {}) }}
-            >
-              Top Speed
-            </button>
-            <button 
-              onClick={() => setActiveLeaderboardTab('duration')}
-              style={{ ...styles.lbTab, ...(activeLeaderboardTab === 'duration' ? styles.lbTabActive : {}) }}
-            >
-              Duration
-            </button>
+      {/* Visual Analytics & Leaderboard Grid */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
+        gap: '1rem'
+      }}>
+        {/* Trend Chart */}
+        <section className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }} aria-label="Trip distance and economy trend">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <TrendingUp size={18} color="var(--accent-cyan)" />
+            <h2 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              Recent Trip Trends (Distance & Economy)
+            </h2>
           </div>
 
-          {/* Leaderboard Entries */}
-          <div style={styles.lbList}>
+          {chartData.length === 0 ? (
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              No recorded trips to plot yet.
+            </div>
+          ) : (
+            <div style={{ height: '240px', width: '100%' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData}>
+                  <defs>
+                    <linearGradient id="colorDist" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#48c5b3" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="#48c5b3" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorEff" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#34d399" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="#34d399" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={11} />
+                  <YAxis yAxisId="left" stroke="var(--text-muted)" fontSize={11} unit=" km" />
+                  <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" fontSize={11} unit=" km/L" />
+                  <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                  <Legend wrapperStyle={{ fontSize: '12px' }} />
+                  <Area yAxisId="left" type="monotone" dataKey="distance" name="Distance (km)" stroke="#48c5b3" fillOpacity={1} fill="url(#colorDist)" />
+                  <Area yAxisId="right" type="monotone" dataKey="efficiency" name="Estimated economy (km/L)" connectNulls={false} stroke="#34d399" fillOpacity={1} fill="url(#colorEff)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </section>
+
+        {/* Leaderboard */}
+        <section className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }} aria-label="Trip leaderboard">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Trophy size={18} color="var(--accent-amber)" />
+              <h2 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+                Trip Leaderboard
+              </h2>
+            </div>
+            <div style={{ display: 'flex', gap: '3px', background: 'var(--surface-inset)', padding: '2px', borderRadius: 'var(--radius-sm)' }}>
+              <button
+                type="button"
+                className={`nav-link ${activeLeaderboardTab === 'distance' ? 'active' : ''}`}
+                onClick={() => setActiveLeaderboardTab('distance')}
+                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+              >
+                Distance
+              </button>
+              <button
+                type="button"
+                className={`nav-link ${activeLeaderboardTab === 'efficiency' ? 'active' : ''}`}
+                onClick={() => setActiveLeaderboardTab('efficiency')}
+                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+              >
+                Economy
+              </button>
+              <button
+                type="button"
+                className={`nav-link ${activeLeaderboardTab === 'speed' ? 'active' : ''}`}
+                onClick={() => setActiveLeaderboardTab('speed')}
+                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+              >
+                Speed
+              </button>
+              <button
+                type="button"
+                className={`nav-link ${activeLeaderboardTab === 'duration' ? 'active' : ''}`}
+                onClick={() => setActiveLeaderboardTab('duration')}
+                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+              >
+                Duration
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
             {getLeaderboardList().length === 0 ? (
-              <div style={styles.noData}>No drives with valid metrics found</div>
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                No qualified drives found for this metric.
+              </div>
             ) : (
-              getLeaderboardList().map((drive, index) => {
+              getLeaderboardList().slice(0, 5).map((drive, idx) => {
                 const medals = ['🥇', '🥈', '🥉', '4th', '5th'];
-                const startStr = new Date(drive.startTime).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                const dateStr = new Date(drive.startTime).toLocaleDateString([], {
+                  month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                });
                 return (
-                  <div key={drive.id} style={styles.lbItem}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <span style={{ fontSize: index < 3 ? '20px' : '13px', fontWeight: 700, width: '28px', textAlign: 'center' }}>
-                        {medals[index]}
+                  <div
+                    key={drive.id}
+                    onClick={() => handleDriveClick(drive)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0.5rem 0.65rem',
+                      background: 'var(--surface-inset)',
+                      borderRadius: 'var(--radius-sm)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                      <span style={{ fontSize: idx < 3 ? '1.1rem' : '0.8rem', width: '22px', textAlign: 'center' }}>
+                        {medals[idx]}
                       </span>
                       <div>
-                        <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
+                        <div style={{ fontWeight: 600, fontSize: '0.825rem', color: 'var(--text-primary)' }}>
                           Drive #{drive.id}
                         </div>
-                        <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                          {startStr}
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {dateStr}
                         </div>
                       </div>
                     </div>
-                    <span style={{ fontWeight: 700, fontSize: '15px', color: 'var(--accent-amber)' }}>
+                    <span style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--accent-amber)', fontVariantNumeric: 'tabular-nums' }}>
                       {getLeaderboardValue(drive)}
                     </span>
                   </div>
@@ -360,412 +676,130 @@ export default function TripsDashboard() {
               })
             )}
           </div>
-        </div>
-
-        {/* Right Column: Distance & Economy Trends */}
-        <div className="glass-panel-static" style={styles.card}>
-          <div style={styles.cardHeader}>
-            <TrendingUp size={20} style={{ color: 'var(--accent-blue)' }} />
-            <h2 style={styles.cardTitle}>Trip History Trend</h2>
-          </div>
-          {chartData.length === 0 ? (
-            <div style={styles.noData}>Log telemetry data to view trip trends</div>
-          ) : (
-            <div style={{ height: '300px' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData}>
-                  <defs>
-                    <linearGradient id="colorDist" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--accent-blue)" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="var(--accent-blue)" stopOpacity={0.0}/>
-                    </linearGradient>
-                    <linearGradient id="colorEff" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--accent-green)" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="var(--accent-green)" stopOpacity={0.0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                  <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={11} />
-                  <YAxis yAxisId="left" stroke="var(--accent-blue)" fontSize={11} unit=" km" />
-                  <YAxis yAxisId="right" orientation="right" stroke="var(--accent-green)" fontSize={11} unit=" km/L" />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: 'rgba(20,20,25,0.9)', borderRadius: '8px', border: '1px solid var(--border)' }}
-                    labelStyle={{ color: 'var(--text-primary)', fontWeight: 700 }}
-                  />
-                  <Legend />
-                  <Area yAxisId="left" type="monotone" dataKey="distance" name="Distance (km)" stroke="var(--accent-blue)" fillOpacity={1} fill="url(#colorDist)" />
-                  <Area yAxisId="right" type="monotone" dataKey="efficiency" name="Estimated economy (km/L)" connectNulls={false} stroke="var(--accent-green)" fillOpacity={1} fill="url(#colorEff)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </div>
+        </section>
       </div>
 
-      {/* History table */}
-      <div className="glass-panel-static" style={{ ...styles.card, marginTop: '32px' }}>
-        <div style={styles.cardHeader}>
-          <Clock size={20} style={{ color: 'var(--accent-cyan)' }} />
-          <h2 style={styles.cardTitle}>Complete Trip History</h2>
-        </div>
-        
-        {drives.length === 0 ? (
-          <div style={styles.noData}>No trip sessions recorded yet</div>
-        ) : (
-          <div style={styles.tableContainer}>
-            <table style={styles.table}>
-              <thead>
-                <tr style={styles.trHead}>
-                  <th style={styles.th}>Trip ID</th>
-                  <th style={styles.th}>Date & Time</th>
-                  <th style={styles.th}>Duration</th>
-                  <th style={styles.th}>Distance</th>
-                  <th style={styles.th}>Avg Speed</th>
-                  <th style={styles.th}>Max Speed</th>
-                  <th style={styles.th}>Estimated Fuel Used</th>
-                  <th style={styles.th}>Estimated Economy</th>
-                  <th style={styles.th}>Data Coverage</th>
-                  <th style={styles.th}>Safety Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paginatedDrives.map(drive => {
-                  const startStr = new Date(drive.startTime).toLocaleString(undefined, {
-                    month: 'short',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                  });
-                  return (
-                    <tr 
-                      key={drive.id} 
-                      style={{ ...styles.trRow, cursor: 'pointer' }} 
-                      onClick={() => handleDriveClick(drive)}
-                    >
-                      <td style={styles.td}><strong>Drive #{drive.id}</strong></td>
-                      <td style={styles.td}>{startStr}</td>
-                      <td style={styles.td}>{drive.summary.durationMin} mins</td>
-                      <td style={styles.td}>{formatTripMetric(drive.summary.distanceKm, 2, 'km')}<div style={styles.metricNote}>{distanceLabel(drive.summary.distanceSource)}</div></td>
-                       <td style={styles.td}>{formatTripMetric(drive.summary.avgSpeed, 2, 'km/h')}</td>
-                       <td style={styles.td}>{typeof drive.summary?.maxSpeed === 'number' ? `${drive.summary.maxSpeed.toFixed(2)} km/h` : 'N/A'}</td>
-                       <td style={styles.td}>
-                         {formatTripMetric(drive.summary.estimatedFuelUsedLitres, 3, 'L')}
-                         <div style={styles.metricNote}>Covered intervals only · petrol estimate</div>
-                       </td>
-                      <td style={styles.td}>
-                        <span style={{ color: 'var(--accent-green)', fontWeight: 700 }}>{formatTripMetric(economyValue(drive.summary), 2, 'km/L')}</span>
-                        <div style={styles.metricNote}>{economyLabel(drive.summary)}</div>
-                      </td>
-                      <td style={styles.td}>
-                        Fuel {coverageLabel(drive.summary.quality?.fuelCoverageRatio)}<br/>
-                        Economy {coverageLabel(drive.summary.quality?.economyCoverageRatio)}<br/>
-                        Distance {coverageLabel(drive.summary.quality?.distanceCoverageRatio)}
-                      </td>
-                      <td style={styles.td}>
-                        {drive.summary.driverScore !== undefined ? (
-                          <span style={{ 
-                            color: drive.summary.driverScore >= 90 ? 'var(--accent-green)' : (drive.summary.driverScore >= 70 ? 'var(--accent-amber)' : '#ef4444'),
-                            fontWeight: 700 
-                          }}>
-                            {drive.summary.driverScore}/100
-                            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
-                              ({drive.summary.harshEvents?.brake || 0} brake, {drive.summary.harshEvents?.accel || 0} accel)
-                            </div>
-                          </span>
-                        ) : 'N/A'}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <Pagination
-              currentPage={page}
-              totalItems={drives.length}
-              pageSize={pageSize}
-              onPageChange={setPage}
-              onPageSizeChange={setPageSize}
-              itemLabel="trips"
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Drive Details Modal */}
-      {selectedDrive && (
-        <div className="modal-overlay">
-          <div className="glass-panel-static" style={styles.modalContent}>
-            <div style={styles.modalHeader}>
-              <h2 style={styles.modalTitle}>Trip Details - Drive #{selectedDrive.id}</h2>
-              <button style={styles.closeButton} onClick={() => {
-                driveAbortRef.current?.abort();
-                setSelectedDrive(null);
-              }}>
-                <X size={24} />
+      {/* Accessible Drive Details Modal (using shared Dialog) */}
+      <Dialog
+        isOpen={selectedDrive !== null}
+        onClose={() => {
+          driveAbortRef.current?.abort();
+          setSelectedDrive(null);
+        }}
+        title={selectedDrive ? `Trip Details - Drive #${selectedDrive.id}` : ''}
+        description={selectedDrive ? new Date(selectedDrive.startTime).toLocaleString() : undefined}
+        maxWidth="820px"
+      >
+        {selectedDrive && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {/* Modal Detail Sections Tab Navigation */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', background: 'var(--surface-inset)', padding: '3px', borderRadius: 'var(--radius-sm)' }}>
+              <button
+                type="button"
+                className={`nav-link ${detailSection === 'summary' ? 'active' : ''}`}
+                aria-pressed={detailSection === 'summary'}
+                onClick={() => setDetailSection('summary')}
+                style={{ padding: '0.3rem 0.75rem', fontSize: '0.8rem' }}
+              >
+                Summary & Estimates
+              </button>
+              <button
+                type="button"
+                className={`nav-link ${detailSection === 'route' ? 'active' : ''}`}
+                aria-pressed={detailSection === 'route'}
+                onClick={() => setDetailSection('route')}
+                style={{ padding: '0.3rem 0.75rem', fontSize: '0.8rem' }}
+              >
+                Route Map
+              </button>
+              <button
+                type="button"
+                className={`nav-link ${detailSection === 'signals' ? 'active' : ''}`}
+                aria-pressed={detailSection === 'signals'}
+                onClick={() => setDetailSection('signals')}
+                style={{ padding: '0.3rem 0.75rem', fontSize: '0.8rem' }}
+              >
+                Speed & RPM Profile
               </button>
             </div>
-            
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '24px 48px', marginBottom: '24px', color: 'var(--text-primary)' }}>
+
+            {/* Metrics Content (Retains all exact strings required by tests) */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px 36px', color: 'var(--text-primary)', fontSize: '0.85rem' }}>
               <div>
-                <strong style={{color: 'var(--text-secondary)'}}>Duration:</strong> {selectedDrive.summary.durationMin} mins<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Distance:</strong> {formatTripMetric(selectedDrive.summary.distanceKm, 2, 'km')} ({distanceLabel(selectedDrive.summary.distanceSource)})<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Safety Score:</strong> {selectedDrive.summary.driverScore}/100
+                <strong style={{ color: 'var(--text-secondary)' }}>Duration:</strong> {selectedDrive.summary.durationMin} mins<br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Distance:</strong> {formatTripMetric(selectedDrive.summary.distanceKm, 2, 'km')} ({distanceLabel(selectedDrive.summary.distanceSource)})<br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Safety Score:</strong> {selectedDrive.summary.driverScore ?? 'N/A'}/100
               </div>
               <div>
-                <strong style={{color: 'var(--text-secondary)'}}>Avg Speed:</strong> {formatTripMetric(selectedDrive.summary.avgSpeed, 2, 'km/h')}<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Max Speed:</strong> {typeof selectedDrive.summary?.maxSpeed === 'number' ? `${selectedDrive.summary.maxSpeed.toFixed(2)} km/h` : 'N/A'}<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Estimated Fuel Used:</strong> {formatTripMetric(selectedDrive.summary.estimatedFuelUsedLitres, 3, 'L')}<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Estimated Economy:</strong> {formatTripMetric(economyValue(selectedDrive.summary), 2, 'km/L')} ({economyLabel(selectedDrive.summary)})<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Recorded Idling:</strong> {formatTripMetric(selectedDrive.summary.idleSeconds, 0, 'seconds')}<br/>
-                <strong style={{color: 'var(--text-secondary)'}}>Estimated Idle Fuel:</strong> {formatTripMetric(selectedDrive.summary.estimatedIdleFuelLitres, 3, 'L')}
+                <strong style={{ color: 'var(--text-secondary)' }}>Avg Speed:</strong> {formatTripMetric(selectedDrive.summary.avgSpeed, 2, 'km/h')}<br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Max Speed:</strong> {typeof selectedDrive.summary?.maxSpeed === 'number' ? `${selectedDrive.summary.maxSpeed.toFixed(2)} km/h` : 'N/A'}<br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Estimated Fuel Used:</strong> {formatTripMetric(selectedDrive.summary.estimatedFuelUsedLitres, 3, 'L')}<br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Estimated Economy:</strong> {formatTripMetric(economyValue(selectedDrive.summary), 2, 'km/L')} ({economyLabel(selectedDrive.summary)})<br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Recorded Idling:</strong> {formatTripMetric(selectedDrive.summary.idleSeconds, 0, 'seconds')}<br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Estimated Idle Fuel:</strong> {formatTripMetric(selectedDrive.summary.estimatedIdleFuelLitres, 3, 'L')}
               </div>
               <div>
-                <strong style={{color: 'var(--text-secondary)'}}>Data Coverage:</strong><br/>
+                <strong style={{ color: 'var(--text-secondary)' }}>Data Coverage:</strong><br/>
                 Fuel {coverageLabel(selectedDrive.summary.quality?.fuelCoverageRatio)} · Economy {coverageLabel(selectedDrive.summary.quality?.economyCoverageRatio)}<br/>
                 Distance {coverageLabel(selectedDrive.summary.quality?.distanceCoverageRatio)} · Idle state {coverageLabel(selectedDrive.summary.quality?.idleStateCoverageRatio)}<br/>
                 Idle fuel {coverageLabel(selectedDrive.summary.quality?.idleFuelCoverageRatio)} · Long gaps {selectedDrive.summary.quality?.gapCount ?? 'N/A'}<br/>
-                <span style={styles.metricNote}>Legacy tank estimate: {formatTripMetric(selectedDrive.summary.fuelEfficiencyKmL, 2, 'km/L')} · {formatTripMetric(selectedDrive.summary.fuelUsedPercent, 1, '%')} level drop (unvalidated)</span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                  Legacy tank estimate: {formatTripMetric(selectedDrive.summary.fuelEfficiencyKmL, 2, 'km/L')} · {formatTripMetric(selectedDrive.summary.fuelUsedPercent, 1, '%')} level drop (unvalidated)
+                </span>
               </div>
             </div>
 
-            <p style={styles.metricNote}>
+            <p style={{ fontSize: '0.775rem', color: 'var(--text-muted)', lineHeight: 1.45, margin: 0 }}>
               Petrol fuel use is estimated from recorded airflow. Totals cover usable recorded periods and exclude long gaps. Economy compares distance and fuel from the same recorded periods. Idling counts while the engine runs and the car is nearly stationary. Missing data stays unavailable.
             </p>
-            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', color: 'var(--text-primary)' }}>Trip Route</h3>
-            {detailLoading ? (
-              <div style={styles.noData}>Loading trip route...</div>
-            ) : (
-              <TripRouteMap
-                points={selectedDriveRoutePoints}
-                startLocation={selectedDrive.summary.startLocation}
-                endLocation={selectedDrive.summary.endLocation}
-              />
-            )}
-            <p style={{ color: 'var(--text-secondary)', fontSize: '12px', margin: '8px 0 24px' }}>
-              Route follows recorded GPS samples and may be approximate on long trips.
-            </p>
 
-            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px', color: 'var(--text-primary)' }}>Speed & RPM Profile</h3>
-            {detailLoading ? (
-              <div style={styles.noData}>Loading telemetry points...</div>
-            ) : detailError ? (
-              <div style={styles.noData}>Trip telemetry could not be loaded.</div>
-            ) : selectedDrivePoints.length === 0 ? (
-              <div style={styles.noData}>No telemetry points available for this trip.</div>
-            ) : (
-              <div style={{ height: '300px' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={selectedDrivePoints}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                    <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={11} minTickGap={30} />
-                    <YAxis yAxisId="left" stroke="var(--accent-blue)" fontSize={11} unit=" km/h" />
-                    <YAxis yAxisId="right" orientation="right" stroke="var(--accent-purple)" fontSize={11} />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: 'rgba(20,20,25,0.9)', borderRadius: '8px', border: '1px solid var(--border)' }}
-                    />
-                    <Legend />
-                    <Brush dataKey="time" height={30} stroke="var(--accent-blue)" fill="rgba(0,0,0,0.2)" />
-                    <Line yAxisId="left" type="monotone" dataKey="speed" name="Speed (km/h)" connectNulls={false} stroke="var(--accent-blue)" dot={false} strokeWidth={2} />
-                    <Line yAxisId="right" type="monotone" dataKey="rpm" name="RPM" connectNulls={false} stroke="var(--accent-purple)" dot={false} strokeWidth={2} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
+            {/* Route Map Section */}
+            <div style={{ display: detailSection === 'route' || detailSection === 'summary' ? 'block' : 'none' }}>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>Trip Route</h3>
+              {detailLoading ? (
+                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Loading trip route...</div>
+              ) : (
+                <TripRouteMap
+                  points={selectedDriveRoutePoints}
+                  startLocation={selectedDrive.summary.startLocation}
+                  endLocation={selectedDrive.summary.endLocation}
+                />
+              )}
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.35rem' }}>
+                Route follows recorded GPS samples and may be approximate on long trips.
+              </p>
+            </div>
+
+            {/* Keep the profile mounted so switching detail sections retains its selected time window. */}
+            <div style={{ display: detailSection === 'signals' || detailSection === 'summary' ? 'block' : 'none' }}>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>Speed & RPM Profile</h3>
+              {detailLoading ? (
+                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Loading telemetry points...</div>
+              ) : detailError ? (
+                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--accent-red)', fontSize: '0.85rem' }}>Trip telemetry could not be loaded.</div>
+              ) : selectedDrivePoints.length === 0 ? (
+                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>No telemetry points available for this trip.</div>
+              ) : (
+                <div style={{ height: '280px', width: '100%' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={selectedDrivePoints}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={11} minTickGap={30} />
+                      <YAxis yAxisId="left" stroke="#48c5b3" fontSize={11} unit=" km/h" />
+                      <YAxis yAxisId="right" orientation="right" stroke="#b395f5" fontSize={11} />
+                      <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                      <Legend wrapperStyle={{ fontSize: '12px' }} />
+                      <Brush dataKey="time" height={24} stroke="#48c5b3" fill="rgba(0,0,0,0.2)" />
+                      <Line yAxisId="left" type="monotone" dataKey="speed" name="Speed (km/h)" connectNulls={false} stroke="#48c5b3" dot={false} strokeWidth={2} isAnimationActive={false} />
+                      <Line yAxisId="right" type="monotone" dataKey="rpm" name="RPM" connectNulls={false} stroke="#b395f5" dot={false} strokeWidth={2} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </Dialog>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  metricNote: { fontSize: '12px', lineHeight: 1.5, color: 'var(--text-muted)', marginTop: '4px' },
-  container: {
-    padding: '32px',
-    maxWidth: '1400px',
-    margin: '0 auto',
-    minHeight: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '24px'
-  },
-  header: {
-    marginBottom: '8px'
-  },
-  backBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '40px',
-    height: '40px',
-    borderRadius: '12px',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    cursor: 'pointer',
-    transition: 'all 0.2s'
-  },
-  title: {
-    fontSize: '24px',
-    fontWeight: 800,
-    color: 'var(--text-primary)'
-  },
-  subtitle: {
-    fontSize: '14px',
-    color: 'var(--text-secondary)'
-  },
-  statsRow: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))',
-    gap: '20px'
-  },
-  statsCard: {
-    padding: '24px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px'
-  },
-  statsCardHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  statsCardTitle: {
-    fontSize: '12px',
-    fontWeight: 700,
-    color: 'var(--text-secondary)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em'
-  },
-  statsCardValue: {
-    fontSize: '36px',
-    fontWeight: 800,
-    color: 'var(--text-primary)',
-    lineHeight: '1'
-  },
-  statsCardSubtext: {
-    fontSize: '12px',
-    color: 'var(--text-muted)'
-  },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 400px), 1fr))',
-    gap: '32px',
-    marginTop: '16px'
-  },
-  card: {
-    padding: '24px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '20px'
-  },
-  cardHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px'
-  },
-  cardTitle: {
-    fontSize: '16px',
-    fontWeight: 700,
-    color: 'var(--text-primary)'
-  },
-  noData: {
-    padding: '40px 0',
-    textAlign: 'center',
-    color: 'var(--text-muted)',
-    fontSize: '14px'
-  },
-  lbTabs: {
-    display: 'flex',
-    gap: '8px',
-    borderBottom: '1px solid var(--border)',
-    paddingBottom: '12px'
-  },
-  lbTab: {
-    padding: '8px 12px',
-    borderRadius: '8px',
-    border: 'none',
-    backgroundColor: 'transparent',
-    color: 'var(--text-muted)',
-    fontSize: '12px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'all 0.2s'
-  },
-  lbTabActive: {
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    color: 'var(--accent-amber)',
-    border: '1px solid rgba(245, 158, 11, 0.3)'
-  },
-  lbList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-    flex: 1,
-    overflowY: 'auto',
-    maxHeight: '300px'
-  },
-  lbItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px',
-    borderRadius: '8px',
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
-    border: '1px solid rgba(255, 255, 255, 0.02)'
-  },
-  tableContainer: {
-    overflowX: 'auto'
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: '13px'
-  },
-  trHead: {
-    borderBottom: '1px solid var(--border)'
-  },
-  th: {
-    textAlign: 'left',
-    padding: '12px',
-    fontWeight: 700,
-    color: 'var(--text-secondary)',
-    fontSize: '11px',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em'
-  },
-  trRow: {
-    borderBottom: '1px solid rgba(255,255,255,0.02)',
-    transition: 'background-color 0.2s'
-  },
-  td: {
-    padding: '12px',
-    color: 'var(--text-primary)'
-  },
-  modalContent: {
-    width: '90%',
-    maxWidth: '900px',
-    padding: '32px',
-    display: 'flex',
-    flexDirection: 'column',
-    maxHeight: '90vh',
-    overflowY: 'auto'
-  },
-  modalHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '24px'
-  },
-  modalTitle: {
-    fontSize: '20px',
-    fontWeight: 800,
-    color: 'var(--text-primary)'
-  },
-  closeButton: {
-    background: 'none',
-    border: 'none',
-    color: 'var(--text-primary)',
-    cursor: 'pointer'
-  }
-};

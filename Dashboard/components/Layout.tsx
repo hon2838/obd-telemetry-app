@@ -5,9 +5,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-container">
       <Navigation />
-      <div className="app-main">
+      <main className="app-main">
         {children}
-      </div>
+      </main>
     </div>
   );
 }

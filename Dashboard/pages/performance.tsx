@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
 import Pagination from '../components/Pagination';
+import PageHeader from '../components/PageHeader';
+import EmptyState from '../components/EmptyState';
 import { apiFetch } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
@@ -70,13 +72,11 @@ export default function PerformanceDashboard() {
 
   useVisibilityPolling(fetchData, 10000, [activeVehicleId, buildUrl]);
 
-  // Paginated runs for the acceleration history table
   const paginatedRuns = useMemo(() => {
     const start = (page - 1) * pageSize;
     return runs.slice(start, start + pageSize);
   }, [runs, page, pageSize]);
 
-  // Format line chart data only when the source data changes.
   const chartData = useMemo(() => [...runs]
     .reverse()
     .map(r => ({
@@ -86,317 +86,184 @@ export default function PerformanceDashboard() {
     })), [runs]);
 
   return (
-    <div style={styles.container}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       <Head>
-        <title>Axia OS | Performance Center</title>
+        <title>Performance & Sprint Records | OBD Telemetry</title>
+        <meta name="description" content="Vehicle performance tracking, 0-100 km/h acceleration logs, and records" />
       </Head>
 
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <div>
-            <h1 style={styles.title}>Performance Center</h1>
-            <p style={styles.subtitle}>Track acceleration runs and personal records</p>
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        title="Performance & Records"
+        subtitle="Track 0-100 km/h acceleration sprints, top speed records, and session milestones."
+      />
 
       {/* Records Cards Grid */}
-      <div style={styles.statsRow}>
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Best 0-100 km/h</span>
-            <Zap size={20} style={{ color: 'var(--accent-amber)' }} />
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))',
+        gap: '0.85rem'
+      }}>
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Best 0-100 km/h</span>
+            <Zap size={16} color="var(--accent-amber)" />
           </div>
-          <span style={{ ...styles.statsCardValue, color: 'var(--accent-amber)' }}>
+          <div className="metric-summary-value" style={{ color: 'var(--accent-amber)' }}>
             {records.best0to100 && typeof records.best0to100.time === 'number' ? `${records.best0to100.time.toFixed(2)}s` : 'N/A'}
-          </span>
-          <span style={styles.statsCardSubtext}>
-            {records.best0to100 
+          </div>
+          <div className="metric-summary-subtext">
+            {records.best0to100
               ? `Drive #${records.best0to100.driveId} at ${new Date(records.best0to100.timestamp).toLocaleTimeString()}`
-              : 'No runs recorded yet'}
-          </span>
+              : 'No sprint runs logged'}
+          </div>
         </div>
 
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Top Speed Ever</span>
-            <Gauge size={20} style={{ color: 'var(--accent-cyan)' }} />
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Top Speed Ever</span>
+            <Gauge size={16} color="var(--accent-cyan)" />
           </div>
-          <span style={{ ...styles.statsCardValue }}>
-            {records.topSpeed && typeof records.topSpeed.speed === 'number' && records.topSpeed.speed > 0 ? `${records.topSpeed.speed.toFixed(2)} km/h` : 'N/A'}
-          </span>
-          <span style={styles.statsCardSubtext}>
+          <div className="metric-summary-value">
+            {records.topSpeed && typeof records.topSpeed.speed === 'number' && records.topSpeed.speed > 0
+              ? `${Math.round(records.topSpeed.speed)} km/h`
+              : 'N/A'}
+          </div>
+          <div className="metric-summary-subtext">
             {records.topSpeed && typeof records.topSpeed.speed === 'number' && records.topSpeed.speed > 0
               ? `Drive #${records.topSpeed.driveId} on ${new Date(records.topSpeed.timestamp).toLocaleDateString()}`
               : 'No telemetry logged'}
-          </span>
+          </div>
         </div>
 
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Highest RPM</span>
-            <Activity size={20} style={{ color: 'var(--accent-red)' }} />
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Highest RPM</span>
+            <Activity size={16} color="var(--accent-purple)" />
           </div>
-          <span style={styles.statsCardValue}>
-            {records.highestRpm && typeof records.highestRpm.rpm === 'number' && records.highestRpm.rpm > 0 ? `${records.highestRpm.rpm.toFixed(2)} RPM` : 'N/A'}
-          </span>
-          <span style={styles.statsCardSubtext}>
+          <div className="metric-summary-value">
+            {records.highestRpm && typeof records.highestRpm.rpm === 'number' && records.highestRpm.rpm > 0
+              ? `${Math.round(records.highestRpm.rpm).toLocaleString()} RPM`
+              : 'N/A'}
+          </div>
+          <div className="metric-summary-subtext">
             {records.highestRpm && typeof records.highestRpm.rpm === 'number' && records.highestRpm.rpm > 0
               ? `Drive #${records.highestRpm.driveId} on ${new Date(records.highestRpm.timestamp).toLocaleDateString()}`
-              : 'No RPM data recorded'}
-          </span>
+              : 'No RPM logged'}
+          </div>
         </div>
 
-        <div className="glass-panel-static" style={styles.statsCard}>
-          <div style={styles.statsCardHeader}>
-            <span style={styles.statsCardTitle}>Longest Drive</span>
-            <Clock size={20} style={{ color: 'var(--accent-purple)' }} />
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Longest Drive</span>
+            <Clock size={16} color="var(--accent-cyan)" />
           </div>
-          <span style={styles.statsCardValue}>
+          <div className="metric-summary-value">
             {records.longestDrive && records.longestDrive.durationMin > 0 ? formatDuration(records.longestDrive.durationMin) : 'N/A'}
-          </span>
-          <span style={styles.statsCardSubtext}>
+          </div>
+          <div className="metric-summary-subtext">
             {records.longestDrive && records.longestDrive.durationMin > 0
               ? `Drive #${records.longestDrive.driveId} on ${records.longestDrive.date}`
               : 'No drive sessions'}
-          </span>
+          </div>
         </div>
       </div>
 
-      {/* Main Grid */}
-      <div style={styles.grid}>
-        
-        {/* Left Column: 0-100 runs history */}
-        <div className="glass-panel-static" style={styles.card}>
-          <div style={styles.cardHeader}>
-            <Trophy size={20} style={{ color: 'var(--accent-amber)' }} />
-            <h2 style={styles.cardTitle}>0-100 km/h Acceleration Runs</h2>
+      {/* Main Grid: Runs History + Trend Chart */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 400px), 1fr))',
+        gap: '1rem'
+      }}>
+        {/* Runs History */}
+        <section className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }} aria-label="Acceleration runs history">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Trophy size={18} color="var(--accent-amber)" />
+            <h2 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              0-100 km/h Acceleration Runs
+            </h2>
           </div>
-          
-          {runs.length === 0 ? (
-            <div style={styles.noData}>Perform a 0-100 km/h run in your car to log metrics.</div>
-          ) : (
-            <>
-              <div style={styles.tableContainer}>
-                <table style={styles.table}>
-                  <thead>
-                    <tr style={styles.trHead}>
-                      <th style={styles.th}>Date & Time</th>
-                      <th style={styles.th}>Accel Time</th>
-                      <th style={styles.th}>Max Speed</th>
-                      <th style={styles.th}>Session ID</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paginatedRuns.map(run => {
-                      const isPersonalBest = records.best0to100 && records.best0to100.timestamp === run.timestamp;
-                      return (
-                        <tr key={run.id} style={{ ...styles.trRow, backgroundColor: isPersonalBest ? 'rgba(245, 158, 11, 0.05)' : 'transparent' }}>
-                          <td style={styles.td}>
-                            {new Date(run.timestamp).toLocaleString()}
-                            {isPersonalBest && <span style={styles.pbTag}>🏆 PB</span>}
-                          </td>
-                          <td style={{ ...styles.td, color: 'var(--accent-amber)', fontWeight: 700 }}>
-                            {typeof run.accelTime === 'number' ? `${run.accelTime.toFixed(2)}s` : 'N/A'}
-                          </td>
-                          <td style={styles.td}>{typeof run.maxSpeedReached === 'number' ? `${run.maxSpeedReached.toFixed(2)} km/h` : 'N/A'}</td>
-                          <td style={styles.td}>Drive #{run.driveId}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <Pagination
-                currentPage={page}
-                totalItems={runs.length}
-                pageSize={pageSize}
-                onPageChange={setPage}
-                onPageSizeChange={setPageSize}
-                itemLabel="runs"
-              />
-            </>
-          )}
-        </div>
 
-        {/* Right Column: Performance Trend Chart */}
-        <div className="glass-panel-static" style={styles.card}>
-          <div style={styles.cardHeader}>
-            <TrendingUp size={20} style={{ color: 'var(--accent-amber)' }} />
-            <h2 style={styles.cardTitle}>0-100 km/h Acceleration Trend</h2>
-          </div>
-          
-          {chartData.length === 0 ? (
-            <div style={styles.noData}>Need acceleration run logs to display trend</div>
+          {runs.length === 0 ? (
+            <EmptyState
+              icon={<Zap size={32} />}
+              title="No sprint runs recorded"
+              description="Perform a 0-100 km/h acceleration sprint in your vehicle with telemetry logging to record sprint times."
+            />
           ) : (
-            <div style={{ height: '300px' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                  <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={11} />
-                  <YAxis stroke="var(--accent-amber)" fontSize={11} unit=" s" reversed />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: 'rgba(20,20,25,0.9)', borderRadius: '8px', border: '1px solid var(--border)' }}
-                    labelStyle={{ color: 'var(--text-primary)', fontWeight: 700 }}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="time" 
-                    name="0-100 Time (s)" 
-                    stroke="var(--accent-amber)" 
-                    strokeWidth={3} 
-                    dot={{ fill: 'var(--accent-amber)', r: 5 }} 
-                    activeDot={{ r: 8 }} 
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-              <p style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '16px' }}>
-                Note: Lower is better (y-axis is inverted to show progress upwards).
-              </p>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.825rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-muted)' }}>
+                    <th style={{ padding: '0.55rem 0.4rem', fontWeight: 500 }}>Date & Time</th>
+                    <th style={{ padding: '0.55rem 0.4rem', fontWeight: 500 }}>Time (0-100)</th>
+                    <th style={{ padding: '0.55rem 0.4rem', fontWeight: 500 }}>Max Speed</th>
+                    <th style={{ padding: '0.55rem 0.4rem', fontWeight: 500 }}>Drive #</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedRuns.map((run, i) => (
+                    <tr key={run.id || i} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '0.65rem 0.4rem', color: 'var(--text-secondary)' }}>
+                        {new Date(run.timestamp).toLocaleString()}
+                        {records.best0to100?.timestamp === run.timestamp && (
+                          <span style={{ marginLeft: '0.5rem', color: 'var(--accent-amber)', fontSize: '0.75rem' }}>Personal best</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '0.65rem 0.4rem', fontWeight: 600, color: 'var(--accent-amber)', fontVariantNumeric: 'tabular-nums' }}>
+                        {typeof run.accelTime === 'number' && Number.isFinite(run.accelTime) ? `${run.accelTime.toFixed(2)}s` : 'N/A'}
+                      </td>
+                      <td style={{ padding: '0.65rem 0.4rem', fontVariantNumeric: 'tabular-nums' }}>
+                        {typeof run.maxSpeedReached === 'number' ? `${Math.round(run.maxSpeedReached)} km/h` : 'N/A'}
+                      </td>
+                      <td style={{ padding: '0.65rem 0.4rem', color: 'var(--text-muted)' }}>
+                        {run.driveId ? `#${run.driveId}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ marginTop: '0.75rem' }}>
+                <Pagination
+                  currentPage={page}
+                  totalItems={runs.length}
+                  pageSize={pageSize}
+                  onPageChange={setPage}
+                  onPageSizeChange={setPageSize}
+                  itemLabel="runs"
+                />
+              </div>
             </div>
           )}
-        </div>
+        </section>
+
+        {/* Sprint Times Trend Chart */}
+        <section className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }} aria-label="Sprint trend chart">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <TrendingUp size={18} color="var(--accent-cyan)" />
+            <h2 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              Acceleration Trend (Seconds)
+            </h2>
+          </div>
+
+          {chartData.length < 2 ? (
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              At least two acceleration runs are needed to plot trend progress.
+            </div>
+          ) : (
+            <div style={{ height: '280px', width: '100%' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={11} />
+                  <YAxis stroke="var(--text-muted)" fontSize={11} domain={['dataMin - 1', 'dataMax + 1']} unit="s" />
+                  <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                  <Line type="monotone" dataKey="time" name="0-100 Time (s)" stroke="var(--accent-amber)" strokeWidth={2} dot={{ r: 4, fill: 'var(--accent-amber)' }} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
 }
-
-const styles: Record<string, any> = {
-  container: {
-    padding: '32px',
-    maxWidth: '1400px',
-    margin: '0 auto',
-    minHeight: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '24px'
-  },
-  header: {
-    marginBottom: '8px'
-  },
-  backBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '40px',
-    height: '40px',
-    borderRadius: '12px',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    cursor: 'pointer',
-    transition: 'all 0.2s'
-  },
-  title: {
-    fontSize: '24px',
-    fontWeight: 800,
-    color: 'var(--text-primary)'
-  },
-  subtitle: {
-    fontSize: '14px',
-    color: 'var(--text-secondary)'
-  },
-  statsRow: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))',
-    gap: '20px'
-  },
-  statsCard: {
-    padding: '24px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px'
-  },
-  statsCardHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  statsCardTitle: {
-    fontSize: '12px',
-    fontWeight: 700,
-    color: 'var(--text-secondary)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em'
-  },
-  statsCardValue: {
-    fontSize: '36px',
-    fontWeight: 800,
-    color: 'var(--text-primary)',
-    lineHeight: '1'
-  },
-  statsCardSubtext: {
-    fontSize: '12px',
-    color: 'var(--text-muted)'
-  },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 400px), 1fr))',
-    gap: '32px',
-    marginTop: '16px'
-  },
-  card: {
-    padding: '24px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '20px'
-  },
-  cardHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px'
-  },
-  cardTitle: {
-    fontSize: '16px',
-    fontWeight: 700,
-    color: 'var(--text-primary)'
-  },
-  noData: {
-    padding: '60px 0',
-    textAlign: 'center',
-    color: 'var(--text-muted)',
-    fontSize: '14px'
-  },
-  tableContainer: {
-    overflowX: 'auto',
-    maxHeight: '400px',
-    overflowY: 'auto'
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: '13px'
-  },
-  trHead: {
-    borderBottom: '1px solid var(--border)'
-  },
-  th: {
-    textAlign: 'left',
-    padding: '12px',
-    fontWeight: 700,
-    color: 'var(--text-secondary)',
-    fontSize: '11px',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em'
-  },
-  trRow: {
-    borderBottom: '1px solid rgba(255,255,255,0.02)',
-    transition: 'background-color 0.2s'
-  },
-  td: {
-    padding: '12px',
-    color: 'var(--text-primary)'
-  },
-  pbTag: {
-    marginLeft: '10px',
-    padding: '2px 6px',
-    fontSize: '10px',
-    fontWeight: 800,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    color: 'var(--accent-amber)',
-    borderRadius: '4px',
-    border: '1px solid rgba(245, 158, 11, 0.3)',
-    textTransform: 'uppercase'
-  }
-};

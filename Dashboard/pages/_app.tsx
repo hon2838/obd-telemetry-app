@@ -18,11 +18,11 @@ export default function App({ Component, pageProps }: AppProps) {
         <link rel="icon" href="/favicon.ico" sizes="any" />
         <link rel="shortcut icon" href="/favicon.ico" />
       </Head>
-      <main className={`${outfit.variable} font-sans`}>
+      <div className={`${outfit.variable} ${outfit.className} font-sans`} style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
         <AuthProvider>
           {isLogin ? <Component {...pageProps} /> : <VehicleProvider><Layout><Component {...pageProps} /></Layout></VehicleProvider>}
         </AuthProvider>
-      </main>
+      </div>
     </>
   );
 }

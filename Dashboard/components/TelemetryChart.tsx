@@ -1,29 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, Brush
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Brush
 } from 'recharts';
-import { Activity, Map as MapIcon, Thermometer, Battery, Flame, Fuel, Navigation, AlertCircle, Clock, Car, Gauge, Wind } from 'lucide-react';
+import {
+  Activity, Map as MapIcon, Thermometer, Battery, Flame, Fuel, Navigation,
+  AlertCircle, Clock, Car, Gauge, Wind, ChevronDown, ChevronUp, ExternalLink
+} from 'lucide-react';
+import Link from 'next/link';
 import { apiFetch, isAbortError } from '../api';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { useVehicle } from '../context/VehicleContext';
+import PageHeader from './PageHeader';
+import DataFreshness, { STALE_THRESHOLD_MS } from './DataFreshness';
+import MetricSummary from './MetricSummary';
+import EmptyState from './EmptyState';
 
-// A record older than this means the vehicle is not currently reporting
-const STALE_THRESHOLD_MS = 90 * 1000;
-
-const formatAge = (ms: number): string => {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 10) return 'just now';
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${m % 60}m ago`;
-  const d = Math.floor(h / 24);
-  return `${d}d ${h % 24}h ago`;
-};
-
-interface TelemetryData {
+export interface TelemetryData {
   timestamp: number;
+  receivedAt?: number | null;
   rpm?: number | null;
   speed?: number | null;
   coolantTemp?: number | null;
@@ -39,8 +33,6 @@ interface TelemetryData {
   accelTime?: number | null;
   alertCoolant?: boolean;
   alertVoltage?: boolean;
-  // Optional instantaneous fuel-estimate fields (petrol MAF model).
-  // Absent on older payloads; never derived from mismatched samples.
   mafGps?: number | null;
   fuelSystemStatus?: number | null;
   estimatedFuelRateLph?: number | null;
@@ -66,24 +58,39 @@ const FuelEconomyCard = ({ value, rate, timestamp, connectionOk }: {
     const ticker = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(ticker);
   }, []);
-  // Cloud telemetry normally syncs once per minute. Apply the dashboard's
-  // reporting timeout, rather than retaining an old figure indefinitely.
+
   const age = timestamp === null ? null : now - timestamp;
   const fresh = connectionOk && age !== null && age >= 0 && age <= STALE_THRESHOLD_MS;
   const formatted = fresh ? formatFuelEconomyKmL(value) : null;
   const formattedRate = fresh ? formatFuelEconomyKmL(rate) : null;
-  const state = !connectionOk ? 'Disconnected' : age !== null && age > STALE_THRESHOLD_MS ? 'Reading too old'
-    : !fresh ? 'Awaiting fresh reading'
-    : formatted === null || formattedRate === null ? 'Estimate unavailable or incomplete' : 'Latest synced reading';
-  return <MetricCard
-    title="Estimated fuel economy"
-    value={formatted ?? 'N/A'}
-    unit={formatted !== null ? 'km/L' : ''}
-    icon={<Fuel size={20} color={formatted !== null ? 'var(--accent-green)' : 'var(--text-muted)'} />}
-    progress={undefined}
-    progressColor={formatted !== null ? 'var(--accent-green)' : 'var(--border)'}
-    subtext={<><div data-testid="fuel-rate">Estimated fuel rate: {formattedRate !== null ? `${formattedRate} L/h` : 'N/A'}</div><div>Petrol estimate · {state}</div></>}
-  />;
+  const state = !connectionOk
+    ? 'Disconnected'
+    : age !== null && age > STALE_THRESHOLD_MS
+    ? 'Reading too old'
+    : !fresh
+    ? 'Awaiting fresh reading'
+    : formatted === null || formattedRate === null
+    ? 'Estimate unavailable or incomplete'
+    : 'Latest synced reading';
+
+  return (
+    <div className="glass-panel metric-summary-card">
+      <div className="metric-summary-header">
+        <span className="metric-summary-label">Estimated fuel economy</span>
+        <Fuel size={16} color={formatted !== null ? 'var(--accent-cyan)' : 'var(--text-muted)'} aria-hidden="true" />
+      </div>
+      <div className="metric-summary-value">
+        {formatted ?? 'N/A'}
+        {formatted !== null && <small className="metric-summary-unit">km/L</small>}
+      </div>
+      <div className="metric-summary-subtext">
+        <div data-testid="fuel-rate">
+          Estimated fuel rate: {formattedRate !== null ? `${formattedRate} L/h` : 'N/A'}
+        </div>
+        <div>Petrol estimate · {state}</div>
+      </div>
+    </div>
+  );
 };
 
 interface MapProps {
@@ -92,38 +99,8 @@ interface MapProps {
   routeData: TelemetryData[];
 }
 
-const FreshnessBadge = ({ connectionOk, timestamp }: { connectionOk: boolean; timestamp: number | null }) => {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const ticker = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(ticker);
-  }, []);
-  const age = timestamp === null ? null : now - timestamp;
-  const stale = age === null || age > STALE_THRESHOLD_MS;
-  const label = !connectionOk ? 'SERVER OFFLINE' : stale ? (age === null ? 'AWAITING DATA' : `LAST SEEN ${formatAge(age).toUpperCase()}`) : 'LIVE';
-  return <div className="glass-panel-static" style={styles.liveIndicatorWrapper}>
-    <span className="live-indicator" style={connectionOk && !stale ? undefined : { animation: 'none', backgroundColor: !connectionOk ? 'var(--accent-red)' : 'var(--accent-amber)' }} />
-    <span style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.05em', color: !connectionOk ? 'var(--accent-red)' : stale ? 'var(--accent-amber)' : 'var(--accent-green)' }}>{label}</span>
-  </div>;
-};
-
-const StaleDataNotice = ({ connectionOk, timestamp }: { connectionOk: boolean; timestamp: number | null }) => {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const ticker = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(ticker);
-  }, []);
-  if (!connectionOk) return null;
-  const age = timestamp === null ? null : now - timestamp;
-  if (age !== null && age <= STALE_THRESHOLD_MS) return null;
-  return <div style={{ background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.5)', color: '#fbbf24', padding: '12px 18px', borderRadius: '12px', fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px', width: '100%' }}>
-    <Clock size={18} />
-    <span>Vehicle offline — engine off or head unit not reporting.{timestamp !== null && ` Last known data from ${new Date(timestamp).toLocaleString()}.`}</span>
-  </div>;
-};
-
 const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
-  const routeCoords = React.useMemo(() => {
+  const routeCoords = useMemo(() => {
     return routeData
       .filter(p => typeof p.latitude === 'number' && typeof p.longitude === 'number' && Number.isFinite(p.latitude) && Number.isFinite(p.longitude) && p.latitude !== 0 && p.longitude !== 0)
       .map(p => [p.latitude!, p.longitude!]);
@@ -136,7 +113,6 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    // 1. Inject Leaflet CSS
     if (!document.getElementById('leaflet-css')) {
       const link = document.createElement('link');
       link.id = 'leaflet-css';
@@ -145,7 +121,6 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
       document.head.appendChild(link);
     }
 
-    // 2. Inject Leaflet JS
     if (!document.getElementById('leaflet-js')) {
       const script = document.createElement('script');
       script.id = 'leaflet-js';
@@ -178,14 +153,12 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
 
     if (!mapInstanceRef.current) {
       try {
-        // Initialize map once with containerRef
         const map = L.map(mapContainerRef.current, {
           zoomControl: true,
           attributionControl: false
         }).setView([latitude, longitude], 15);
         mapInstanceRef.current = map;
 
-        // Dark theme tiles (ESRI World Dark Gray Base + Reference Labels)
         L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
           maxZoom: 19,
           maxNativeZoom: 16,
@@ -197,38 +170,29 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
           maxNativeZoom: 16
         }).addTo(map);
 
-        // Marker
         markerRef.current = L.marker([latitude, longitude]).addTo(map);
 
-        // Polyline route history
         polylineRef.current = L.polyline(routeCoords, {
-          color: '#3b82f6',
-          weight: 4,
-          opacity: 0.8
+          color: '#48c5b3',
+          weight: 3.5,
+          opacity: 0.85
         }).addTo(map);
 
         if (routeCoords.length > 1) {
           const bounds = polylineRef.current.getBounds();
           if (bounds && bounds.isValid && bounds.isValid()) {
-            map.fitBounds(bounds, { padding: [30, 30], animate: false });
+            map.fitBounds(bounds, { padding: [24, 24], animate: false });
           }
         }
       } catch (_) {}
     } else {
-      // Update existing map layers dynamically (prevents reloading/flashing)
       const map = mapInstanceRef.current;
       const marker = markerRef.current;
       const polyline = polylineRef.current;
 
       try {
-        if (marker) {
-          marker.setLatLng([latitude, longitude]);
-        }
-
-        if (polyline) {
-          polyline.setLatLngs(routeCoords);
-        }
-
+        if (marker) marker.setLatLng([latitude, longitude]);
+        if (polyline) polyline.setLatLngs(routeCoords);
         map.panTo([latitude, longitude], { animate: false });
       } catch (_) {}
     }
@@ -247,30 +211,22 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
   }, []);
 
   return (
-    <div ref={mapContainerRef} style={{ width: '100%', height: '100%', borderRadius: '12px', minHeight: '450px', background: '#121214' }}>
+    <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '260px', borderRadius: 'var(--radius-sm)', background: '#12161c' }}>
       {!loaded && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
           Loading Map Layers...
         </div>
       )}
     </div>
   );
 };
-export default function TelemetryDashboard() {
-  const { activeVehicleId, activeVehicle, buildUrl } = useVehicle();
-  const [data, setData] = useState<TelemetryData[]>([]);
-  const [activeTab, setActiveTab] = useState<'engine' | 'temperatures' | 'fuel_load'>('engine');
-  const [connectionOk, setConnectionOk] = useState(true);
-  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({});
 
-  const toggleSeries = useCallback((entry: any) => {
-    const dataKey = entry?.dataKey;
-    if (!dataKey) return;
-    setHiddenSeries(prev => ({
-      ...prev,
-      [dataKey]: !prev[dataKey]
-    }));
-  }, []);
+export default function TelemetryDashboard() {
+  const { vehicles, activeVehicleId, activeVehicle, selectVehicle, buildUrl } = useVehicle();
+  const [data, setData] = useState<TelemetryData[]>([]);
+  const [activeChartTab, setActiveChartTab] = useState<'sync' | 'thermal' | 'load'>('sync');
+  const [connectionOk, setConnectionOk] = useState(true);
+  const [showSecondarySignals, setShowSecondarySignals] = useState(false);
 
   const recordsRef = useRef<globalThis.Map<string, TelemetryData>>(new globalThis.Map());
   const cursorRef = useRef(0);
@@ -284,11 +240,6 @@ export default function TelemetryDashboard() {
     timeLabel: new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }), []);
 
-  // Bounded per-poll catch-up: at most CHANGE_PAGES_PER_POLL pages of
-  // CHANGE_PAGE_LIMIT records per poll. A large backlog converges across
-  // successive polls via the persisted cursor instead of accumulating up
-  // to 500k rows in one poll; the cursor only advances past pages the
-  // server actually returned, so late records are never skipped.
   const CHANGE_PAGE_LIMIT = 500;
   const CHANGE_PAGES_PER_POLL = 4;
 
@@ -301,7 +252,9 @@ export default function TelemetryDashboard() {
 
   const mergeRecords = useCallback((records: TelemetryData[], generation: number) => {
     if (generation !== generationRef.current) return;
-    for (const record of records) recordsRef.current.set(recordKey(record as TelemetryData & { eventId?: string | number; ingestSeq?: number; vehicleId?: string }), withTimeLabel(record));
+    for (const record of records) {
+      recordsRef.current.set(recordKey(record as TelemetryData & { eventId?: string | number; ingestSeq?: number; vehicleId?: string }), withTimeLabel(record));
+    }
     for (const record of records) {
       if (latestTimestampRef.current === null || record.timestamp > latestTimestampRef.current) {
         latestTimestampRef.current = record.timestamp;
@@ -349,16 +302,16 @@ export default function TelemetryDashboard() {
   }, [activeVehicleId]);
 
   const pollTelemetry = useCallback(async (signal: AbortSignal) => {
+    // If All Vehicles is explicitly chosen and multiple vehicles exist, do not poll mixed engine data
+    if (activeVehicleId === 'all' && vehicles.length > 1) {
+      return;
+    }
+
     const generation = generationRef.current;
     try {
       if (!initializedRef.current) {
-        // Bootstrap: fetch snapshot once from supported server.
-        // Server contract: GET /api/telemetry/snapshot?vehicle=...&limit=2000
-        // returns { records, snapshotCursor } with max limit 2000.
         const snapshotRes = await apiFetch(buildUrl('/api/telemetry/snapshot', { limit: 2000 }), { signal });
         if (snapshotRes.status === 404 || snapshotRes.status === 501) {
-          // Compatibility fallback for older servers lacking /api/telemetry/snapshot.
-          // Fetch bounded history without replaying full history from cursor zero.
           const historyRes = await apiFetch(buildUrl('/api/telemetry/history', { limit: 2000 }), { signal });
           if (!historyRes.ok) throw new Error(`Telemetry history HTTP ${historyRes.status}`);
           const history = await historyRes.json();
@@ -366,8 +319,6 @@ export default function TelemetryDashboard() {
           const historyRecords: Array<TelemetryData & { ingestSeq?: number }> = Array.isArray(history) ? history : [];
           if (historyRecords.length) mergeRecords(historyRecords, generation);
 
-          // If records contain server-assigned ingestSeq, initialize the cursor to max ingestSeq.
-          // This allows polling changes strictly after max ingestSeq without replaying from cursor zero.
           let maxSeq = 0;
           for (const r of historyRecords) {
             if (typeof r.ingestSeq === 'number' && r.ingestSeq > maxSeq) {
@@ -378,15 +329,13 @@ export default function TelemetryDashboard() {
             cursorRef.current = maxSeq;
             changesSupportedRef.current = true;
           } else if (historyRecords.length === 0) {
-            // Server has no records yet; cursor 0 does not replay history.
             cursorRef.current = 0;
           } else {
-            // Older server lacking ingestSeq cannot support cursor-based changes safely without replay.
             changesSupportedRef.current = false;
             const latestRes = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
             if (!latestRes.ok) throw new Error(`Telemetry latest HTTP ${latestRes.status}`);
-            const latest = await latestRes.json();
-            if (latest) mergeRecords([latest], generation);
+            const latestData = await latestRes.json();
+            if (latestData) mergeRecords([latestData], generation);
           }
           initializedRef.current = true;
         } else {
@@ -400,7 +349,6 @@ export default function TelemetryDashboard() {
           initializedRef.current = true;
         }
       } else if (changesSupportedRef.current !== false) {
-        // Poll changes strictly after the established cursor
         const changePage = await fetchChanges(cursorRef.current, generation, signal);
         if (changePage === null) {
           const response = await apiFetch(buildUrl('/api/telemetry/latest'), { signal });
@@ -423,7 +371,7 @@ export default function TelemetryDashboard() {
       }
       throw err;
     }
-  }, [buildUrl, fetchChanges, mergeRecords]);
+  }, [activeVehicleId, vehicles.length, buildUrl, fetchChanges, mergeRecords]);
 
   const pollingInterval = useCallback(() => {
     const timestamp = latestTimestampRef.current;
@@ -433,9 +381,11 @@ export default function TelemetryDashboard() {
   useVisibilityPolling(pollTelemetry, pollingInterval, [activeVehicleId, buildUrl, pollTelemetry, pollingInterval]);
 
   const latestTimestamp = data.length > 0 ? data[data.length - 1].timestamp : null;
-
   const rawLatest = data.length > 0 ? data[data.length - 1] : null;
+
   const latest: TelemetryData = {
+    timestamp: rawLatest?.timestamp ?? 0,
+    receivedAt: rawLatest?.receivedAt ?? null,
     rpm: rawLatest?.rpm ?? null,
     speed: rawLatest?.speed ?? null,
     coolantTemp: rawLatest?.coolantTemp ?? null,
@@ -449,785 +399,433 @@ export default function TelemetryDashboard() {
     ambientTemp: rawLatest?.ambientTemp ?? null,
     voltage: rawLatest?.voltage ?? null,
     accelTime: rawLatest?.accelTime ?? null,
-    alertCoolant: rawLatest?.alertCoolant ?? false,
-    alertVoltage: rawLatest?.alertVoltage ?? false,
+    alertCoolant: !!rawLatest?.alertCoolant,
+    alertVoltage: !!rawLatest?.alertVoltage,
     estimatedFuelEconomyKmL: rawLatest?.estimatedFuelEconomyKmL ?? null,
     estimatedFuelRateLph: rawLatest?.estimatedFuelRateLph ?? null,
     iat: rawLatest?.iat ?? null,
     map: rawLatest?.map ?? null,
-    timestamp: rawLatest?.timestamp ?? 0
   };
 
-  const formatVal = (val: any, decimals = 2) => {
-    if (val === null || val === undefined) return 'N/A';
-    if (typeof val === 'number') {
-      return decimals !== undefined ? val.toFixed(decimals) : val.toString();
-    }
-    return val.toString();
-  };
+  const hasGps = typeof latest.latitude === 'number' && typeof latest.longitude === 'number' &&
+    latest.latitude !== 0 && latest.longitude !== 0 &&
+    Math.abs(latest.latitude) <= 90 && Math.abs(latest.longitude) <= 180;
 
-  const getProgress = (val: any, max: number) => {
-    if (val === null || val === undefined) return 0;
-    return (Number(val) / max) * 100;
-  };
+  // Requirement 5: Multiple vehicles & All Vehicles selected -> vehicle-oriented summary
+  if (activeVehicleId === 'all' && vehicles.length > 1) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <PageHeader
+          title="Vehicle Telemetry"
+          subtitle="Telemetry readings are vehicle-specific. Select a vehicle below or from the header to inspect its live signals."
+        />
 
-  const getVoltageColor = (v: any) => {
-    if (v === null || v === undefined) return 'var(--text-muted)';
-    const num = Number(v);
-    if (num < 11.5) return 'var(--accent-red)';
-    if (num < 12.5) return 'var(--accent-amber)';
-    return 'var(--accent-green)';
-  };
-
-  const getTempColor = (t: any) => {
-    if (t === null || t === undefined) return 'var(--text-muted)';
-    const num = Number(t);
-    if (num > 105) return 'var(--accent-red)';
-    if (num > 75) return 'var(--accent-green)';
-    return 'var(--accent-cyan)';
-  };
-
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      return (
-        <div style={styles.tooltipContainer} className="glass-panel-static">
-          <p style={{ margin: '0 0 8px 0', fontWeight: 600, color: 'var(--text-secondary)' }}>{label}</p>
-          {payload.map((entry: any, index: number) => (
-            <div key={`item-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '4px 0' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: entry.color }}></span>
-              <span style={{ color: 'var(--text-primary)' }}>{entry.name}:</span>
-              <span style={{ fontWeight: 700, color: entry.color }}>{entry.value !== null && entry.value !== undefined && !Number.isNaN(Number(entry.value)) ? Number(entry.value).toFixed(2) : 'N/A'}</span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))', gap: '1rem' }}>
+          {vehicles.map(v => (
+            <div key={v.id} className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Car size={18} color="var(--accent-cyan)" />
+                  <strong style={{ fontSize: '1.05rem', color: 'var(--text-primary)' }}>{v.name}</strong>
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {v.tankLitres ? `${v.tankLitres}L Tank` : 'Standard Tank'}
+                </span>
+              </div>
+              <p style={{ fontSize: '0.825rem', color: 'var(--text-secondary)', margin: 0 }}>
+                {v.recordCount?.telemetry ? `${v.recordCount.telemetry.toLocaleString()} telemetry points recorded` : 'Registered vehicle'}
+              </p>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => selectVehicle(v.id)}
+                style={{ marginTop: '0.25rem', alignSelf: 'flex-start' }}
+              >
+                Inspect Telemetry →
+              </button>
             </div>
           ))}
         </div>
-      );
-    }
-    return null;
-  };
 
-  const coolantChip = useMemo(() => {
-    const c = latest.coolantTemp;
-    if (typeof c !== 'number') return null;
-    if (c < 65) return <StatusChip label="Warm-up" color="#38bdf8" bg="rgba(56, 189, 248, 0.12)" />;
-    if (c <= 100) return <StatusChip label="Optimal" color="#4ade80" bg="rgba(74, 222, 128, 0.12)" />;
-    return <StatusChip label="Hot" color="#f87171" bg="rgba(248, 113, 113, 0.16)" />;
-  }, [latest.coolantTemp]);
+        <div style={{ padding: '1rem 0' }}>
+          <Link href="/garage" className="btn-secondary">
+            Manage Garage & Vehicles →
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
-  const voltageChip = useMemo(() => {
-    const v = latest.voltage;
-    if (typeof v !== 'number') return null;
-    if (v >= 13.2) return <StatusChip label="Charging" color="#38bdf8" bg="rgba(56, 189, 248, 0.12)" />;
-    if (v >= 12.0) return <StatusChip label="Battery OK" color="#4ade80" bg="rgba(74, 222, 128, 0.12)" />;
-    return <StatusChip label="Low Voltage" color="#f87171" bg="rgba(248, 113, 113, 0.16)" />;
-  }, [latest.voltage]);
+  const currentVehicleName = activeVehicle?.name || (vehicles.length > 0 ? vehicles[0].name : 'Vehicle');
 
-  const mapChip = useMemo(() => {
-    const m = latest.map;
-    if (typeof m !== 'number') return null;
-    if (m > 101.3) return <StatusChip label="Boost" color="#fbbf24" bg="rgba(251, 191, 36, 0.12)" />;
-    return <StatusChip label="Vacuum" color="#2dd4bf" bg="rgba(45, 212, 191, 0.12)" />;
-  }, [latest.map]);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+      <PageHeader
+        title={currentVehicleName}
+        subtitle="Recorded vehicle signals, synchronized charts, and the latest location snapshot."
+      />
 
-  const fuelChip = useMemo(() => {
-    const fl = latest.fuelLevel;
-    if (fl === null || fl === undefined) {
-      return <StatusChip label="PID 2F N/A" color="var(--text-muted)" bg="rgba(255, 255, 255, 0.05)" />;
-    }
-    if (fl < 15) return <StatusChip label="Low" color="#f87171" bg="rgba(248, 113, 113, 0.15)" />;
-    return <StatusChip label="OK" color="#4ade80" bg="rgba(74, 222, 128, 0.12)" />;
-  }, [latest.fuelLevel]);
+      {/* Truthful Data Status Banner */}
+      <DataFreshness
+        connectionOk={connectionOk}
+        timestamp={latestTimestamp}
+        receivedAt={latest.receivedAt}
+        vehicleName={currentVehicleName}
+      />
 
-  const renderTelemetryWorkspace = () => (
-    <>
-      <StaleDataNotice connectionOk={connectionOk} timestamp={latestTimestamp} />
-
-      {/* WARNING BANNERS */}
+      {/* Safety Warning Banners */}
       {(latest.alertCoolant || latest.alertVoltage) && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', width: '100%' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           {latest.alertCoolant && (
             <div style={{
-              background: 'rgba(239, 68, 68, 0.15)',
-              border: '1px solid rgb(239, 68, 68)',
-              color: '#f87171',
-              padding: '16px 20px',
-              borderRadius: '12px',
+              background: 'var(--accent-red-bg)',
+              border: '1px solid var(--accent-red)',
+              color: 'var(--accent-red)',
+              padding: '0.75rem 1rem',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.875rem',
               fontWeight: 600,
-              fontSize: '14px',
               display: 'flex',
               alignItems: 'center',
-              gap: '12px',
-              boxShadow: '0 0 20px rgba(239, 68, 68, 0.2)'
+              gap: '0.5rem'
             }}>
-              <AlertCircle size={20} />
-              <span>ENGINE TEMPERATURE OVERHEATING DANGER: Coolant at {typeof latest.coolantTemp === 'number' ? `${latest.coolantTemp.toFixed(2)}°C` : 'N/A'}! Pull over immediately!</span>
+              <AlertCircle size={18} />
+              <span>
+                Coolant temperature warning: {typeof latest.coolantTemp === 'number' ? `${Math.round(latest.coolantTemp)}°C` : 'N/A'}. Check cooling system.
+              </span>
             </div>
           )}
           {latest.alertVoltage && (
             <div style={{
-              background: 'rgba(245, 158, 11, 0.15)',
-              border: '1px solid rgb(245, 158, 11)',
-              color: '#fbbf24',
-              padding: '16px 20px',
-              borderRadius: '12px',
+              background: 'var(--accent-amber-bg)',
+              border: '1px solid var(--accent-amber)',
+              color: 'var(--accent-amber)',
+              padding: '0.75rem 1rem',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.875rem',
               fontWeight: 600,
-              fontSize: '14px',
               display: 'flex',
               alignItems: 'center',
-              gap: '12px',
-              boxShadow: '0 0 20px rgba(245, 158, 11, 0.2)'
+              gap: '0.5rem'
             }}>
-              <Battery size={20} />
-              <span>BATTERY VOLTAGE CRITICAL: Battery is low ({typeof latest.voltage === 'number' ? `${latest.voltage.toFixed(2)}V` : 'N/A'}). Alternator charging failure or weak battery.</span>
+              <Battery size={18} />
+              <span>
+                Battery voltage low ({typeof latest.voltage === 'number' ? `${latest.voltage.toFixed(1)}V` : 'N/A'}). Check alternator charging.
+              </span>
             </div>
           )}
         </div>
       )}
 
-      {/* MASSIVE MAP (Largest part of the UI) */}
-      <div className="glass-panel-static" style={styles.massiveMapCard}>
-        <div style={styles.cardHeader}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between', width: '100%' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <MapIcon size={20} color="var(--accent-blue)" />
-              <span style={styles.cardTitle}>Live Route Tracking Map</span>
-            </div>
-            <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>
-              <span>Altitude: {typeof latest.altitude === 'number' ? `${latest.altitude.toFixed(2)}m` : 'N/A'}</span>
-              <span>•</span>
-              <span>GPS Speed: {typeof latest.gpsSpeed === 'number' ? `${latest.gpsSpeed.toFixed(2)} km/h` : 'N/A'}</span>
-            </div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: '450px', position: 'relative' }}>
-          {typeof latest.latitude === 'number' && typeof latest.longitude === 'number' && latest.latitude !== 0 && latest.longitude !== 0 ? (
-            <div style={{ flex: 1, borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--border)', background: '#1c1c1e' }}>
-              <DynamicLeafletMap latitude={latest.latitude} longitude={latest.longitude} routeData={data} />
-            </div>
-          ) : (
-            <div style={{ flex: 1, borderRadius: '12px', border: '1px dashed var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '14px' }}>
-              Awaiting GPS location signal...
-            </div>
-          )}
-          
-          {/* Floating HUD-like badge */}
-          {typeof latest.latitude === 'number' && typeof latest.longitude === 'number' && latest.latitude !== 0 && latest.longitude !== 0 && (
-            <div className="glass-panel-static" style={styles.mapFloatingBadge}>
-              <a
-                href={`https://www.google.com/maps/search/?api=1&query=${latest.latitude},${latest.longitude}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ ...styles.gpsLink, fontSize: '14px' }}
-                title="Open in Maps App"
-              >
-                Coords: {latest.latitude.toFixed(6)}, {latest.longitude.toFixed(6)}
-              </a>
-              <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
-                Click to launch Map App
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
+      {/* Primary Metrics Grid (Sensible precision, no arbitrary progress bars) */}
+      <div className="telemetry-primary-grid">
+        {/* Speed */}
+        <MetricSummary
+          label="Speed"
+          value={typeof latest.speed === 'number' ? Math.round(latest.speed) : 'N/A'}
+          unit={typeof latest.speed === 'number' ? 'km/h' : undefined}
+          icon={<Navigation size={16} />}
+          subtext={typeof latest.gpsSpeed === 'number' ? `GPS speed: ${Math.round(latest.gpsSpeed)} km/h` : 'GPS speed: N/A'}
+        />
 
-      {/* METRICS GRID (Gauge cards below map) */}
-      <div style={styles.grid}>
-        <MetricCard
-          title="Engine Speed"
-          value={formatVal(latest.rpm)}
-          unit="RPM"
-          icon={<Activity size={20} color="var(--accent-purple)" />}
-          progress={getProgress(latest.rpm, 8000)}
-          progressColor="var(--accent-purple)"
-          subtext={`Max 8000 RPM`}
+        {/* Engine Speed (RPM) */}
+        <MetricSummary
+          label="Engine Speed"
+          value={typeof latest.rpm === 'number' ? Math.round(latest.rpm).toLocaleString() : 'N/A'}
+          unit={typeof latest.rpm === 'number' ? 'RPM' : undefined}
+          icon={<Activity size={16} />}
+          subtext="Crankshaft rotational speed"
         />
-        <MetricCard
-          title="Velocity"
-          value={formatVal(latest.speed)}
-          unit="km/h"
-          icon={<Navigation size={20} color="var(--accent-cyan)" />}
-          progress={getProgress(latest.speed, 180)}
-          progressColor="var(--accent-cyan)"
-          subtext={`GPS: ${typeof latest.gpsSpeed === 'number' ? `${latest.gpsSpeed.toFixed(2)} km/h` : 'N/A'}`}
+
+        {/* Estimated Fuel Economy */}
+        <FuelEconomyCard
+          value={latest.estimatedFuelEconomyKmL}
+          rate={latest.estimatedFuelRateLph}
+          timestamp={latestTimestamp}
+          connectionOk={connectionOk}
         />
-        <MetricCard
-          title="Coolant Temp"
-          value={formatVal(latest.coolantTemp)}
-          unit="°C"
-          icon={<Thermometer size={20} color={getTempColor(latest.coolantTemp)} />}
-          progress={getProgress(latest.coolantTemp, 120)}
-          progressColor={getTempColor(latest.coolantTemp)}
-          valueColor={getTempColor(latest.coolantTemp)}
-          subtext={latest.ambientTemp !== null && latest.ambientTemp !== undefined ? `Ambient: ${latest.ambientTemp}°C` : 'Ambient: N/A'}
-          chip={coolantChip}
+
+        {/* Coolant Temperature */}
+        <MetricSummary
+          label="Coolant Temp"
+          value={typeof latest.coolantTemp === 'number' ? Math.round(latest.coolantTemp) : 'N/A'}
+          unit={typeof latest.coolantTemp === 'number' ? '°C' : undefined}
+          icon={<Thermometer size={16} />}
+          subtext={typeof latest.ambientTemp === 'number' ? `Ambient: ${Math.round(latest.ambientTemp)}°C` : 'Ambient: N/A'}
         />
-        <MetricCard
-          title="Fuel Reserve"
-          value={formatVal(latest.fuelLevel)}
-          unit={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? "%" : ""}
-          icon={<Flame size={20} color={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--text-muted)'} />}
-          progress={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? getProgress(latest.fuelLevel, 100) : undefined}
-          progressColor={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? 'var(--accent-red)' : 'var(--accent-green)') : 'var(--border)'}
-          subtext={latest.fuelLevel !== null && latest.fuelLevel !== undefined ? (latest.fuelLevel < 15 ? "Low Fuel Warning" : "Level Normal") : "PID 2F not broadcast by cluster"}
-          chip={fuelChip}
+
+        {/* System Voltage */}
+        <MetricSummary
+          label="System Voltage"
+          value={typeof latest.voltage === 'number' ? latest.voltage.toFixed(1) : 'N/A'}
+          unit={typeof latest.voltage === 'number' ? 'V' : undefined}
+          icon={<Battery size={16} />}
+          subtext={typeof latest.voltage === 'number' ? (latest.voltage >= 13.2 ? 'Alternator charging' : 'Battery discharging') : 'N/A'}
         />
-        <FuelEconomyCard value={latest.estimatedFuelEconomyKmL} rate={latest.estimatedFuelRateLph} timestamp={latestTimestamp} connectionOk={connectionOk} />
-        <MetricCard
-          title="System Voltage"
-          value={formatVal(latest.voltage)}
-          unit="V"
-          icon={<Battery size={20} color={getVoltageColor(latest.voltage)} />}
-          progress={getProgress(latest.voltage, 15)}
-          progressColor={getVoltageColor(latest.voltage)}
-          valueColor={getVoltageColor(latest.voltage)}
-          subtext={latest.voltage !== null && latest.voltage !== undefined ? (latest.voltage > 13 ? "Alternator Charging" : "Discharging") : "N/A"}
-          chip={voltageChip}
-        />
-        <MetricCard
-          title="0-100 km/h Accel"
-          value={typeof latest.accelTime === 'number' ? `${latest.accelTime.toFixed(2)}` : 'N/A'}
-          unit={typeof latest.accelTime === 'number' ? 's' : ''}
-          icon={<Flame size={20} color="var(--accent-amber)" />}
-          progress={typeof latest.accelTime === 'number' && latest.accelTime > 0 ? Math.min(100, (12.0 / latest.accelTime) * 100) : 0}
-          progressColor="var(--accent-amber)"
-          subtext={typeof latest.accelTime === 'number' ? "Sprint Completed!" : "Awaiting acceleration..."}
-        />
-        <MetricCard
-          title="Intake Air (IAT)"
-          value={formatVal(latest.iat)}
-          unit="°C"
-          icon={<Wind size={20} color="var(--accent-amber)" />}
-          progress={getProgress(latest.iat, 100)}
-          progressColor="var(--accent-amber)"
-          valueColor="var(--accent-amber)"
-          subtext={latest.iat !== null && latest.iat !== undefined ? "Manifold Intake Temp" : "N/A"}
-        />
-        <MetricCard
-          title="Manifold (MAP)"
-          value={formatVal(latest.map)}
-          unit="kPa"
-          icon={<Gauge size={20} color="var(--accent-cyan)" />}
-          progress={getProgress(latest.map, 255)}
-          progressColor="var(--accent-cyan)"
-          valueColor="var(--accent-cyan)"
-          subtext={typeof latest.map === 'number' ? (latest.map > 101 ? `${(latest.map - 101.3).toFixed(1)} kPa Boost` : `${(101.3 - latest.map).toFixed(1)} kPa Vacuum`) : "N/A"}
-          chip={mapChip}
+
+        {/* Fuel Level */}
+        <MetricSummary
+          label="Fuel level"
+          value={typeof latest.fuelLevel === 'number' ? Math.round(latest.fuelLevel) : 'Unavailable'}
+          unit={typeof latest.fuelLevel === 'number' ? '%' : undefined}
+          icon={<Fuel size={16} />}
+          subtext={typeof latest.fuelLevel === 'number' ? (latest.fuelLevel < 15 ? 'Low fuel reserve' : 'Normal level') : 'No fuel-level reading received'}
         />
       </div>
 
-      {/* CHART AREA */}
-      <div className="glass-panel-static" style={styles.chartSection}>
-        <div style={styles.tabContainer}>
-          <button
-            onClick={() => setActiveTab('engine')}
-            style={{ ...styles.tabBtn, ...(activeTab === 'engine' ? styles.tabBtnActive : {}) }}
-          >
-            Performance Metrics
-          </button>
-          <button
-            onClick={() => setActiveTab('temperatures')}
-            style={{ ...styles.tabBtn, ...(activeTab === 'temperatures' ? styles.tabBtnActive : {}) }}
-          >
-            Thermal Readings
-          </button>
-          <button
-            onClick={() => setActiveTab('fuel_load')}
-            style={{ ...styles.tabBtn, ...(activeTab === 'fuel_load' ? styles.tabBtnActive : {}) }}
-          >
-            Engine Load & Fuel
-          </button>
-        </div>
+      {/* Secondary Signals Disclosure Toggle */}
+      <div className="glass-panel" style={{ padding: '0.65rem 1rem' }}>
+        <button
+          type="button"
+          onClick={() => setShowSecondarySignals(prev => !prev)}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--text-secondary)',
+            fontSize: '0.825rem',
+            fontWeight: 500,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            width: '100%',
+            padding: '0.2rem 0'
+          }}
+          aria-expanded={showSecondarySignals}
+        >
+          <span>More signals (Load, Throttle, IAT, MAP, Sprint time)</span>
+          {showSecondarySignals ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
 
-        <div style={{ height: '400px', width: '100%', marginTop: '20px' }}>
-          {data.length === 0 ? (
-            <div style={styles.emptyState}>
-              <AlertCircle size={48} color="var(--text-muted)" style={{ marginBottom: '16px' }} />
-              <p>Awaiting telemetry transmission...</p>
-            </div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              {activeTab === 'engine' ? (
-                <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="timeLabel" stroke="var(--text-muted)" tick={{ fontSize: 12 }} dy={10} />
-                  <YAxis yAxisId="left" stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
-                  <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ paddingTop: '20px', cursor: 'pointer', userSelect: 'none' }} onClick={toggleSeries} />
-                  <Brush dataKey="timeLabel" height={30} stroke="var(--accent-purple)" fill="rgba(0,0,0,0.2)" />
-                  <Line yAxisId="left" type="monotone" dataKey="rpm" stroke="var(--accent-purple)" strokeWidth={3} name="RPM" dot={false} activeDot={{ r: 6, fill: 'var(--accent-purple)', stroke: '#fff', strokeWidth: 2 }} hide={!!hiddenSeries.rpm} />
-                  <Line yAxisId="right" type="monotone" dataKey="speed" stroke="var(--accent-cyan)" strokeWidth={3} name="OBD Speed" dot={false} hide={!!hiddenSeries.speed} />
-                  <Line yAxisId="right" type="monotone" dataKey="gpsSpeed" stroke="var(--accent-blue)" strokeWidth={2} strokeDasharray="5 5" name="GPS Speed" dot={false} hide={!!hiddenSeries.gpsSpeed} />
-                  <Line yAxisId="right" type="monotone" dataKey="map" stroke="var(--accent-amber)" strokeWidth={2} name="MAP (kPa)" dot={false} connectNulls hide={!!hiddenSeries.map} />
-                </LineChart>
-              ) : activeTab === 'temperatures' ? (
-                <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="timeLabel" stroke="var(--text-muted)" tick={{ fontSize: 12 }} dy={10} />
-                  <YAxis stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ paddingTop: '20px', cursor: 'pointer', userSelect: 'none' }} onClick={toggleSeries} />
-                  <Brush dataKey="timeLabel" height={30} stroke="var(--accent-red)" fill="rgba(0,0,0,0.2)" />
-                  <Line type="monotone" dataKey="coolantTemp" stroke="var(--accent-red)" strokeWidth={3} name="Coolant" dot={false} hide={!!hiddenSeries.coolantTemp} />
-                  <Line type="monotone" dataKey="ambientTemp" stroke="var(--accent-green)" strokeWidth={3} name="Ambient" dot={false} hide={!!hiddenSeries.ambientTemp} />
-                  <Line type="monotone" dataKey="iat" stroke="var(--accent-amber)" strokeWidth={3} name="Intake Air (IAT)" dot={false} connectNulls hide={!!hiddenSeries.iat} />
-                </LineChart>
-              ) : (
-                <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorLoad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--accent-amber)" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="var(--accent-amber)" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorThrottle" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--accent-red)" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="var(--accent-red)" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="timeLabel" stroke="var(--text-muted)" tick={{ fontSize: 12 }} dy={10} />
-                  <YAxis domain={[0, 100]} stroke="var(--text-muted)" tick={{ fontSize: 12 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ paddingTop: '20px', cursor: 'pointer', userSelect: 'none' }} onClick={toggleSeries} />
-                  <Brush dataKey="timeLabel" height={30} stroke="var(--accent-amber)" fill="rgba(0,0,0,0.2)" />
-                  <Area type="monotone" dataKey="engineLoad" stroke="var(--accent-amber)" strokeWidth={2} fillOpacity={1} fill="url(#colorLoad)" name="Engine Load (%)" dot={false} hide={!!hiddenSeries.engineLoad} />
-                  <Area type="monotone" dataKey="throttlePos" stroke="var(--accent-red)" strokeWidth={2} fillOpacity={1} fill="url(#colorThrottle)" name="Throttle (%)" dot={false} hide={!!hiddenSeries.throttlePos} />
-                  <Line type="monotone" dataKey="fuelLevel" stroke="var(--accent-green)" strokeWidth={3} name="Fuel Level (%)" dot={false} hide={!!hiddenSeries.fuelLevel} />
-                </AreaChart>
-              )}
-            </ResponsiveContainer>
-          )}
-        </div>
-      </div>
-
-    </>
-  );
-
-  return (
-    <div style={styles.container}>
-      {/* HEADER */}
-      <div style={styles.header}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <div style={styles.logoBadge}>
-            <Activity size={28} color="var(--accent-blue)" />
-          </div>
-          <div>
-            <h1 style={styles.title}>Axia OS</h1>
-            <p style={styles.subtitle}>Telemetry Core</p>
-          </div>
-        </div>
-
-        <div style={styles.headerControls}>
-          <FreshnessBadge connectionOk={connectionOk} timestamp={latestTimestamp} />
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-        {renderTelemetryWorkspace()}
-      </div>
-    </div>
-  );
-}
-
-const StatusChip = ({ label, color, bg }: { label: string; color: string; bg: string }) => (
-  <span
-    style={{
-      fontSize: '11px',
-      fontWeight: 700,
-      letterSpacing: '0.04em',
-      textTransform: 'uppercase',
-      padding: '2px 8px',
-      borderRadius: '999px',
-      border: `1px solid ${color}40`,
-      backgroundColor: bg,
-      color: color,
-      lineHeight: '1.4',
-      whiteSpace: 'nowrap'
-    }}
-  >
-    {label}
-  </span>
-);
-
-const MetricCard = ({ title, value, unit, icon, progress, progressColor, subtext, valueColor, chip }: any) => {
-  const isUnavailable = value === 'N/A' || value === null || value === undefined;
-  return (
-    <div className="glass-panel" style={{ ...styles.card, ...(isUnavailable ? { opacity: 0.65 } : {}) }}>
-      <div style={styles.cardHeader}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '8px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {icon}
-            <span style={styles.cardTitle}>{title}</span>
-          </div>
-          {chip}
-        </div>
-      </div>
-      <div style={styles.cardBody}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-          <span style={{ ...styles.cardValue, color: valueColor || 'var(--text-primary)' }}>{value}</span>
-          <span style={styles.cardUnit}>{unit}</span>
-        </div>
-        {subtext && <div style={styles.cardSubtext}>{subtext}</div>}
-
-        {progress !== undefined && (
-          <div style={styles.progressBarBg}>
-            <div
-              style={{
-                ...styles.progressBarFill,
-                width: `${Math.min(Math.max(progress, 0), 100)}%`,
-                backgroundColor: progressColor
-              }}
+        {showSecondarySignals && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))',
+            gap: '0.75rem',
+            marginTop: '0.85rem',
+            paddingTop: '0.85rem',
+            borderTop: '1px solid var(--border)'
+          }}>
+            <MetricSummary
+              label="Engine Load"
+              value={typeof latest.engineLoad === 'number' ? `${Math.round(latest.engineLoad)}%` : 'N/A'}
+              subtext="Calculated load value"
+            />
+            <MetricSummary
+              label="Throttle Position"
+              value={typeof latest.throttlePos === 'number' ? `${Math.round(latest.throttlePos)}%` : 'N/A'}
+              subtext="Absolute throttle"
+            />
+            <MetricSummary
+              label="Intake Air (IAT)"
+              value={typeof latest.iat === 'number' ? `${Math.round(latest.iat)}°C` : 'N/A'}
+              icon={<Wind size={15} />}
+              subtext="Manifold intake temp"
+            />
+            <MetricSummary
+              label="Manifold (MAP)"
+              value={typeof latest.map === 'number' ? `${Math.round(latest.map)} kPa` : 'N/A'}
+              icon={<Gauge size={15} />}
+              subtext={typeof latest.map === 'number' ? (latest.map > 101.3 ? 'Positive boost' : 'Atmospheric/vacuum') : 'N/A'}
+            />
+            <MetricSummary
+              label="0-100 km/h Accel"
+              value={typeof latest.accelTime === 'number' ? `${latest.accelTime.toFixed(1)}s` : 'N/A'}
+              icon={<Flame size={15} />}
+              subtext={typeof latest.accelTime === 'number' ? 'Sprint completed' : 'Awaiting sprint'}
             />
           </div>
         )}
       </div>
+
+      {/* Synchronized Speed and RPM Charts */}
+      <section className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }} aria-label="Telemetry charts">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div>
+            <h2 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              Recorded Signal Window
+            </h2>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {data.length > 0 ? `${data.length} samples · up to 2,000 points bounded` : 'Awaiting samples'}
+            </span>
+          </div>
+
+          {/* Chart views tab */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', maxWidth: '100%', gap: '4px', background: 'var(--surface-inset)', padding: '3px', borderRadius: 'var(--radius-sm)' }}>
+            <button
+              type="button"
+              className={`nav-link ${activeChartTab === 'sync' ? 'active' : ''}`}
+              aria-pressed={activeChartTab === 'sync'}
+              onClick={() => setActiveChartTab('sync')}
+              style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+            >
+              Speed & RPM
+            </button>
+            <button
+              type="button"
+              className={`nav-link ${activeChartTab === 'thermal' ? 'active' : ''}`}
+              aria-pressed={activeChartTab === 'thermal'}
+              onClick={() => setActiveChartTab('thermal')}
+              style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+            >
+              Thermals
+            </button>
+            <button
+              type="button"
+              className={`nav-link ${activeChartTab === 'load' ? 'active' : ''}`}
+              aria-pressed={activeChartTab === 'load'}
+              onClick={() => setActiveChartTab('load')}
+              style={{ padding: '0.3rem 0.65rem', fontSize: '0.8rem' }}
+            >
+              Load & Pressure
+            </button>
+          </div>
+        </div>
+
+        {data.length === 0 ? (
+          <EmptyState
+            icon={<Activity size={32} />}
+            title="Awaiting telemetry transmission"
+            description="Pair your Android app, connect its OBD adapter, and verify the first upload. Recorded charts appear here once measurements arrive."
+            action={<Link href="/pair" className="btn-primary">Pair head unit</Link>}
+          />
+        ) : activeChartTab === 'sync' ? (
+          /* Stacked Synchronized Speed and RPM Charts */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {/* Speed Chart */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '4px' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-cyan)' }}>
+                  Vehicle Speed (km/h)
+                </span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Current: {typeof latest.speed === 'number' ? `${Math.round(latest.speed)} km/h` : 'N/A'}
+                </span>
+              </div>
+              <div style={{ height: '170px', width: '100%' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data} syncId="telemetry-readings" margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} hide />
+                    <YAxis stroke="var(--text-muted)" fontSize={11} domain={[0, 'auto']} />
+                    <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                    <Line type="monotone" dataKey="speed" name="Speed (km/h)" stroke="var(--accent-cyan)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Engine Speed (RPM) Chart */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '4px' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-purple)' }}>
+                  Engine Speed (RPM)
+                </span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Current: {typeof latest.rpm === 'number' ? `${Math.round(latest.rpm)} RPM` : 'N/A'}
+                </span>
+              </div>
+              <div style={{ height: '170px', width: '100%' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data} syncId="telemetry-readings" margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} />
+                    <YAxis stroke="var(--text-muted)" fontSize={11} domain={[0, 'auto']} />
+                    <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                    <Line type="monotone" dataKey="rpm" name="Engine RPM" stroke="var(--accent-purple)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        ) : activeChartTab === 'thermal' ? (
+          /* Thermal Signals Chart */
+          <div style={{ height: '320px', width: '100%' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} />
+                <YAxis stroke="var(--text-muted)" fontSize={11} unit="°C" />
+                <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                <Legend wrapperStyle={{ fontSize: '12px' }} />
+                <Line type="monotone" dataKey="coolantTemp" name="Coolant (°C)" stroke="#38bdf8" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="ambientTemp" name="Ambient (°C)" stroke="#94a3b8" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="iat" name="Intake Air (°C)" stroke="#fbbf24" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          /* Load & Pressure Chart */
+          <div style={{ height: '320px', width: '100%' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} />
+                <YAxis yAxisId="left" stroke="var(--text-muted)" fontSize={11} unit="%" />
+                <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" fontSize={11} unit=" kPa" />
+                <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                <Legend wrapperStyle={{ fontSize: '12px' }} />
+                <Line yAxisId="left" type="monotone" dataKey="engineLoad" name="Engine Load (%)" stroke="#f472b6" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                <Line yAxisId="left" type="monotone" dataKey="throttlePos" name="Throttle (%)" stroke="#a78bfa" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
+                <Line yAxisId="right" type="monotone" dataKey="map" name="Manifold Pressure (kPa)" stroke="#2dd4bf" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </section>
+
+      {/* Compact Location Tracking Map (Placed BELOW primary content) */}
+      <section className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }} aria-label="Vehicle location">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <MapIcon size={16} color="var(--accent-cyan)" />
+            <h2 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              Location & Route Preview
+            </h2>
+          </div>
+          {hasGps && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <span>Altitude: {typeof latest.altitude === 'number' ? `${Math.round(latest.altitude)}m` : 'N/A'}</span>
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${latest.latitude},${latest.longitude}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--accent-cyan)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+              >
+                <span>{latest.latitude!.toFixed(5)}, {latest.longitude!.toFixed(5)}</span>
+                <ExternalLink size={12} />
+              </a>
+            </div>
+          )}
+        </div>
+
+        {hasGps ? (
+          <div style={{ height: '260px', width: '100%', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+            <DynamicLeafletMap latitude={latest.latitude!} longitude={latest.longitude!} routeData={data} />
+          </div>
+        ) : (
+          <div style={{
+            padding: '1.25rem',
+            background: 'var(--surface-inset)',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            color: 'var(--text-secondary)'
+          }}>
+            <Navigation size={20} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+            <div>
+              <strong style={{ color: 'var(--text-primary)', display: 'block', fontSize: '0.85rem' }}>
+                GPS location unavailable
+              </strong>
+              <span style={{ fontSize: '0.775rem', color: 'var(--text-muted)' }}>
+                No satellite coordinates received in recent sample. GPS position updates automatically when available.
+              </span>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    width: '100%'
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '32px',
-    flexWrap: 'wrap',
-    gap: '16px'
-  },
-  logoBadge: {
-    width: '56px',
-    height: '56px',
-    borderRadius: '16px',
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    border: '1px solid rgba(59, 130, 246, 0.2)'
-  },
-  title: {
-    fontSize: '28px',
-    fontWeight: 800,
-    margin: 0,
-    background: 'linear-gradient(to right, #fff, #a1a1aa)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-    letterSpacing: '-0.02em'
-  },
-  subtitle: {
-    fontSize: '14px',
-    color: 'var(--text-muted)',
-    margin: '4px 0 0 0',
-    fontWeight: 500
-  },
-  headerControls: {
-    display: 'flex',
-    gap: '16px',
-    alignItems: 'center'
-  },
-  toggleGroup: {
-    display: 'flex',
-    padding: '4px',
-    gap: '4px'
-  },
-  toggleBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    background: 'transparent',
-    border: 'none',
-    color: 'var(--text-secondary)',
-    padding: '8px 16px',
-    borderRadius: '12px',
-    fontSize: '14px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'all 0.2s'
-  },
-  toggleBtnActive: {
-    background: 'var(--surface-hover)',
-    color: 'var(--text-primary)',
-    boxShadow: '0 2px 10px rgba(0,0,0,0.2)'
-  },
-  liveIndicatorWrapper: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '10px 16px',
-  },
-  
-  // Two-column layout
-  twoColumnWorkspace: {
-    display: 'flex',
-    gap: '32px',
-    width: '100%',
-    alignItems: 'flex-start'
-  },
-  sidebar: {
-    flex: '0 0 320px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '20px',
-    alignSelf: 'stretch'
-  },
-  mainWorkspace: {
-    flex: 1,
-    minWidth: 0
-  },
-  drivesScrollList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-    maxHeight: '400px',
-    overflowY: 'auto',
-    paddingRight: '4px'
-  },
-  driveListItem: {
-    padding: '16px',
-    borderRadius: '12px',
-    cursor: 'pointer',
-    border: '1px solid var(--border)',
-    transition: 'all 0.2s ease'
-  },
-  driveListItemActive: {
-    background: 'rgba(59, 130, 246, 0.15)',
-    borderColor: 'var(--accent-blue)',
-    boxShadow: '0 0 16px rgba(59, 130, 246, 0.2)'
-  },
-  miniStatsRow: {
-    display: 'flex',
-    gap: '8px',
-    fontSize: '11px',
-    marginTop: '10px',
-    fontWeight: 500
-  },
-  sidebarFooter: {
-    padding: '20px',
-    borderRadius: '16px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-    border: '1px solid var(--border)'
-  },
-  sidebarInputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px'
-  },
-  sidebarLabel: {
-    fontSize: '10px',
-    fontWeight: 700,
-    color: 'var(--text-muted)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em'
-  },
-  sidebarInput: {
-    background: 'rgba(0,0,0,0.2)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    padding: '8px 12px',
-    borderRadius: '10px',
-    fontSize: '13px',
-    outline: 'none'
-  },
-  sidebarApplyBtn: {
-    background: 'transparent',
-    border: '1px solid var(--accent-blue)',
-    color: 'var(--accent-blue)',
-    padding: '10px 16px',
-    borderRadius: '10px',
-    fontSize: '13px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    marginTop: '4px'
-  },
-
-  // Main Workspace components
-  driveHeaderSummary: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    padding: '24px',
-    borderRadius: '16px',
-    border: '1px solid var(--border)',
-    flexWrap: 'wrap',
-    gap: '24px'
-  },
-  headerSummaryCol: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px'
-  },
-  emptyWorkspaceState: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '80px 24px',
-    borderRadius: '16px',
-    border: '1px dashed var(--border)',
-    minHeight: '400px'
-  },
-
-  inputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px'
-  },
-  label: {
-    fontSize: '12px',
-    fontWeight: 600,
-    color: 'var(--text-secondary)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em'
-  },
-  input: {
-    background: 'rgba(0,0,0,0.2)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
-    padding: '10px 16px',
-    borderRadius: '12px',
-    fontSize: '14px',
-    outline: 'none',
-    transition: 'border-color 0.2s',
-  },
-  primaryBtn: {
-    background: 'var(--accent-blue)',
-    color: '#fff',
-    border: 'none',
-    padding: '12px 24px',
-    borderRadius: '12px',
-    fontSize: '14px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    boxShadow: '0 4px 14px rgba(59, 130, 246, 0.4)',
-    transition: 'transform 0.2s, box-shadow 0.2s'
-  },
-  badgeText: {
-    marginLeft: 'auto',
-    fontSize: '13px',
-    color: 'var(--text-muted)',
-    fontWeight: 500,
-    alignSelf: 'center'
-  },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-    gap: '20px',
-    marginBottom: '32px'
-  },
-  card: {
-    padding: '20px',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    minHeight: '140px'
-  },
-  cardHeader: {
-    marginBottom: '16px'
-  },
-  cardTitle: {
-    fontSize: '13px',
-    fontWeight: 600,
-    color: 'var(--text-secondary)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.02em'
-  },
-  cardBody: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px'
-  },
-  cardValue: {
-    fontSize: '32px',
-    fontWeight: 700,
-    lineHeight: 1,
-    letterSpacing: '-0.02em'
-  },
-  cardUnit: {
-    fontSize: '16px',
-    color: 'var(--text-muted)',
-    fontWeight: 600
-  },
-  cardSubtext: {
-    fontSize: '12px',
-    color: 'var(--text-muted)',
-    marginTop: '4px'
-  },
-  progressBarBg: {
-    height: '6px',
-    background: 'rgba(255,255,255,0.05)',
-    borderRadius: '3px',
-    marginTop: '12px',
-    overflow: 'hidden'
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: '3px',
-    transition: 'width 0.5s cubic-bezier(0.4, 0, 0.2, 1)'
-  },
-  gpsLink: {
-    fontSize: '18px',
-    fontWeight: 600,
-    color: 'var(--accent-blue)',
-    textDecoration: 'none',
-    transition: 'opacity 0.2s'
-  },
-  chartSection: {
-    padding: '24px',
-  },
-  tabContainer: {
-    display: 'flex',
-    gap: '12px',
-    borderBottom: '1px solid var(--border)',
-    paddingBottom: '16px',
-    overflowX: 'auto'
-  },
-  tabBtn: {
-    background: 'transparent',
-    border: 'none',
-    color: 'var(--text-secondary)',
-    fontSize: '15px',
-    fontWeight: 600,
-    padding: '8px 16px',
-    cursor: 'pointer',
-    position: 'relative',
-    transition: 'color 0.2s',
-    whiteSpace: 'nowrap'
-  },
-  tabBtnActive: {
-    color: 'var(--text-primary)',
-  },
-  emptyState: {
-    height: '100%',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: 'var(--text-muted)'
-  },
-  tooltipContainer: {
-    padding: '16px',
-    minWidth: '180px',
-  },
-  massiveMapCard: {
-    padding: '20px',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    minHeight: '520px',
-    marginBottom: '32px'
-  },
-  mapFloatingBadge: {
-    position: 'absolute',
-    bottom: '20px',
-    left: '20px',
-    padding: '12px 18px',
-    borderRadius: '12px',
-    zIndex: 10,
-    background: 'rgba(18, 18, 22, 0.85)',
-    border: '1px solid var(--border)',
-    boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.5)'
-  }
-};
+}

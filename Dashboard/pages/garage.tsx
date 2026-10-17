@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
 import Head from 'next/head';
-import { Car, Plus, Trash2, Edit3, Check, ShieldAlert, Activity, Fuel, Wrench } from 'lucide-react';
+import { Car, Plus, Trash2, Edit3, Check, ShieldAlert, Activity, Fuel, Wrench, X } from 'lucide-react';
 import { useVehicle, Vehicle } from '../context/VehicleContext';
 import { apiFetch } from '../api';
+import PageHeader from '../components/PageHeader';
+import MetricSummary from '../components/MetricSummary';
+import Dialog from '../components/Dialog';
 
 export default function Garage() {
   const { vehicles, activeVehicleId, selectVehicle, refreshVehicles } = useVehicle();
@@ -138,416 +141,347 @@ export default function Garage() {
   const totalMaint = vehicles.reduce((acc, v) => acc + (v.recordCount?.maintenance || 0), 0);
 
   return (
-    <>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       <Head>
-        <title>Garage & Fleet Management | OBD Telemetry</title>
+        <title>Garage & Fleet Hub | OBD Telemetry</title>
+        <meta name="description" content="Manage multi-vehicle profiles, tank capacities, and fleet assignments" />
       </Head>
 
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '1rem' }}>
-        {/* Header Title */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <Car color="var(--accent-cyan)" size={28} />
-              Garage & Fleet Hub
-            </h1>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
-              Manage multi-vehicle profiles, tank capacities, and fleet assignments.
-            </p>
-          </div>
-
+      <PageHeader
+        title="Garage & Fleet Hub"
+        subtitle="Manage multi-vehicle profiles, tank capacities, and fleet assignments."
+        action={
           <button
+            type="button"
             onClick={handleOpenAdd}
-            className="glass-panel"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.75rem 1.25rem',
-              borderRadius: 'var(--radius-md)',
-              background: 'linear-gradient(135deg, rgba(94, 215, 208, 0.2), rgba(141, 156, 255, 0.2))',
-              border: '1px solid var(--border-glow)',
-              color: 'var(--text-primary)',
-              fontWeight: 600,
-              cursor: 'pointer',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
-            }}
+            className="btn-primary"
           >
-            <Plus size={18} color="var(--accent-cyan)" />
+            <Plus size={16} />
             <span>Add Vehicle</span>
           </button>
+        }
+      />
+
+      {/* Fleet KPI Banner */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 210px), 1fr))', gap: '0.85rem' }}>
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Registered Vehicles</span>
+            <Car size={16} color="var(--accent-cyan)" />
+          </div>
+          <div className="metric-summary-value">{vehicles.length}</div>
+          <div className="metric-summary-subtext">Active vehicle profiles</div>
         </div>
 
-        {/* Fleet KPI Banner */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
-          <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              <Car size={16} color="var(--accent-cyan)" />
-              <span>Registered Vehicles</span>
-            </div>
-            <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-cyan)', marginTop: '0.5rem' }}>
-              {vehicles.length}
-            </div>
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Fleet Telemetry Points</span>
+            <Activity size={16} color="var(--accent-cyan)" />
           </div>
-
-          <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              <Activity size={16} color="var(--accent-blue)" />
-              <span>Fleet Telemetry Points</span>
-            </div>
-            <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-blue)', marginTop: '0.5rem' }}>
-              {totalTelemetry.toLocaleString()}
-            </div>
-          </div>
-
-          <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              <Fuel size={16} color="var(--accent-khaki)" />
-              <span>Fuel Fill-Ups</span>
-            </div>
-            <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-khaki)', marginTop: '0.5rem' }}>
-              {totalFuelLogs.toLocaleString()}
-            </div>
-          </div>
-
-          <div className="glass-panel" style={{ padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              <Wrench size={16} color="var(--accent-purple)" />
-              <span>Maintenance Schedules</span>
-            </div>
-            <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-purple)', marginTop: '0.5rem' }}>
-              {totalMaint.toLocaleString()}
-            </div>
-          </div>
+          <div className="metric-summary-value">{totalTelemetry.toLocaleString()}</div>
+          <div className="metric-summary-subtext">Aggregated across fleet</div>
         </div>
 
-        {/* Vehicles Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}>
-          {vehicles.map((v) => {
-            const isActive = activeVehicleId === v.id;
-            const isDefault = v.id === 'default';
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Fuel Fill-Ups</span>
+            <Fuel size={16} color="var(--accent-green)" />
+          </div>
+          <div className="metric-summary-value">{totalFuelLogs.toLocaleString()}</div>
+          <div className="metric-summary-subtext">Logged fuel receipts</div>
+        </div>
 
-            return (
-              <div
-                key={v.id}
-                className="glass-panel"
-                style={{
-                  padding: '1.5rem',
-                  borderRadius: 'var(--radius-lg)',
-                  border: isActive ? '2px solid var(--accent-cyan)' : '1px solid var(--border)',
-                  background: isActive ? 'rgba(20, 25, 31, 0.95)' : 'var(--surface)',
-                  position: 'relative',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between',
-                  boxShadow: isActive ? '0 0 20px rgba(94, 215, 208, 0.15)' : 'none',
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
-                    <div>
-                      <h3 style={{ fontSize: '1.25rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {v.name}
-                      </h3>
-                      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: '0.725rem', padding: '0.2rem 0.5rem', borderRadius: '4px', background: 'var(--surface-inset)', color: 'var(--text-muted)' }}>
-                          ID: {v.id}
+        <div className="glass-panel-static metric-summary-card">
+          <div className="metric-summary-header">
+            <span className="metric-summary-label">Maintenance Schedules</span>
+            <Wrench size={16} color="var(--accent-purple)" />
+          </div>
+          <div className="metric-summary-value">{totalMaint.toLocaleString()}</div>
+          <div className="metric-summary-subtext">Tracked service schedules</div>
+        </div>
+      </div>
+
+      {/* Vehicles Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '1rem' }}>
+        {vehicles.map((v) => {
+          const isActive = activeVehicleId === v.id;
+          const isDefault = v.id === 'default';
+
+          return (
+            <div
+              key={v.id}
+              className="glass-panel"
+              style={{
+                padding: '1.25rem',
+                border: isActive ? '1px solid var(--accent-cyan)' : '1px solid var(--border)',
+                background: isActive ? 'rgba(72, 197, 179, 0.05)' : 'var(--surface)',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                gap: '1rem'
+              }}
+            >
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+                      {v.name}
+                    </h3>
+                    <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', borderRadius: '4px', background: 'var(--surface-inset)', color: 'var(--text-muted)' }}>
+                        ID: {v.id}
+                      </span>
+                      {isDefault && (
+                        <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem', borderRadius: '4px', background: 'var(--od-tint)', color: 'var(--accent-cyan)', fontWeight: 600 }}>
+                          Primary / Default
                         </span>
-                        {isDefault && (
-                          <span style={{ fontSize: '0.725rem', padding: '0.2rem 0.5rem', borderRadius: '4px', background: 'rgba(141, 156, 255, 0.2)', color: 'var(--accent-blue)', fontWeight: 600 }}>
-                            Primary / Default
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '0.25rem' }}>
-                      <button
-                        onClick={() => handleOpenEdit(v)}
-                        title="Edit Vehicle"
-                        style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.35rem' }}
-                      >
-                        <Edit3 size={16} />
-                      </button>
-                      {!isDefault && (
-                        <button
-                          onClick={() => { setDeletingVehicle(v); setErrorMsg(null); }}
-                          title="Delete Vehicle"
-                          style={{ background: 'transparent', border: 'none', color: 'var(--accent-red)', cursor: 'pointer', padding: '0.35rem' }}
-                        >
-                          <Trash2 size={16} />
-                        </button>
                       )}
                     </div>
                   </div>
 
-                  {/* Vehicle Specs */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', margin: '1rem 0', padding: '0.75rem', background: 'var(--surface-inset)', borderRadius: 'var(--radius-sm)' }}>
-                    <div>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Fuel Capacity</span>
-                      <p style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--accent-khaki)' }}>
-                        {v.tankLitres ? `${v.tankLitres} L` : '36 L (Default)'}
-                      </p>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Telemetry Logged</span>
-                      <p style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--accent-cyan)' }}>
-                        {(v.recordCount?.telemetry || 0).toLocaleString()} pts
-                      </p>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Fuel Records</span>
-                      <p style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {v.recordCount?.fuelLogs || 0} fill-ups
-                      </p>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Maintenance Tasks</span>
-                      <p style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {v.recordCount?.maintenance || 0} items
-                      </p>
-                    </div>
+                  <div style={{ display: 'flex', gap: '0.25rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEdit(v)}
+                      title="Edit Vehicle"
+                      style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.25rem' }}
+                      aria-label={`Edit ${v.name}`}
+                    >
+                      <Edit3 size={15} />
+                    </button>
+                    {!isDefault && (
+                      <button
+                        type="button"
+                        onClick={() => { setDeletingVehicle(v); setErrorMsg(null); }}
+                        title="Delete Vehicle"
+                        style={{ background: 'transparent', border: 'none', color: 'var(--accent-red)', cursor: 'pointer', padding: '0.25rem' }}
+                        aria-label={`Delete ${v.name}`}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                {/* Switcher Button */}
-                <button
-                  onClick={() => selectVehicle(isActive ? 'all' : v.id)}
-                  style={{
-                    width: '100%',
-                    padding: '0.65rem',
-                    borderRadius: 'var(--radius-md)',
-                    border: isActive ? '1px solid var(--accent-cyan)' : '1px solid var(--border)',
-                    background: isActive ? 'rgba(94, 215, 208, 0.15)' : 'var(--surface-hover)',
-                    color: isActive ? 'var(--accent-cyan)' : 'var(--text-primary)',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.5rem',
-                    marginTop: '0.5rem',
-                    transition: 'all 0.2s ease',
-                  }}
-                >
-                  {isActive ? (
-                    <>
-                      <Check size={16} color="var(--accent-cyan)" />
-                      <span>Active Dashboard Car</span>
-                    </>
-                  ) : (
-                    <span>Switch to this Car</span>
-                  )}
-                </button>
+                {/* Specs */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem', margin: '0.85rem 0', padding: '0.75rem', background: 'var(--surface-inset)', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem' }}>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>Fuel Capacity</span>
+                    <p style={{ fontWeight: 600, color: 'var(--text-primary)', margin: '0.15rem 0 0' }}>
+                      {v.tankLitres ? `${v.tankLitres} L` : '36 L (Default)'}
+                    </p>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>Telemetry Logged</span>
+                    <p style={{ fontWeight: 600, color: 'var(--accent-cyan)', margin: '0.15rem 0 0' }}>
+                      {(v.recordCount?.telemetry || 0).toLocaleString()} pts
+                    </p>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>Fuel Records</span>
+                    <p style={{ fontWeight: 600, color: 'var(--text-primary)', margin: '0.15rem 0 0' }}>
+                      {v.recordCount?.fuelLogs || 0} fill-ups
+                    </p>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>Maintenance Tasks</span>
+                    <p style={{ fontWeight: 600, color: 'var(--text-primary)', margin: '0.15rem 0 0' }}>
+                      {v.recordCount?.maintenance || 0} items
+                    </p>
+                  </div>
+                </div>
               </div>
-            );
-          })}
-        </div>
+
+              {/* Select Button */}
+              <button
+                type="button"
+                onClick={() => selectVehicle(isActive ? 'all' : v.id)}
+                className={isActive ? 'btn-primary' : 'btn-secondary'}
+                style={{ width: '100%' }}
+              >
+                {isActive ? (
+                  <>
+                    <Check size={15} />
+                    <span>Selected Active Vehicle</span>
+                  </>
+                ) : (
+                  <span>Select Vehicle</span>
+                )}
+              </button>
+            </div>
+          );
+        })}
       </div>
 
-      {/* Modal: Add Vehicle */}
-      {isAddModalOpen && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ border: '1px solid var(--border-glow)' }}>
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Plus size={20} color="var(--accent-cyan)" />
-              Add New Vehicle
-            </h3>
+      {/* Add Vehicle Modal */}
+      <Dialog
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+        title="Add New Vehicle"
+        description="Register a new car profile in your personal fleet"
+        maxWidth="460px"
+      >
+        <form onSubmit={handleCreateVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div>
+            <label className="form-label">Vehicle Name</label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. Perodua Bezza 1.3"
+              value={formName}
+              onChange={(e) => setFormName(e.target.value)}
+              className="form-input"
+            />
+          </div>
 
-            {errorMsg && (
-              <div className="form-error">
-                {errorMsg}
-              </div>
-            )}
+          <div>
+            <label className="form-label">Tank Capacity (Litres)</label>
+            <input
+              type="number"
+              step="0.1"
+              min="1"
+              max="500"
+              required
+              value={formTank}
+              onChange={(e) => setFormTank(e.target.value)}
+              className="form-input"
+            />
+          </div>
 
-            <form onSubmit={handleCreateVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div>
-                <label className="form-label">
-                  Vehicle Name (e.g. Proton X50, Perodua Myvi) *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formName}
-                  onChange={(e) => setFormName(e.target.value)}
-                  placeholder="e.g. Proton X50"
-                  className="form-input"
-                />
-              </div>
+          <div>
+            <label className="form-label">Custom Vehicle ID (Optional)</label>
+            <input
+              type="text"
+              placeholder="e.g. bezza-2022 (leave blank to auto-generate)"
+              value={formId}
+              onChange={(e) => setFormId(e.target.value)}
+              className="form-input"
+            />
+          </div>
 
-              <div>
-                <label className="form-label">
-                  Fuel Tank Capacity (Litres)
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="1"
-                  max="500"
-                  value={formTank}
-                  onChange={(e) => setFormTank(e.target.value)}
-                  placeholder="36"
-                  className="form-input"
-                />
-              </div>
+          {errorMsg && <div className="form-error">{errorMsg}</div>}
 
-              <div>
-                <label className="form-label">
-                  Custom Vehicle ID (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={formId}
-                  onChange={(e) => setFormId(e.target.value)}
-                  placeholder="Auto-generated if blank"
-                  className="form-input"
-                />
-              </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setIsAddModalOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="btn-primary"
+            >
+              {loading ? 'Creating...' : 'Create Vehicle'}
+            </button>
+          </div>
+        </form>
+      </Dialog>
 
-              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="btn-secondary"
-                  style={{ flex: 1 }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="btn-primary"
-                  style={{ flex: 1 }}
-                >
-                  {loading ? 'Creating...' : 'Create Vehicle'}
-                </button>
-              </div>
-            </form>
+      {/* Edit Vehicle Modal */}
+      <Dialog
+        isOpen={!!editingVehicle}
+        onClose={() => setEditingVehicle(null)}
+        title={`Edit ${editingVehicle?.name || 'Vehicle'}`}
+        maxWidth="460px"
+      >
+        <form onSubmit={handleUpdateVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div>
+            <label className="form-label">Vehicle Name</label>
+            <input
+              type="text"
+              required
+              value={formName}
+              onChange={(e) => setFormName(e.target.value)}
+              className="form-input"
+            />
+          </div>
+
+          <div>
+            <label className="form-label">Tank Capacity (Litres)</label>
+            <input
+              type="number"
+              step="0.1"
+              min="1"
+              max="500"
+              required
+              value={formTank}
+              onChange={(e) => setFormTank(e.target.value)}
+              className="form-input"
+            />
+          </div>
+
+          {errorMsg && <div className="form-error">{errorMsg}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setEditingVehicle(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="btn-primary"
+            >
+              {loading ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* Delete Vehicle Modal */}
+      <Dialog
+        isOpen={!!deletingVehicle}
+        onClose={() => setDeletingVehicle(null)}
+        title={`Delete "${deletingVehicle?.name}"?`}
+        maxWidth="480px"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          <p style={{ margin: 0, lineHeight: 1.5 }}>
+            Are you sure you want to delete this vehicle? Its recorded telemetry, fuel receipts, and maintenance tasks can be safely reassigned to another vehicle profile.
+          </p>
+
+          <div>
+            <label className="form-label">Reassign Data To:</label>
+            <select
+              value={reassignTarget}
+              onChange={(e) => setReassignTarget(e.target.value)}
+              className="form-select"
+            >
+              {vehicles.filter(v => v.id !== deletingVehicle?.id).map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name} ({v.id})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {errorMsg && <div className="form-error">{errorMsg}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setDeletingVehicle(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-danger"
+              disabled={loading}
+              onClick={handleDeleteVehicle}
+            >
+              {loading ? 'Deleting...' : 'Delete & Reassign Data'}
+            </button>
           </div>
         </div>
-      )}
-
-      {/* Modal: Edit Vehicle */}
-      {editingVehicle && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ border: '1px solid var(--border-glow)' }}>
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Edit3 size={20} color="var(--accent-cyan)" />
-              Edit {editingVehicle.name}
-            </h3>
-
-            {errorMsg && (
-              <div className="form-error">
-                {errorMsg}
-              </div>
-            )}
-
-            <form onSubmit={handleUpdateVehicle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div>
-                <label className="form-label">
-                  Vehicle Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formName}
-                  onChange={(e) => setFormName(e.target.value)}
-                  className="form-input"
-                />
-              </div>
-
-              <div>
-                <label className="form-label">
-                  Fuel Tank Capacity (Litres)
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="1"
-                  max="500"
-                  value={formTank}
-                  onChange={(e) => setFormTank(e.target.value)}
-                  className="form-input"
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
-                <button
-                  type="button"
-                  onClick={() => setEditingVehicle(null)}
-                  className="btn-secondary"
-                  style={{ flex: 1 }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="btn-primary"
-                  style={{ flex: 1 }}
-                >
-                  {loading ? 'Saving...' : 'Save Changes'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Delete Vehicle Confirmation */}
-      {deletingVehicle && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content modal-content-danger">
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <ShieldAlert size={22} color="var(--accent-red)" />
-              Delete Vehicle Profile
-            </h3>
-
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1rem' }}>
-              Are you sure you want to delete <strong>{deletingVehicle.name}</strong>?
-            </p>
-
-            {errorMsg && (
-              <div className="form-error">
-                {errorMsg}
-              </div>
-            )}
-
-            <div style={{ marginBottom: '1rem' }}>
-              <label className="form-label">
-                Reassign existing records to:
-              </label>
-              <select
-                value={reassignTarget}
-                onChange={(e) => setReassignTarget(e.target.value)}
-                className="form-select"
-              >
-                <option value="default">Default Vehicle</option>
-              </select>
-            </div>
-
-            <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <button
-                type="button"
-                onClick={() => setDeletingVehicle(null)}
-                className="btn-secondary"
-                style={{ flex: 1 }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleDeleteVehicle}
-                disabled={loading}
-                className="btn-danger"
-                style={{ flex: 1 }}
-              >
-                {loading ? 'Deleting...' : 'Confirm Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+      </Dialog>
+    </div>
   );
 }
