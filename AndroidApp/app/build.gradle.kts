@@ -80,6 +80,7 @@ dependencies {
   "testAndroidautoImplementation"("androidx.car.app:app-testing:1.7.0")
   implementation("androidx.core:core-ktx:1.12.0")
   implementation("androidx.appcompat:appcompat:1.2.0")
+  implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
   // Room
   val roomVersion = "2.8.4"

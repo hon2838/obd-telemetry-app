@@ -73,6 +73,45 @@ class MainActivity : AppCompatActivity() {
     private var tvCockpitAge: TextView? = null
     private var cockpitSlots: List<TelemetryWidgetView> = emptyList()
     private lateinit var dashboardConfigManager: DashboardConfigManager
+    private var cockpitRoot: androidx.constraintlayout.widget.ConstraintLayout? = null
+    private var currentScreenClass: ScreenClass = ScreenClass.EXPANSIVE_LAND
+    private var focusedSlotIndex: Int? = null
+
+    enum class VehicleMotionState {
+        STATIONARY,
+        MOVING,
+        UNKNOWN
+    }
+
+    companion object {
+        const val SPEED_FRESHNESS_TIMEOUT_MS = 6_000L
+
+        @Volatile
+        var lastValidLiveSpeedKmh: Float? = null
+            internal set
+
+        @Volatile
+        var lastSpeedTimestampElapsedMs: Long = 0L
+            internal set
+
+        @Volatile
+        var wasPreviouslyMoving: Boolean = false
+            internal set
+
+        fun resetVehicleMotionSessionForTesting() {
+            lastValidLiveSpeedKmh = null
+            lastSpeedTimestampElapsedMs = 0L
+            wasPreviouslyMoving = false
+        }
+    }
+
+    private var currentMotionState: VehicleMotionState = VehicleMotionState.UNKNOWN
+    private var demoSpeedKmh: Float = 0f
+    private var activeCustomizerDialog: android.app.Dialog? = null
+    private var activePresetPopup: PopupMenu? = null
+
+    val currentVehicleSpeedKmh: Float
+        get() = if (isDemoMode) demoSpeedKmh else (lastValidLiveSpeedKmh ?: 0f)
 
     private val mainJob = kotlinx.coroutines.Job()
     private val mainScope = CoroutineScope(Dispatchers.Main + mainJob)
@@ -90,9 +129,74 @@ class MainActivity : AppCompatActivity() {
     var isDemoMode = false
         private set
 
+    fun evaluateMotionState() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val isLiveSpeedFresh = lastValidLiveSpeedKmh != null &&
+            (now - lastSpeedTimestampElapsedMs) <= SPEED_FRESHNESS_TIMEOUT_MS
+
+        val newMotionState: VehicleMotionState = when {
+            // Live telemetry reporting fresh speed takes absolute priority
+            isLiveSpeedFresh -> {
+                val speed = lastValidLiveSpeedKmh!!
+                if (speed > 8.0f) VehicleMotionState.MOVING else VehicleMotionState.STATIONARY
+            }
+            // Stale or missing telemetry: if vehicle was previously moving, hold the moving lock!
+            wasPreviouslyMoving -> {
+                VehicleMotionState.MOVING
+            }
+            // Telemetry from live vehicle was received but is now stale: unresolved context
+            lastValidLiveSpeedKmh != null -> {
+                VehicleMotionState.UNKNOWN
+            }
+            // In offline demo mode (when no live vehicle context exists), use demo speed
+            isDemoMode -> {
+                if (demoSpeedKmh > 8.0f) VehicleMotionState.MOVING else VehicleMotionState.STATIONARY
+            }
+            // Default when telemetry is not fresh and not moving
+            else -> {
+                VehicleMotionState.UNKNOWN
+            }
+        }
+
+        currentMotionState = newMotionState
+
+        // Auto-dismiss open dialogs, popups, and restore grid if vehicle starts moving or telemetry is lost
+        if (newMotionState != VehicleMotionState.STATIONARY) {
+            activePresetPopup?.dismiss()
+            activePresetPopup = null
+
+            activeCustomizerDialog?.let { dialog ->
+                if (dialog.isShowing) {
+                    dialog.dismiss()
+                    val reason = if (newMotionState == VehicleMotionState.MOVING) {
+                        "Customization dismissed: vehicle is in motion"
+                    } else {
+                        "Customization dismissed: telemetry lost"
+                    }
+                    Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
+                }
+            }
+            activeCustomizerDialog = null
+
+            // Automatically restore grid if focused when vehicle starts moving
+            if (newMotionState == VehicleMotionState.MOVING && focusedSlotIndex != null) {
+                focusedSlotIndex = null
+                cockpitRoot?.let { root ->
+                    CockpitConstraintBuilder.applyLayout(root, currentScreenClass)
+                }
+                Toast.makeText(this, "Cockpit grid restored for driving safety", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun isCockpitMutationPermitted(): Boolean {
+        evaluateMotionState()
+        return currentMotionState == VehicleMotionState.STATIONARY
+    }
+
     private val mockTelemetryReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            intent?.let { handleTelemetryIntent(it) }
+            intent?.let { handleTelemetryIntent(it, isTrustedLive = false) }
         }
     }
 
@@ -143,11 +247,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun handleTelemetryIntent(it: Intent) {
+    private fun handleTelemetryIntent(it: Intent, isTrustedLive: Boolean = true) {
         val lat = it.getDoubleOrNumber("lat", 0.0)
         val lon = it.getDoubleOrNumber("lon", 0.0)
         val alt = it.getDoubleOrNumber("alt", 0.0)
         val speed = it.getFloatOrNumber("speed", -1.0f)
+        if (isTrustedLive) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (speed >= 0f && speed.isFinite()) {
+                lastValidLiveSpeedKmh = speed
+                lastSpeedTimestampElapsedMs = now
+                wasPreviouslyMoving = (speed > 8.0f)
+            }
+            evaluateMotionState()
+        } else {
+            if (speed >= 0f && speed.isFinite()) {
+                demoSpeedKmh = speed
+            }
+            evaluateMotionState()
+        }
         val speedSource = it.getStringExtra("speed_source") ?: "GPS"
         val hasGpsFix = it.getBooleanExtra("gps_fix", lat != 0.0 || lon != 0.0)
         val hasAltitude = it.getBooleanExtra("gps_altitude_valid", hasGpsFix)
@@ -238,8 +356,9 @@ class MainActivity : AppCompatActivity() {
             tvSprintTime.setTextColor(getColor(R.color.text_primary))
         }
 
-        // Update modern customizable cockpit slots
+        // Update modern customizable cockpit slots (skipping GONE slots to save CPU/GPU cycles)
         for (slot in cockpitSlots) {
+            if (slot.visibility == View.GONE) continue
             val value: Double? = when (slot.currentMetric) {
                 TelemetryMetric.SPEED -> if (speed >= 0f) speed.toDouble() else null
                 TelemetryMetric.RPM -> if (rpm >= 0) rpm.toDouble() else null
@@ -385,6 +504,32 @@ class MainActivity : AppCompatActivity() {
             R.id.widgetSlot8, R.id.widgetSlot9, R.id.widgetSlot10, R.id.widgetSlot11
         )
         cockpitSlots = slotIds.mapNotNull { findViewById<TelemetryWidgetView?>(it) }
+
+        cockpitRoot = findViewById(R.id.cockpitRoot)
+        cockpitRoot?.let { root ->
+            val displayInfo = DisplayClassifier.classifyActivity(this)
+            currentScreenClass = displayInfo.screenClass
+            CockpitConstraintBuilder.applyLayout(root, currentScreenClass)
+
+            root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                val w = right - left
+                val h = bottom - top
+                val oldW = oldRight - oldLeft
+                val oldH = oldBottom - oldTop
+                if (w > 0 && h > 0 && (w != oldW || h != oldH)) {
+                    val info = DisplayClassifier.classifyDimensions(w, h, resources.displayMetrics.densityDpi)
+                    if (info.screenClass != currentScreenClass) {
+                        currentScreenClass = info.screenClass
+                        if (focusedSlotIndex == null) {
+                            root.post {
+                                CockpitConstraintBuilder.applyLayout(root, info.screenClass)
+                                applyPresetToSlots(dashboardConfigManager.getActivePreset())
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         dashboardConfigManager = DashboardConfigManager(this)
         setupCockpitPresetsAndSlots()
@@ -689,7 +834,22 @@ class MainActivity : AppCompatActivity() {
         applyPresetToSlots(activePreset)
 
         btnPresetSelector?.setOnClickListener { v ->
+            if (!isCockpitMutationPermitted()) {
+                val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                    "Preset selection locked while vehicle is in motion"
+                } else {
+                    "Preset selection locked: waiting for stationary vehicle confirmation"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             val popup = PopupMenu(this, v)
+            activePresetPopup = popup
+            popup.setOnDismissListener {
+                if (activePresetPopup == popup) {
+                    activePresetPopup = null
+                }
+            }
             DashboardPreset.values().forEachIndexed { index, preset ->
                 val item = popup.menu.add(0, index, index, preset.displayName)
                 if (preset == dashboardConfigManager.getActivePreset()) {
@@ -697,6 +857,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             popup.setOnMenuItemClickListener { menuItem ->
+                if (!isCockpitMutationPermitted()) {
+                    val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                        "Preset selection locked while vehicle is in motion"
+                    } else {
+                        "Preset selection locked: waiting for stationary vehicle confirmation"
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                    return@setOnMenuItemClickListener true
+                }
                 val selected = DashboardPreset.values().getOrNull(menuItem.itemId)
                 if (selected != null) {
                     dashboardConfigManager.setActivePreset(selected)
@@ -708,21 +877,95 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnCustomizeCockpit?.setOnClickListener {
+            if (!isCockpitMutationPermitted()) {
+                val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                    "Customization locked while vehicle is in motion"
+                } else {
+                    "Customization locked: waiting for stationary vehicle confirmation"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             showSlotSelectorDialog()
         }
 
         cockpitSlots.forEachIndexed { index, slot ->
+            slot.canMutateCockpit = { isCockpitMutationPermitted() }
             slot.onEditRequestedListener = {
-                showSlotCustomizerDialog(index)
+                if (!isCockpitMutationPermitted()) {
+                    val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                        "Customization locked while vehicle is in motion"
+                    } else {
+                        "Customization locked: waiting for stationary vehicle confirmation"
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                } else {
+                    showSlotCustomizerDialog(index)
+                }
+            }
+            slot.onDoubleTapListener = {
+                toggleSlotFocus(index)
             }
             slot.onStyleChangedListener = { newStyle ->
-                if (dashboardConfigManager.getActivePreset() != DashboardPreset.CUSTOM) {
-                    dashboardConfigManager.saveAllCustomSlots(cockpitSlots.map { SlotConfig(it.currentMetric, it.currentStyle) })
-                    dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
-                    btnPresetSelector?.text = "CUSTOM ▾"
+                if (!isCockpitMutationPermitted()) {
+                    val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                        "Customization locked while vehicle is in motion"
+                    } else {
+                        "Customization locked: waiting for stationary vehicle confirmation"
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                } else {
+                    val activePreset = dashboardConfigManager.getActivePreset()
+                    if (activePreset != DashboardPreset.CUSTOM) {
+                        dashboardConfigManager.saveAllCustomSlots(dashboardConfigManager.getMasterSlots(activePreset))
+                        dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
+                        btnPresetSelector?.text = "CUSTOM ▾"
+                    }
+                    dashboardConfigManager.updateSingleSlot(index, SlotConfig(slot.currentMetric, newStyle))
                 }
-                dashboardConfigManager.saveCustomSlot(index, SlotConfig(slot.currentMetric, newStyle))
             }
+        }
+    }
+
+    private fun toggleSlotFocus(slotIndex: Int) {
+        val root = cockpitRoot ?: return
+        if (slotIndex !in cockpitSlots.indices) return
+
+        if (focusedSlotIndex == slotIndex) {
+            focusedSlotIndex = null
+            CockpitConstraintBuilder.applyLayout(root, currentScreenClass)
+            Toast.makeText(this, "Cockpit grid restored", Toast.LENGTH_SHORT).show()
+        } else {
+            if (!isCockpitMutationPermitted()) {
+                val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                    "HUD Focus locked while vehicle is in motion"
+                } else {
+                    "HUD Focus locked: waiting for stationary vehicle confirmation"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                return
+            }
+            focusedSlotIndex = slotIndex
+            val cs = androidx.constraintlayout.widget.ConstraintSet()
+            cs.clone(root)
+
+            val targetSlot = cockpitSlots[slotIndex]
+            for (slot in cockpitSlots) {
+                if (slot.id == targetSlot.id) {
+                    cs.setVisibility(slot.id, View.VISIBLE)
+                    cs.clear(slot.id)
+                    cs.connect(slot.id, androidx.constraintlayout.widget.ConstraintSet.LEFT, androidx.constraintlayout.widget.ConstraintSet.PARENT_ID, androidx.constraintlayout.widget.ConstraintSet.LEFT)
+                    cs.connect(slot.id, androidx.constraintlayout.widget.ConstraintSet.RIGHT, androidx.constraintlayout.widget.ConstraintSet.PARENT_ID, androidx.constraintlayout.widget.ConstraintSet.RIGHT)
+                    cs.connect(slot.id, androidx.constraintlayout.widget.ConstraintSet.TOP, androidx.constraintlayout.widget.ConstraintSet.PARENT_ID, androidx.constraintlayout.widget.ConstraintSet.TOP)
+                    cs.connect(slot.id, androidx.constraintlayout.widget.ConstraintSet.BOTTOM, androidx.constraintlayout.widget.ConstraintSet.PARENT_ID, androidx.constraintlayout.widget.ConstraintSet.BOTTOM)
+                    cs.constrainWidth(slot.id, androidx.constraintlayout.widget.ConstraintSet.MATCH_CONSTRAINT)
+                    cs.constrainHeight(slot.id, androidx.constraintlayout.widget.ConstraintSet.MATCH_CONSTRAINT)
+                } else {
+                    cs.setVisibility(slot.id, View.GONE)
+                }
+            }
+            cs.applyTo(root)
+            Toast.makeText(this, "HUD Focus: ${targetSlot.currentMetric.displayName} (Double-tap to exit)", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -733,7 +976,7 @@ class MainActivity : AppCompatActivity() {
             DashboardPreset.HEALTH -> "HEALTH ▾"
             DashboardPreset.CUSTOM -> "CUSTOM ▾"
         }
-        val configs = dashboardConfigManager.getSlotConfigs(preset)
+        val configs = dashboardConfigManager.getMasterSlots(preset)
         cockpitSlots.forEachIndexed { index, slot ->
             if (index < configs.size) {
                 val cfg = configs[index]
@@ -743,19 +986,40 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSlotSelectorDialog() {
-        val items = Array(cockpitSlots.size) { i ->
+        if (!isCockpitMutationPermitted()) {
+            val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                "Customization locked while vehicle is in motion"
+            } else {
+                "Customization locked: waiting for stationary vehicle confirmation"
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val visibleCount = currentScreenClass.visibleSlotCount.coerceIn(1, cockpitSlots.size)
+        val items = Array(visibleCount) { i ->
             "Slot ${i + 1}: ${cockpitSlots[i].currentMetric.displayName} (${cockpitSlots[i].currentStyle.displayName})"
         }
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Choose Slot to Customize")
             .setItems(items) { _, which ->
                 showSlotCustomizerDialog(which)
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        activeCustomizerDialog = dialog
+        dialog.show()
     }
 
     private fun showSlotCustomizerDialog(slotIndex: Int) {
+        if (!isCockpitMutationPermitted()) {
+            val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                "Customization locked while vehicle is in motion"
+            } else {
+                "Customization locked: waiting for stationary vehicle confirmation"
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            return
+        }
         if (slotIndex !in cockpitSlots.indices) return
         val slot = cockpitSlots[slotIndex]
 
@@ -776,22 +1040,34 @@ class MainActivity : AppCompatActivity() {
         spinnerStyle.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, styleNames)
         spinnerStyle.setSelection(styles.indexOf(slot.currentStyle).coerceAtLeast(0))
 
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Customize Slot ${slotIndex + 1}")
             .setView(view)
             .setPositiveButton("Save") { _, _ ->
+                if (!isCockpitMutationPermitted()) {
+                    val msg = if (currentMotionState == VehicleMotionState.MOVING) {
+                        "Customization locked while vehicle is in motion"
+                    } else {
+                        "Customization locked: waiting for stationary vehicle confirmation"
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
                 val chosenMetric = metrics[spinnerMetric.selectedItemPosition]
                 val chosenStyle = styles[spinnerStyle.selectedItemPosition]
                 slot.bindMetric(chosenMetric, chosenStyle)
-                if (dashboardConfigManager.getActivePreset() != DashboardPreset.CUSTOM) {
-                    dashboardConfigManager.saveAllCustomSlots(cockpitSlots.map { SlotConfig(it.currentMetric, it.currentStyle) })
+                val activePreset = dashboardConfigManager.getActivePreset()
+                if (activePreset != DashboardPreset.CUSTOM) {
+                    dashboardConfigManager.saveAllCustomSlots(dashboardConfigManager.getMasterSlots(activePreset))
                     dashboardConfigManager.setActivePreset(DashboardPreset.CUSTOM)
                     btnPresetSelector?.text = "CUSTOM ▾"
                 }
-                dashboardConfigManager.saveCustomSlot(slotIndex, SlotConfig(chosenMetric, chosenStyle))
+                dashboardConfigManager.updateSingleSlot(slotIndex, SlotConfig(chosenMetric, chosenStyle))
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        activeCustomizerDialog = dialog
+        dialog.show()
     }
 
     private fun updateDeviceStatusUi() {
@@ -1240,14 +1516,21 @@ class MainActivity : AppCompatActivity() {
         setServiceRunningUi(isRunning)
         updateStatusUi(if (isRunning) "Service Running..." else "Service Stopped")
 
-        // Tick once per second so the staleness caption ages without a broadcast
+        evaluateMotionState()
+        // Tick once per second so the staleness caption ages and motion evaluates without a broadcast
         ageTicker?.cancel()
         ageTicker = mainScope.launch {
             while (isActive) {
                 delay(1000)
                 updateTelemetryAge()
+                evaluateMotionState()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        evaluateMotionState()
     }
 
     override fun onStop() {
@@ -1320,8 +1603,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (coolant < 92.0) coolant += 0.03
+                demoSpeedKmh = speed.toFloat()
+                evaluateMotionState()
 
                 for (slot in cockpitSlots) {
+                    if (slot.visibility == View.GONE) continue
                     val value: Double = when (slot.currentMetric) {
                         TelemetryMetric.SPEED -> speed
                         TelemetryMetric.RPM -> rpm
@@ -1360,6 +1646,8 @@ class MainActivity : AppCompatActivity() {
         isDemoMode = false
         demoJob?.cancel()
         demoJob = null
+        demoSpeedKmh = 0f
+        evaluateMotionState()
         btnSimulateData?.text = "Start Telemetry Simulation"
         btnSimulateData?.setTextColor(getColor(R.color.accent_cyan))
         tvCockpitStatus?.text = "Service Stopped"
@@ -1369,6 +1657,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        activePresetPopup?.dismiss()
+        activePresetPopup = null
         stopDemoMode()
         mainJob.cancel()
     }

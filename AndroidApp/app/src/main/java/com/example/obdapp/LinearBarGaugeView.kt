@@ -8,6 +8,7 @@ import android.view.View
 /**
  * Modern, high-performance horizontal bar gauge for automotive metrics
  * (Coolant Temp, Fuel Level, Battery Voltage, Throttle %, Engine Load).
+ * Features dynamic proportional sizing based on cell height for responsive layouts.
  */
 class LinearBarGaugeView @JvmOverloads constructor(
     context: Context,
@@ -19,6 +20,7 @@ class LinearBarGaugeView @JvmOverloads constructor(
         set(value) {
             if (!value.isFinite() || field == value) return
             field = value
+            updateLimitLabels()
             invalidate()
         }
 
@@ -28,6 +30,7 @@ class LinearBarGaugeView @JvmOverloads constructor(
             val target = if (value > minValue) value else minValue + 1f
             if (field == target) return
             field = target
+            updateLimitLabels()
             invalidate()
         }
 
@@ -35,6 +38,7 @@ class LinearBarGaugeView @JvmOverloads constructor(
         set(value) {
             if (field == value) return
             field = value
+            updateFormattedValue()
             invalidate()
         }
 
@@ -45,6 +49,7 @@ class LinearBarGaugeView @JvmOverloads constructor(
             if (field == clamped && isAvailable) return
             field = clamped
             isAvailable = true
+            updateFormattedValue()
             invalidate()
         }
 
@@ -71,11 +76,33 @@ class LinearBarGaugeView @JvmOverloads constructor(
     var unit: String = "%"
         set(value) {
             field = value
+            updateLimitLabels()
+            updateFormattedValue()
             invalidate()
         }
 
+    private var cachedFormattedValue = "0 %"
+    private var cachedMinLabel = "0%"
+    private var cachedMaxLabel = "100%"
+
+    private fun updateFormattedValue() {
+        cachedFormattedValue = if (!isAvailable) {
+            "N/A"
+        } else if (currentValue == currentValue.toInt().toFloat()) {
+            "${currentValue.toInt()} $unit"
+        } else {
+            String.format(java.util.Locale.US, "%.1f %s", currentValue, unit)
+        }
+    }
+
+    private fun updateLimitLabels() {
+        cachedMinLabel = "${minValue.toInt()}$unit"
+        cachedMaxLabel = "${maxValue.toInt()}$unit"
+    }
+
     private var baseTitleTextSize = 14f
     private var baseValueTextSize = 18f
+    private var barHeightPx = 18f
 
     private val trackBounds = RectF()
     private val fillBounds = RectF()
@@ -110,12 +137,18 @@ class LinearBarGaugeView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        val baseSize = minOf(h * 0.18f, w * 0.055f)
-        baseTitleTextSize = baseSize.coerceIn(11f, 22f)
-        baseValueTextSize = (baseSize * 1.25f).coerceIn(13f, 26f)
+        val hFloat = h.toFloat()
+        val wFloat = w.toFloat()
+
+        // Bar Track Thickness: clamp(0.22 * H, 10px, 36px)
+        barHeightPx = (hFloat * 0.22f).coerceIn(10f, 36f)
+
+        // Title and Value Text Scaling
+        baseTitleTextSize = (hFloat * 0.18f).coerceIn(11f, 22f)
+        baseValueTextSize = (hFloat * 0.25f).coerceIn(13f, 28f)
         titlePaint.textSize = baseTitleTextSize
         valuePaint.textSize = baseValueTextSize
-        limitPaint.textSize = (baseSize * 0.75f).coerceIn(9f, 15f)
+        limitPaint.textSize = (hFloat * 0.13f).coerceIn(9f, 15f)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -124,31 +157,24 @@ class LinearBarGaugeView @JvmOverloads constructor(
         val h = height.toFloat()
         if (w <= 0 || h <= 0) return
 
-        // Reset to base sizes before measuring to avoid progressive shrinking
         titlePaint.textSize = baseTitleTextSize
         valuePaint.textSize = baseValueTextSize
 
-        val paddingH = 12f
-        val paddingV = 8f
-        val iconClearance = 32f
+        val paddingH = 10f
+        val paddingV = 6f
+        val rightMargin = 8f
 
-        // 2. Format Value + Unit
-        val formattedValue = if (!isAvailable) {
-            "N/A"
-        } else if (currentValue == currentValue.toInt().toFloat()) {
-            "${currentValue.toInt()} $unit"
-        } else {
-            String.format(java.util.Locale.US, "%.1f %s", currentValue, unit)
-        }
+        // Format Value + Unit from cache (zero allocation)
+        val formattedValue = cachedFormattedValue
 
-        valuePaint.color = if (isAvailable) Color.WHITE else Color.parseColor("#6B7280")
+        valuePaint.color = if (isAvailable) Color.WHITE else COLOR_UNAVAILABLE
 
         // Adjust text sizes if title + value collide
-        val availableW = w - paddingH - iconClearance
+        val availableW = w - paddingH - rightMargin
         val titleW = titlePaint.measureText(title)
         val valueW = valuePaint.measureText(formattedValue)
-        if (titleW + valueW + 12f > availableW) {
-            val scale = availableW / (titleW + valueW + 16f)
+        if (titleW + valueW + 10f > availableW) {
+            val scale = availableW / (titleW + valueW + 14f)
             titlePaint.textSize *= scale
             valuePaint.textSize *= scale
         }
@@ -157,20 +183,18 @@ class LinearBarGaugeView @JvmOverloads constructor(
         val titleY = paddingV + titlePaint.textSize
         canvas.drawText(title, paddingH, titleY, titlePaint)
 
-        // 2. Value + Unit (Top Right with clearance for cycle button)
+        // 2. Value + Unit (Top Right)
         val valueY = paddingV + valuePaint.textSize
-        canvas.drawText(formattedValue, w - iconClearance, valueY, valuePaint)
+        canvas.drawText(formattedValue, w - rightMargin, valueY, valuePaint)
 
-        // 3. Bar Track (with vertical clamping for compact slots)
-        val barTop = titleY + (h * 0.12f)
-        val maxBarBottom = (h - 4f) - limitPaint.textSize - 8f
-        val rawBarBottom = barTop + (h * 0.28f).coerceAtLeast(14f)
-        val barBottom = minOf(rawBarBottom, maxBarBottom).coerceAtLeast(barTop + 6f)
+        // 3. Bar Track
+        val barTop = titleY + (h * 0.10f)
+        val barBottom = (barTop + barHeightPx).coerceAtMost(h - limitPaint.textSize - 6f)
         val barCorner = (barBottom - barTop) / 2f
         trackBounds.set(paddingH, barTop, w - paddingH, barBottom)
         canvas.drawRoundRect(trackBounds, barCorner, barCorner, trackPaint)
 
-        // 4. Fill Bar with Dynamic Threshold Color (supports inverted thresholds)
+        // 4. Fill Bar with Dynamic Threshold Color (static color constants)
         if (isAvailable) {
             val fraction = ((currentValue - minValue) / (maxValue - minValue)).coerceIn(0f, 1f)
             val fillRight = paddingH + (fraction * (w - 2 * paddingH))
@@ -178,15 +202,15 @@ class LinearBarGaugeView @JvmOverloads constructor(
             val isLowCritical = criticalThreshold < warningThreshold
             val barColor = if (isLowCritical) {
                 when {
-                    currentValue <= criticalThreshold -> Color.parseColor("#EF4444")
-                    currentValue <= warningThreshold -> Color.parseColor("#F59E0B")
-                    else -> Color.parseColor("#5ED7D0")
+                    currentValue <= criticalThreshold -> COLOR_CRITICAL
+                    currentValue <= warningThreshold -> COLOR_WARNING
+                    else -> COLOR_NORMAL
                 }
             } else {
                 when {
-                    currentValue >= criticalThreshold -> Color.parseColor("#EF4444")
-                    currentValue >= warningThreshold -> Color.parseColor("#F59E0B")
-                    else -> Color.parseColor("#5ED7D0")
+                    currentValue >= criticalThreshold -> COLOR_CRITICAL
+                    currentValue >= warningThreshold -> COLOR_WARNING
+                    else -> COLOR_NORMAL
                 }
             }
             fillPaint.color = barColor
@@ -197,12 +221,21 @@ class LinearBarGaugeView @JvmOverloads constructor(
             }
         }
 
-        // 5. Min / Max Labels (Bottom Row)
-        val footerY = barBottom + limitPaint.textSize + 8f
-        limitPaint.textAlign = Paint.Align.LEFT
-        canvas.drawText("${minValue.toInt()}$unit", paddingH, footerY, limitPaint)
+        // 5. Min / Max Labels from cache (Bottom Row if space permits)
+        val footerY = barBottom + limitPaint.textSize + 4f
+        if (footerY <= h) {
+            limitPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(cachedMinLabel, paddingH, footerY, limitPaint)
 
-        limitPaint.textAlign = Paint.Align.RIGHT
-        canvas.drawText("${maxValue.toInt()}$unit", w - paddingH, footerY, limitPaint)
+            limitPaint.textAlign = Paint.Align.RIGHT
+            canvas.drawText(cachedMaxLabel, w - paddingH, footerY, limitPaint)
+        }
+    }
+
+    companion object {
+        private val COLOR_UNAVAILABLE = Color.parseColor("#6B7280")
+        private val COLOR_CRITICAL = Color.parseColor("#EF4444")
+        private val COLOR_WARNING = Color.parseColor("#F59E0B")
+        private val COLOR_NORMAL = Color.parseColor("#5ED7D0")
     }
 }

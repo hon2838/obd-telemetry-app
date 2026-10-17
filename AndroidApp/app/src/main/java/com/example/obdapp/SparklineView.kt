@@ -8,14 +8,19 @@ import android.graphics.Path
 import android.util.AttributeSet
 import android.view.View
 
+/**
+ * Lightweight real-time waveform sparkline for RPM, speed, or other telemetry history.
+ * Dynamically scales line thickness based on view bounds.
+ */
 class SparklineView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
-    private var rpmHistory: MutableList<Int?> = mutableListOf()
+    private var rpmHistory: MutableList<Float?> = mutableListOf()
     private var speedHistory: MutableList<Float?> = mutableListOf()
     private val maxPoints = 20
+    private val sparkPath = Path()
 
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#2C2C2E")
@@ -37,11 +42,24 @@ class SparklineView @JvmOverloads constructor(
         strokeCap = Paint.Cap.ROUND
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        val stroke = (h.toFloat() * 0.025f).coerceIn(2f, 6f)
+        rpmPaint.strokeWidth = stroke
+        speedPaint.strokeWidth = stroke
+    }
+
     fun push(rpm: Int?, speedKmh: Float?) {
-        rpmHistory.add(rpm)
+        rpmHistory.add(rpm?.toFloat())
         speedHistory.add(speedKmh)
         if (rpmHistory.size > maxPoints) rpmHistory.removeAt(0)
         if (speedHistory.size > maxPoints) speedHistory.removeAt(0)
+        invalidate()
+    }
+
+    fun clear() {
+        rpmHistory.clear()
+        speedHistory.clear()
         invalidate()
     }
 
@@ -49,7 +67,7 @@ class SparklineView @JvmOverloads constructor(
         super.onDraw(canvas)
         val w = width.toFloat()
         val h = height.toFloat()
-        val pad = 8f
+        val pad = 6f
         val top = pad
         val bottom = h - pad
         val left = pad
@@ -66,7 +84,7 @@ class SparklineView @JvmOverloads constructor(
         val rpmMax = 7000f
         val speedMax = 160f
 
-        drawSeries(canvas, rpmHistory.map { it?.toFloat() }, rpmMax, left, right, top, contentH, rpmPaint)
+        drawSeries(canvas, rpmHistory, rpmMax, left, right, top, contentH, rpmPaint)
         drawSeries(canvas, speedHistory, speedMax, left, right, top, contentH, speedPaint)
     }
 
@@ -82,34 +100,31 @@ class SparklineView @JvmOverloads constructor(
     ) {
         if (values.size < 2) return
         val stepX = (right - left) / (maxPoints - 1).coerceAtLeast(1)
-        var path: Path? = null
+        sparkPath.reset()
+        var hasValidPoint = false
+
         for (i in values.indices) {
-            val v = values[i] ?: run { path = null; continue }
-            val norm = (v / maxVal).coerceIn(0f, 1f)
-            val x = left + i * stepX + (maxPoints - values.size) * stepX
-            val y = top + contentH * (1f - norm)
-            if (path == null) {
-                path = Path().apply { moveTo(x, y) }
-            } else {
-                path!!.lineTo(x, y)
-            }
-        }
-        if (path != null) canvas.drawPath(path!!, paint)
-        // Draw remaining segments when gaps created additional paths; handle by iterating again
-        // Simpler: rebuild per contiguous segment
-        var segPath: Path? = null
-        for (i in values.indices) {
-            val v = values[i] ?: run {
-                if (segPath != null) { canvas.drawPath(segPath!!, paint); segPath = null }
+            val v = values[i]
+            if (v == null) {
+                if (hasValidPoint) {
+                    canvas.drawPath(sparkPath, paint)
+                    sparkPath.reset()
+                    hasValidPoint = false
+                }
                 continue
             }
             val norm = (v / maxVal).coerceIn(0f, 1f)
             val x = left + i * stepX + (maxPoints - values.size) * stepX
             val y = top + contentH * (1f - norm)
-            if (segPath == null) segPath = Path().apply { moveTo(x, y) } else segPath!!.lineTo(x, y)
+            if (!hasValidPoint) {
+                sparkPath.moveTo(x, y)
+                hasValidPoint = true
+            } else {
+                sparkPath.lineTo(x, y)
+            }
         }
-        if (segPath != null) {
-            // Already drawn if no gaps; avoid double-draw by checking path count — just draw again safely with same paint is idempotent
+        if (hasValidPoint) {
+            canvas.drawPath(sparkPath, paint)
         }
     }
 }
