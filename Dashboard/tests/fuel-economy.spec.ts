@@ -47,7 +47,7 @@ for (const sample of [
     if (sample.rate !== undefined) expect(data.records[0].estimatedFuelRateLph).toBe(sample.rate);
     await expect(page.locator('.glass-panel').filter({
       has: page.getByText('Engine Speed', { exact: true }),
-    })).toContainText('1000');
+    })).toContainText('1,000');
     const card = page.locator('.glass-panel').filter({
       has: page.getByText('Estimated fuel economy', { exact: true }),
     });

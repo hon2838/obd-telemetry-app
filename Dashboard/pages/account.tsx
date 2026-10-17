@@ -3,6 +3,7 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { apiFetch, applyAuthResponse } from '../api';
 import { useAuth } from '../context/AuthContext';
+import PageHeader from '../components/PageHeader';
 import {
   Shield, KeyRound, Smartphone, Trash2, CheckCircle2, AlertCircle, RefreshCw, Radio, Lock, Car, Plus
 } from 'lucide-react';
@@ -60,7 +61,6 @@ export default function AccountSecurityPage() {
 
   useEffect(() => {
     fetchProfileAndDevices();
-    // AuthContext owns the shared /me request; this page only loads devices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
 
@@ -91,7 +91,7 @@ export default function AccountSecurityPage() {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Failed to update password');
       }
@@ -128,311 +128,219 @@ export default function AccountSecurityPage() {
   };
 
   return (
-    <>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       <Head>
         <title>Account & Security | OBD Telemetry</title>
+        <meta name="description" content="Manage administrative credentials and authorized head unit devices" />
       </Head>
 
-      <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '1.25rem 1rem' }}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <Shield color="var(--accent-cyan)" size={28} />
-              Account & Device Security
-            </h1>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
-              Manage administrative credentials, security policy, and authorized car head units.
-            </p>
-          </div>
-
-          <Link
-            href="/pair"
-            className="glass-panel"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.75rem 1.25rem',
-              borderRadius: 'var(--radius-md)',
-              background: 'linear-gradient(135deg, rgba(94, 215, 208, 0.2), rgba(141, 156, 255, 0.2))',
-              border: '1px solid var(--border-glow)',
-              color: 'var(--text-primary)',
-              fontWeight: 600,
-              textDecoration: 'none',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
-            }}
-          >
-            <Radio size={18} color="var(--accent-cyan)" />
-            <span>Pair Car Head Unit (QR/PIN)</span>
+      <PageHeader
+        title="Account & Device Security"
+        subtitle="Manage administrative credentials, security policy, and authorized car head units."
+        action={
+          <Link href="/pair" className="btn-primary">
+            <Radio size={16} />
+            <span>Pair Car Head Unit</span>
           </Link>
+        }
+      />
+
+      {/* Security Status Banners */}
+      {mustChangePassword && (
+        <div style={{
+          padding: '1rem',
+          borderRadius: 'var(--radius-sm)',
+          background: 'var(--accent-amber-bg)',
+          border: '1px solid var(--accent-amber)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.85rem'
+        }}>
+          <AlertCircle size={22} color="var(--accent-amber)" style={{ flexShrink: 0 }} />
+          <div>
+            <strong style={{ color: 'var(--accent-amber)', fontSize: '0.9rem', display: 'block' }}>
+              Default Password Active
+            </strong>
+            <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+              Your account is using the default initial password. Please update it below to protect your vehicle telemetry.
+            </span>
+          </div>
         </div>
+      )}
 
-        {/* Security Status Banners */}
-        {mustChangePassword && (
-          <div className="glass-panel" style={{
-            padding: '1.25rem',
-            borderRadius: 'var(--radius-md)',
-            background: 'rgba(245, 158, 11, 0.12)',
-            border: '1px solid rgba(245, 158, 11, 0.4)',
-            marginBottom: '1.5rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '1rem',
-            flexWrap: 'wrap'
-          }}>
-            <div style={{ padding: '0.5rem', background: 'rgba(245, 158, 11, 0.2)', borderRadius: '50%', color: 'var(--accent-amber)' }}>
-              <AlertCircle size={24} />
+      {/* Main Grid: Change Password & Devices */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 380px), 1fr))',
+        gap: '1rem'
+      }}>
+        {/* Card: Change Password */}
+        <section className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }} aria-label="Change password">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <KeyRound size={18} color="var(--accent-cyan)" />
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              Change Password
+            </h2>
+          </div>
+
+          {pwdError && <div className="form-error">{pwdError}</div>}
+          {pwdSuccess && (
+            <div style={{ padding: '0.55rem 0.75rem', background: 'var(--accent-green-bg)', border: '1px solid var(--accent-green)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-green)', fontSize: '0.825rem' }}>
+              {pwdSuccess}
             </div>
-            <div style={{ flex: 1 }}>
-              <h3 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--accent-amber)', margin: 0 }}>
-                Initial Default Password Active
-              </h3>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '0.2rem' }}>
-                Your account is currently using the initial setup password (<code style={{ color: '#fff' }}>admin12345</code>). Please change it below to protect your vehicle telemetry and gateway control.
+          )}
+
+          <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div>
+              <label className="form-label">
+                Current / Setup Password
+              </label>
+              <input
+                type="password"
+                placeholder="e.g. admin12345"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="form-input"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="form-label">
+                New Strong Password (min 8 chars)
+              </label>
+              <input
+                type="password"
+                placeholder="Enter new strong password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="form-input"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="form-label">
+                Confirm New Password
+              </label>
+              <input
+                type="password"
+                placeholder="Confirm new password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="form-input"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={pwdLoading}
+              className="btn-primary"
+              style={{ marginTop: '0.5rem' }}
+            >
+              <Lock size={15} />
+              <span>{pwdLoading ? 'Updating Password...' : 'Update Password'}</span>
+            </button>
+          </form>
+        </section>
+
+        {/* Card: Paired Car Head Units */}
+        <section className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }} aria-label="Paired devices">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+              <Smartphone size={18} color="var(--accent-cyan)" />
+              <h2 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+                Paired Car Head Units
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={fetchProfileAndDevices}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+              title="Refresh Devices"
+              aria-label="Refresh devices list"
+            >
+              <RefreshCw size={15} />
+            </button>
+          </div>
+
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
+            Devices authorized with cryptographic bearer tokens to upload driving telemetry.
+          </p>
+
+          {devicesLoading ? (
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              Loading authorized devices...
+            </div>
+          ) : devices.length === 0 ? (
+            <div style={{
+              padding: '1.75rem 1rem',
+              textAlign: 'center',
+              background: 'var(--surface-inset)',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '0.65rem'
+            }}>
+              <Radio size={24} color="var(--text-muted)" />
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+                No vehicle head units have been paired yet.
               </p>
+              <Link href="/pair" className="btn-secondary" style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem' }}>
+                Pair First Head Unit →
+              </Link>
             </div>
-          </div>
-        )}
-
-        {/* Main Grid: Change Password & Devices */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '1.5rem' }}>
-          {/* Card: Change Password */}
-          <div className="glass-panel" style={{ padding: '1.75rem', borderRadius: 'var(--radius-lg)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
-              <div style={{ padding: '0.5rem', background: 'rgba(94, 215, 208, 0.12)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-cyan)' }}>
-                <KeyRound size={20} />
-              </div>
-              <div>
-                <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-                  Change Password
-                </h2>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
-                  Update your account credentials
-                </p>
-              </div>
-            </div>
-
-            {pwdError && (
-              <div style={{
-                padding: '0.75rem 1rem',
-                borderRadius: 'var(--radius-sm)',
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid rgba(239, 68, 68, 0.3)',
-                color: '#ff8080',
-                fontSize: '0.85rem',
-                marginBottom: '1rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem'
-              }}>
-                <AlertCircle size={16} />
-                <span>{pwdError}</span>
-              </div>
-            )}
-
-            {pwdSuccess && (
-              <div style={{
-                padding: '0.75rem 1rem',
-                borderRadius: 'var(--radius-sm)',
-                background: 'rgba(16, 185, 129, 0.15)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
-                color: 'var(--accent-green)',
-                fontSize: '0.85rem',
-                marginBottom: '1rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem'
-              }}>
-                <CheckCircle2 size={16} />
-                <span>{pwdSuccess}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div>
-                <label className="form-label">
-                  Current / Setup Password
-                </label>
-                <input
-                  type="password"
-                  placeholder="e.g. admin12345"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="form-input"
-                />
-              </div>
-
-              <div>
-                <label className="form-label">
-                  New Password (min 8 characters)
-                </label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Enter new strong password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="form-input"
-                />
-              </div>
-
-              <div>
-                <label className="form-label">
-                  Confirm New Password
-                </label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Re-enter new password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="form-input"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={pwdLoading || !newPassword}
-                className="btn-primary"
-                style={{ width: '100%', marginTop: '0.5rem' }}
-              >
-                {pwdLoading ? 'Updating Password...' : 'Save New Password'}
-              </button>
-            </form>
-          </div>
-
-          {/* Card: Paired Devices */}
-          <div className="glass-panel" style={{ padding: '1.75rem', borderRadius: 'var(--radius-lg)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{ padding: '0.5rem', background: 'rgba(141, 156, 255, 0.12)', borderRadius: 'var(--radius-sm)', color: 'var(--accent-blue)' }}>
-                  <Smartphone size={20} />
-                </div>
-                <div>
-                  <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-                    Paired Car Head Units
-                  </h2>
-                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
-                    Authorized gateway devices syncing vehicle telemetry
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={fetchProfileAndDevices}
-                style={{
-                  background: 'var(--surface-inset)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--text-secondary)',
-                  padding: '0.4rem',
-                  borderRadius: 'var(--radius-sm)',
-                  cursor: 'pointer'
-                }}
-                title="Refresh paired devices"
-              >
-                <RefreshCw size={15} className={devicesLoading ? 'animate-spin' : ''} />
-              </button>
-            </div>
-
-            {devices.length === 0 ? (
-              <div style={{
-                textAlign: 'center',
-                padding: '2.5rem 1rem',
-                border: '1px dashed var(--border)',
-                borderRadius: 'var(--radius-md)',
-                color: 'var(--text-muted)',
-                fontSize: '0.875rem'
-              }}>
-                <Radio size={32} style={{ margin: '0 auto 0.75rem auto', opacity: 0.4 }} />
-                <p>No car head units paired yet.</p>
-                <p style={{ fontSize: '0.775rem', marginTop: '0.25rem' }}>
-                  Open the OBD App on your Android head unit and scan the pairing QR code.
-                </p>
-                <Link
-                  href="/pair"
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {devices.map((dev) => (
+                <div
+                  key={dev.id}
                   style={{
-                    display: 'inline-block',
-                    marginTop: '1rem',
-                    padding: '0.5rem 1rem',
-                    borderRadius: 'var(--radius-sm)',
+                    padding: '0.85rem',
                     background: 'var(--surface-inset)',
-                    border: '1px solid var(--border-glow)',
-                    color: 'var(--accent-cyan)',
-                    fontSize: '0.8rem',
-                    textDecoration: 'none',
-                    fontWeight: 600
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.45rem'
                   }}
                 >
-                  Go to QR / PIN Pairing Page →
-                </Link>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                {devices.map((d) => (
-                  <div
-                    key={d.id}
-                    style={{
-                      padding: '1rem',
-                      borderRadius: 'var(--radius-md)',
-                      background: 'var(--surface-inset)',
-                      border: '1px solid var(--border)',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      gap: '1rem'
-                    }}
-                  >
-                    <div style={{ overflow: 'hidden' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                        <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>
-                          {d.name || 'Car Head Unit'}
-                        </span>
-                        <span style={{
-                          fontSize: '0.7rem',
-                          padding: '0.15rem 0.45rem',
-                          borderRadius: 'var(--radius-sm)',
-                          background: 'rgba(94, 215, 208, 0.15)',
-                          color: 'var(--accent-cyan)',
-                          border: '1px solid rgba(94, 215, 208, 0.3)',
-                          fontWeight: 500
-                        }}>
-                          {d.vehicleName} ({d.vehicleId})
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.35rem', display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-                        <span>Device ID: <code style={{ color: 'var(--accent-khaki)' }}>{d.id}</code></span>
-                        <span>Token: <code style={{ color: 'var(--text-muted)' }}>{d.tokenMasked}</code></span>
-                        <span>Last Active: {new Date(d.lastSeenAt).toLocaleString()}</span>
-                      </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <strong style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {dev.name || 'Head Unit'}
+                      </strong>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)', display: 'block' }}>
+                        Vehicle: {dev.vehicleName || dev.vehicleId}
+                      </span>
                     </div>
 
                     <button
                       type="button"
-                      onClick={() => handleRevokeDevice(d.id)}
-                      style={{
-                        background: 'rgba(239, 68, 68, 0.15)',
-                        border: '1px solid rgba(239, 68, 68, 0.3)',
-                        color: 'var(--accent-red)',
-                        padding: '0.5rem',
-                        borderRadius: 'var(--radius-sm)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center'
-                      }}
-                      title="Revoke and unlink device"
+                      onClick={() => handleRevokeDevice(dev.id)}
+                      className="btn-danger"
+                      style={{ padding: '0.3rem 0.55rem', fontSize: '0.75rem' }}
+                      title="Revoke Token"
                     >
-                      <Trash2 size={16} />
+                      <Trash2 size={13} />
+                      <span>Revoke</span>
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+
+                  <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span>Token: <code>{dev.tokenMasked}</code></span>
+                    <span>Last active: {dev.lastSeenAt ? new Date(dev.lastSeenAt).toLocaleString() : 'Never'}</span>
+                    {dev.fingerprint?.btMac && <span>Adapter MAC: {dev.fingerprint.btMac}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       </div>
-    </>
+    </div>
   );
 }

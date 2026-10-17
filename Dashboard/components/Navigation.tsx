@@ -1,231 +1,495 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { Activity, Clock, Fuel, Navigation as NavIcon, AlertCircle, Wrench, Car, ChevronDown, Check, Plus, Shield, Radio } from 'lucide-react';
+import {
+  Activity,
+  LayoutDashboard,
+  Route,
+  Fuel,
+  Wrench,
+  AlertCircle,
+  Clock,
+  Car,
+  Radio,
+  Shield,
+  ChevronDown,
+  Check,
+  Plus,
+  Menu,
+  X,
+  LogOut
+} from 'lucide-react';
 import { useVehicle } from '../context/VehicleContext';
 import { useAuth } from '../context/AuthContext';
 
 export default function Navigation() {
   const router = useRouter();
   const { vehicles, activeVehicleId, selectVehicle } = useVehicle();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
   const { profile, logout } = useAuth();
   const mustChangePassword = !!profile?.mustChangePassword;
-  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const navItems = [
-    { name: 'Live Telemetry', href: '/', icon: Activity },
-    { name: 'Trips', href: '/trips', icon: NavIcon },
-    { name: 'Fuel Economy', href: '/fuel', icon: Fuel },
-    { name: 'Performance', href: '/performance', icon: Clock },
-    { name: 'Diagnostics', href: '/diagnostics', icon: AlertCircle },
-    { name: 'Maintenance', href: '/maintenance', icon: Wrench },
-    { name: 'Garage & Fleet', href: '/garage', icon: Car },
-    { name: 'Pair Car (QR/PIN)', href: '/pair', icon: Radio },
-    { name: 'Account & Security', href: '/account', icon: Shield },
-  ];
+  const [vehicleMenuOpen, setVehicleMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Close dropdown on click outside
+  const vehicleMenuRef = useRef<HTMLDivElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const vehicleBtnRef = useRef<HTMLButtonElement>(null);
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const mobileBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Close menus on click outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setDropdownOpen(false);
+      if (vehicleMenuRef.current && !vehicleMenuRef.current.contains(event.target as Node)) {
+        setVehicleMenuOpen(false);
+      }
+      if (moreMenuRef.current && !moreMenuRef.current.contains(event.target as Node)) {
+        setMoreMenuOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Close menus on Escape key and return focus to appropriate toggle
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        if (vehicleMenuOpen) {
+          event.stopPropagation();
+          setVehicleMenuOpen(false);
+          vehicleBtnRef.current?.focus();
+        }
+        if (moreMenuOpen) {
+          event.stopPropagation();
+          setMoreMenuOpen(false);
+          moreBtnRef.current?.focus();
+        }
+        if (mobileMenuOpen) {
+          event.stopPropagation();
+          setMobileMenuOpen(false);
+          mobileBtnRef.current?.focus();
+        }
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [vehicleMenuOpen, moreMenuOpen, mobileMenuOpen]);
+
+  // Close menus when route changes
+  useEffect(() => {
+    setVehicleMenuOpen(false);
+    setMoreMenuOpen(false);
+    setMobileMenuOpen(false);
+  }, [router.asPath]);
+
+  const handleDropdownKeyDown = (
+    e: React.KeyboardEvent<HTMLDivElement>,
+    closeMenu: () => void,
+    triggerRef: React.RefObject<HTMLButtonElement | null>
+  ) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      e.preventDefault();
+      closeMenu();
+      triggerRef.current?.focus();
+      return;
+    }
+
+    const container = e.currentTarget;
+    const focusables = Array.from(container.querySelectorAll<HTMLElement>('button, a'));
+    if (focusables.length === 0) return;
+    const currentIndex = focusables.indexOf(document.activeElement as HTMLElement);
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = currentIndex < focusables.length - 1 ? currentIndex + 1 : 0;
+      focusables[nextIndex]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : focusables.length - 1;
+      focusables[prevIndex]?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      focusables[0]?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      focusables[focusables.length - 1]?.focus();
+    }
+  };
+
+  const handleSelectVehicle = (id: string) => {
+    selectVehicle(id);
+    setVehicleMenuOpen(false);
+    setTimeout(() => {
+      vehicleBtnRef.current?.focus();
+    }, 0);
+  };
+
   const activeVehicleName = activeVehicleId === 'all'
     ? 'All Vehicles'
-    : vehicles.find(v => v.id === activeVehicleId)?.name || 'Unknown Vehicle';
+    : vehicles.find(v => v.id === activeVehicleId)?.name || (vehicles.length > 0 ? vehicles[0].name : 'Unknown Vehicle');
+
+  const isCurrentPage = (path: string) => {
+    if (path === '/') return router.pathname === '/';
+    return router.pathname === path || router.pathname.startsWith(`${path}/`);
+  };
+
+  const isMoreActive = ['/fuel', '/maintenance', '/diagnostics', '/performance', '/garage', '/pair', '/account'].some(p => isCurrentPage(p));
 
   return (
-    <nav className="glass-panel-static app-sidebar">
-      <div className="brand-block">
-        <h2>
-          OBD Telemetry
-        </h2>
-        <p>Vehicle telemetry & fleet hub</p>
+    <header className="app-header" role="banner">
+      <div className="header-inner">
+        {/* Left: Brand & Vehicle Selector */}
+        <div className="header-brand-section">
+          <Link href="/" className="header-brand" aria-label="OBD Telemetry home">
+            <span className="brand-icon-wrapper" aria-hidden="true">
+              <Activity size={18} />
+            </span>
+            <span className="brand-name">OBD Telemetry</span>
+          </Link>
+
+          {/* Vehicle Switcher */}
+          <div className="vehicle-picker" ref={vehicleMenuRef}>
+            <button
+              ref={vehicleBtnRef}
+              type="button"
+              className="vehicle-picker-btn"
+              onClick={() => setVehicleMenuOpen(prev => !prev)}
+              aria-expanded={vehicleMenuOpen}
+              aria-controls="vehicle-picker-dropdown"
+              aria-label={`Current vehicle: ${activeVehicleName}. Click to switch vehicle.`}
+            >
+              <Car size={15} className="vehicle-picker-icon" aria-hidden="true" />
+              <span className="vehicle-picker-name">{activeVehicleName}</span>
+              <ChevronDown
+                size={14}
+                className="vehicle-picker-chevron"
+                style={{ transform: vehicleMenuOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}
+                aria-hidden="true"
+              />
+            </button>
+
+            {vehicleMenuOpen && (
+              <div
+                id="vehicle-picker-dropdown"
+                className="vehicle-dropdown-menu"
+                aria-label="Select vehicle"
+                onKeyDown={e => handleDropdownKeyDown(e, () => setVehicleMenuOpen(false), vehicleBtnRef)}
+              >
+                <button
+                  type="button"
+                  className={`vehicle-menu-item ${activeVehicleId === 'all' ? 'active' : ''}`}
+                  onClick={() => handleSelectVehicle('all')}
+                >
+                  <span className="vehicle-menu-item-name">All Vehicles (Summary)</span>
+                  {activeVehicleId === 'all' && <Check size={14} className="check-icon" aria-hidden="true" />}
+                </button>
+
+                <div className="dropdown-divider" />
+
+                {vehicles.map((v) => {
+                  const isSelected = activeVehicleId === v.id;
+                  return (
+                    <button
+                      key={v.id}
+                      type="button"
+                      className={`vehicle-menu-item ${isSelected ? 'active' : ''}`}
+                      onClick={() => handleSelectVehicle(v.id)}
+                    >
+                      <div className="vehicle-menu-item-info">
+                        <span className="vehicle-menu-item-name">{v.name}</span>
+                        <span className="vehicle-menu-item-sub">
+                          {v.tankLitres ? `${v.tankLitres}L Tank` : 'Standard Tank'}
+                        </span>
+                      </div>
+                      {isSelected && <Check size={14} className="check-icon" aria-hidden="true" />}
+                    </button>
+                  );
+                })}
+
+                <div className="dropdown-divider" />
+
+                <Link
+                  href="/garage"
+                  className="vehicle-menu-manage-link"
+                  onClick={() => setVehicleMenuOpen(false)}
+                >
+                  <Plus size={13} aria-hidden="true" />
+                  <span>Manage Garage / Add Vehicle</span>
+                </Link>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Center / Right: Desktop Horizontal Nav */}
+        <nav className="desktop-nav" aria-label="Main navigation">
+          <Link
+            href="/"
+            className={`nav-link ${isCurrentPage('/') ? 'active' : ''}`}
+            aria-current={isCurrentPage('/') ? 'page' : undefined}
+          >
+            <Activity size={15} aria-hidden="true" />
+            <span>Readings</span>
+          </Link>
+
+          <Link
+            href="/overview"
+            className={`nav-link ${isCurrentPage('/overview') ? 'active' : ''}`}
+            aria-current={isCurrentPage('/overview') ? 'page' : undefined}
+          >
+            <LayoutDashboard size={15} aria-hidden="true" />
+            <span>Overview</span>
+          </Link>
+
+          <Link
+            href="/trips"
+            className={`nav-link ${isCurrentPage('/trips') ? 'active' : ''}`}
+            aria-current={isCurrentPage('/trips') ? 'page' : undefined}
+          >
+            <Route size={15} aria-hidden="true" />
+            <span>Trips</span>
+          </Link>
+
+          {/* More menu for grouped secondary destinations */}
+          <div className="more-menu-container" ref={moreMenuRef}>
+            <button
+              ref={moreBtnRef}
+              type="button"
+              className={`nav-link more-btn ${isMoreActive ? 'active' : ''}`}
+              onClick={() => setMoreMenuOpen(prev => !prev)}
+              aria-expanded={moreMenuOpen}
+              aria-controls="more-nav-dropdown"
+              aria-label="More navigation options"
+            >
+              <span>More</span>
+              <ChevronDown
+                size={13}
+                style={{ transform: moreMenuOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}
+                aria-hidden="true"
+              />
+            </button>
+
+            {moreMenuOpen && (
+              <div
+                id="more-nav-dropdown"
+                className="more-dropdown-menu"
+                aria-label="Vehicle & management options"
+                onKeyDown={e => handleDropdownKeyDown(e, () => setMoreMenuOpen(false), moreBtnRef)}
+              >
+                <div className="dropdown-section-title">Vehicle Care</div>
+                <Link
+                  href="/fuel"
+                  className={`more-dropdown-item ${isCurrentPage('/fuel') ? 'active' : ''}`}
+                  onClick={() => setMoreMenuOpen(false)}
+                >
+                  <Fuel size={15} aria-hidden="true" />
+                  <span>Fuel & Economy</span>
+                </Link>
+                <Link
+                  href="/maintenance"
+                  className={`more-dropdown-item ${isCurrentPage('/maintenance') ? 'active' : ''}`}
+                  onClick={() => setMoreMenuOpen(false)}
+                >
+                  <Wrench size={15} aria-hidden="true" />
+                  <span>Maintenance</span>
+                </Link>
+                <Link
+                  href="/diagnostics"
+                  className={`more-dropdown-item ${isCurrentPage('/diagnostics') ? 'active' : ''}`}
+                  onClick={() => setMoreMenuOpen(false)}
+                >
+                  <AlertCircle size={15} aria-hidden="true" />
+                  <span>Diagnostics & Codes</span>
+                </Link>
+                <Link
+                  href="/performance"
+                  className={`more-dropdown-item ${isCurrentPage('/performance') ? 'active' : ''}`}
+                  onClick={() => setMoreMenuOpen(false)}
+                >
+                  <Clock size={15} aria-hidden="true" />
+                  <span>Performance</span>
+                </Link>
+
+                <div className="dropdown-divider" />
+                <div className="dropdown-section-title">Manage</div>
+
+                <Link
+                  href="/garage"
+                  className={`more-dropdown-item ${isCurrentPage('/garage') ? 'active' : ''}`}
+                  onClick={() => setMoreMenuOpen(false)}
+                >
+                  <Car size={15} aria-hidden="true" />
+                  <span>Garage & Fleet</span>
+                </Link>
+                <Link
+                  href="/pair"
+                  className={`more-dropdown-item ${isCurrentPage('/pair') ? 'active' : ''}`}
+                  onClick={() => setMoreMenuOpen(false)}
+                >
+                  <Radio size={15} aria-hidden="true" />
+                  <span>Pair Car (QR/PIN)</span>
+                </Link>
+                <Link
+                  href="/account"
+                  className={`more-dropdown-item ${isCurrentPage('/account') ? 'active' : ''}`}
+                  onClick={() => setMoreMenuOpen(false)}
+                >
+                  <Shield size={15} aria-hidden="true" />
+                  <span>Account & Security</span>
+                </Link>
+
+                <div className="dropdown-divider" />
+
+                <button
+                  type="button"
+                  className="more-dropdown-item logout-btn"
+                  onClick={() => { setMoreMenuOpen(false); logout(); }}
+                >
+                  <LogOut size={15} aria-hidden="true" />
+                  <span>Sign out</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {mustChangePassword && (
+            <Link href="/account" className="password-alert-pill" title="Default password active - change now">
+              <AlertCircle size={13} aria-hidden="true" />
+              <span>Change Password</span>
+            </Link>
+          )}
+        </nav>
+
+        {/* Mobile Menu Toggle Button */}
+        <div className="mobile-header-actions">
+          {mustChangePassword && (
+            <Link href="/account" className="password-alert-pill-compact" aria-label="Password change required">
+              <AlertCircle size={14} aria-hidden="true" />
+            </Link>
+          )}
+          <button
+            ref={mobileBtnRef}
+            type="button"
+            className="mobile-menu-btn"
+            onClick={() => setMobileMenuOpen(prev => !prev)}
+            aria-expanded={mobileMenuOpen}
+            aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          >
+            {mobileMenuOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
+          </button>
+        </div>
       </div>
 
-      {mustChangePassword && (
-        <div style={{
-          margin: '0 0.5rem 0.75rem 0.5rem',
-          padding: '0.65rem 0.75rem',
-          borderRadius: 'var(--radius-md)',
-          background: 'rgba(255, 149, 0, 0.15)',
-          border: '1px solid rgba(255, 149, 0, 0.4)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.35rem'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#FFA500', fontSize: '0.8rem', fontWeight: 600 }}>
-            <AlertCircle size={14} />
-            <span>Default Password Active</span>
-          </div>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.3 }}>
-            Your account requires changing the temporary password.
-          </span>
-          <Link
-            href="/account"
-            style={{
-              marginTop: '0.2rem',
-              display: 'inline-block',
-              textAlign: 'center',
-              padding: '0.35rem 0.5rem',
-              background: '#FFA500',
-              color: '#000',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: '0.725rem',
-              fontWeight: 700,
-              textDecoration: 'none'
-            }}
-          >
-            Change Password Now →
-          </Link>
-        </div>
-      )}
-
-      {/* Vehicle Switcher Pill */}
-      <div className="vehicle-switcher-container" ref={dropdownRef} style={{ position: 'relative', padding: '0 0.5rem 1rem 0.5rem' }}>
-        <button
-          type="button"
-          className="glass-panel"
-          onClick={() => setDropdownOpen(!dropdownOpen)}
-          style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0.65rem 0.85rem',
-            borderRadius: 'var(--radius-md)',
-            background: 'var(--surface-inset)',
-            border: '1px solid var(--border)',
-            color: 'var(--text-primary)',
-            cursor: 'pointer',
-            fontSize: '0.875rem',
-            fontWeight: 500,
-            transition: 'all 0.2s ease',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', overflow: 'hidden' }}>
-            <Car size={16} color="var(--accent-cyan)" />
-            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {activeVehicleName}
-            </span>
-          </div>
-          <ChevronDown size={14} style={{ transform: dropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
-        </button>
-
-        {dropdownOpen && (
-          <div
-            className="glass-panel"
-            style={{
-              position: 'absolute',
-              top: 'calc(100% + 4px)',
-              left: '0.5rem',
-              right: '0.5rem',
-              zIndex: 100,
-              background: 'rgba(18, 24, 32, 0.96)',
-              backdropFilter: 'blur(16px)',
-              border: '1px solid var(--border-glow)',
-              borderRadius: 'var(--radius-md)',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.6)',
-              overflow: 'hidden',
-              padding: '0.35rem',
-            }}
-          >
-            <div
-              onClick={() => { selectVehicle('all'); setDropdownOpen(false); }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '0.5rem 0.75rem',
-                borderRadius: 'var(--radius-sm)',
-                cursor: 'pointer',
-                fontSize: '0.825rem',
-                color: activeVehicleId === 'all' ? 'var(--accent-cyan)' : 'var(--text-primary)',
-                background: activeVehicleId === 'all' ? 'rgba(94, 215, 208, 0.12)' : 'transparent',
-              }}
+      {/* Accessible Mobile Navigation Drawer */}
+      {mobileMenuOpen && (
+        <nav className="mobile-nav-drawer" aria-label="Mobile navigation">
+          <div className="mobile-nav-group">
+            <div className="mobile-nav-caption">Primary</div>
+            <Link
+              href="/"
+              className={`mobile-nav-link ${isCurrentPage('/') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/') ? 'page' : undefined}
             >
-              <span>🌐 All Vehicles (Combined)</span>
-              {activeVehicleId === 'all' && <Check size={14} color="var(--accent-cyan)" />}
-            </div>
+              <Activity size={17} aria-hidden="true" />
+              <span>Readings</span>
+            </Link>
+            <Link
+              href="/overview"
+              className={`mobile-nav-link ${isCurrentPage('/overview') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/overview') ? 'page' : undefined}
+            >
+              <LayoutDashboard size={17} aria-hidden="true" />
+              <span>Overview</span>
+            </Link>
+            <Link
+              href="/trips"
+              className={`mobile-nav-link ${isCurrentPage('/trips') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/trips') ? 'page' : undefined}
+            >
+              <Route size={17} aria-hidden="true" />
+              <span>Trips</span>
+            </Link>
+          </div>
 
-            <div style={{ height: '1px', background: 'var(--border)', margin: '0.25rem 0' }} />
+          <div className="mobile-nav-group">
+            <div className="mobile-nav-caption">Vehicle</div>
+            <Link
+              href="/fuel"
+              className={`mobile-nav-link ${isCurrentPage('/fuel') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/fuel') ? 'page' : undefined}
+            >
+              <Fuel size={17} aria-hidden="true" />
+              <span>Fuel Economy</span>
+            </Link>
+            <Link
+              href="/maintenance"
+              className={`mobile-nav-link ${isCurrentPage('/maintenance') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/maintenance') ? 'page' : undefined}
+            >
+              <Wrench size={17} aria-hidden="true" />
+              <span>Maintenance</span>
+            </Link>
+            <Link
+              href="/diagnostics"
+              className={`mobile-nav-link ${isCurrentPage('/diagnostics') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/diagnostics') ? 'page' : undefined}
+            >
+              <AlertCircle size={17} aria-hidden="true" />
+              <span>Diagnostics</span>
+            </Link>
+            <Link
+              href="/performance"
+              className={`mobile-nav-link ${isCurrentPage('/performance') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/performance') ? 'page' : undefined}
+            >
+              <Clock size={17} aria-hidden="true" />
+              <span>Performance</span>
+            </Link>
+          </div>
 
-            {vehicles.map((v) => {
-              const isSelected = activeVehicleId === v.id;
-              return (
-                <div
-                  key={v.id}
-                  onClick={() => { selectVehicle(v.id); setDropdownOpen(false); }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '0.5rem 0.75rem',
-                    borderRadius: 'var(--radius-sm)',
-                    cursor: 'pointer',
-                    fontSize: '0.825rem',
-                    color: isSelected ? 'var(--accent-cyan)' : 'var(--text-primary)',
-                    background: isSelected ? 'rgba(94, 215, 208, 0.12)' : 'transparent',
-                  }}
-                >
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontWeight: isSelected ? 600 : 400 }}>{v.name}</span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                      {v.tankLitres ? `${v.tankLitres}L Tank` : 'Standard Tank'}
-                    </span>
-                  </div>
-                  {isSelected && <Check size={14} color="var(--accent-cyan)" />}
-                </div>
-              );
-            })}
-
-            <div style={{ height: '1px', background: 'var(--border)', margin: '0.25rem 0' }} />
-
+          <div className="mobile-nav-group">
+            <div className="mobile-nav-caption">Manage</div>
             <Link
               href="/garage"
-              prefetch={false}
-              onClick={() => setDropdownOpen(false)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                padding: '0.5rem 0.75rem',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '0.775rem',
-                color: 'var(--accent-khaki)',
-                textDecoration: 'none',
-              }}
+              className={`mobile-nav-link ${isCurrentPage('/garage') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/garage') ? 'page' : undefined}
             >
-              <Plus size={13} />
-              <span>Manage Garage / Add Vehicle</span>
+              <Car size={17} aria-hidden="true" />
+              <span>Garage & Fleet</span>
+            </Link>
+            <Link
+              href="/pair"
+              className={`mobile-nav-link ${isCurrentPage('/pair') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/pair') ? 'page' : undefined}
+            >
+              <Radio size={17} aria-hidden="true" />
+              <span>Pair Car (QR/PIN)</span>
+            </Link>
+            <Link
+              href="/account"
+              className={`mobile-nav-link ${isCurrentPage('/account') ? 'active' : ''}`}
+              aria-current={isCurrentPage('/account') ? 'page' : undefined}
+            >
+              <Shield size={17} aria-hidden="true" />
+              <span>Account & Security</span>
             </Link>
           </div>
-        )}
-      </div>
 
-      <div className="nav-items-container">
-        {navItems.map((item) => {
-          const isActive = router.pathname === item.href;
-          const Icon = item.icon;
-          
-          return (
-            <Link key={item.name} href={item.href} prefetch={false} className={`nav-item ${isActive ? 'active' : ''}`}>
-              <Icon size={18} />
-              <span>{item.name}</span>
-            </Link>
-          );
-        })}
-        <button type="button" className="nav-item nav-logout" onClick={() => logout()}>
-          <Shield size={18} />
-          <span>Sign out</span>
-        </button>
-      </div>
-    </nav>
+          <div className="mobile-nav-footer">
+            <button
+              type="button"
+              className="mobile-nav-logout-btn"
+              onClick={() => logout()}
+            >
+              <LogOut size={16} aria-hidden="true" />
+              <span>Sign out</span>
+            </button>
+          </div>
+        </nav>
+      )}
+    </header>
   );
 }
