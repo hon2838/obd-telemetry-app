@@ -1,131 +1,87 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/cockpitRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="6dp">
+    android:background="@color/background"
+    android:padding="4dp">
 
-    <!-- Row 1: Primary Instrument Cluster & Center Info Hub -->
-    <LinearLayout
-        android:layout_width="match_parent"
+    <!-- Pre-inflated 12 polymorphic telemetry slots.
+         Dynamic layout topologies (COMPACT_LAND, ULTRAWIDE_LAND, PORTRAIT_COCKPIT, EXPANSIVE_LAND)
+         are programmatically constructed via ConstraintSet blueprints in CockpitConstraintBuilder. -->
+
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot0"
+        android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_weight="1.2"
-        android:orientation="horizontal"
-        android:layout_marginBottom="4dp">
+        android:layout_margin="2dp" />
 
-        <!-- Slot 0: Primary Left (e.g. Speed Dial) -->
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot0"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1.05"
-            android:layout_marginEnd="3dp" />
-
-        <!-- Center Information Display (CID): 2 stacked secondary widgets -->
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="0.9"
-            android:orientation="vertical"
-            android:layout_marginHorizontal="3dp">
-
-            <!-- Slot 6: Center Top (e.g. Timing Advance / 0-100 Sprint) -->
-            <com.example.obdapp.TelemetryWidgetView
-                android:id="@+id/widgetSlot6"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1"
-                android:layout_marginBottom="2dp" />
-
-            <!-- Slot 7: Center Bottom (e.g. Fuel Rate / Instant Economy) -->
-            <com.example.obdapp.TelemetryWidgetView
-                android:id="@+id/widgetSlot7"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1"
-                android:layout_marginTop="2dp" />
-        </LinearLayout>
-
-        <!-- Slot 1: Primary Right (e.g. RPM Dial) -->
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot1"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1.05"
-            android:layout_marginStart="3dp" />
-    </LinearLayout>
-
-    <!-- Row 2: Powertrain Dynamics (4 columns) -->
-    <LinearLayout
-        android:layout_width="match_parent"
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot1"
+        android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_weight="0.9"
-        android:orientation="horizontal"
-        android:layout_marginBottom="4dp">
+        android:layout_margin="2dp" />
 
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot2"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginEnd="3dp" />
-
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot3"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginHorizontal="3dp" />
-
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot4"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginHorizontal="3dp" />
-
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot5"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginStart="3dp" />
-    </LinearLayout>
-
-    <!-- Row 3: Auxiliary & Manifold Sensors (4 columns) -->
-    <LinearLayout
-        android:layout_width="match_parent"
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot2"
+        android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_weight="0.9"
-        android:orientation="horizontal">
+        android:layout_margin="2dp" />
 
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot8"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginEnd="3dp" />
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot3"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
 
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot9"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginHorizontal="3dp" />
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot4"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
 
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot10"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginHorizontal="3dp" />
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot5"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
 
-        <com.example.obdapp.TelemetryWidgetView
-            android:id="@+id/widgetSlot11"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginStart="3dp" />
-    </LinearLayout>
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot6"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
 
-</LinearLayout>
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot7"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
+
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot8"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
+
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot9"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
+
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot10"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
+
+    <com.example.obdapp.TelemetryWidgetView
+        android:id="@+id/widgetSlot11"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_margin="2dp" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
