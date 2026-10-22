@@ -31,12 +31,12 @@ function normalizeTripRecords(records) {
   for (const record of records) {
     if (!numeric(record.timestamp)) { invalidTimestampCount++; continue; }
     const vehicle = record.vehicleId || 'default';
-    const key = record.eventId ? JSON.stringify([vehicle, record.eventId]) : Symbol();
+    const key = record.eventId ? `${vehicle}\u0000${record.eventId}` : Symbol();
     if (events.has(key)) duplicateCount++;
     events.set(key, latest(events.get(key), record));
   }
   for (const record of events.values()) {
-    const key = JSON.stringify([record.vehicleId || 'default', record.timestamp]);
+    const key = `${record.vehicleId || 'default'}\u0000${record.timestamp}`;
     if (captures.has(key)) duplicateCount++;
     captures.set(key, latest(captures.get(key), record));
   }

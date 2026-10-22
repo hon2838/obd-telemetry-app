@@ -7,11 +7,11 @@ const { initSqliteStorage } = require('./sqlite_storage');
 const SERVER_FILE = path.join(__dirname, 'server.js');
 const API_KEY = 'k'.repeat(64);
 
-function runServerProbe(dataDir, body) {
+function runServerProbe(dataDir, body, storageEngine = 'sqlite') {
   const code = `
     process.env.NODE_ENV = 'test';
     process.env.OBD_DATA_DIR = ${JSON.stringify(dataDir)};
-    process.env.OBD_STORAGE_ENGINE = 'sqlite';
+    process.env.OBD_STORAGE_ENGINE = ${JSON.stringify(storageEngine)};
     process.env.OBD_API_KEY = ${JSON.stringify(API_KEY)};
     process.env.OBD_INITIAL_ADMIN_PASSWORD = 'BoundedAdmin123!';
     const backend = require(${JSON.stringify(SERVER_FILE)});
@@ -233,5 +233,129 @@ describe('Bounded SQLite Telemetry Engine', () => {
     expect(result.deleteStatus).toBe(200);
     expect(result.inMemoryLength).toBe(0);
     expect(result.dbVehicles).toEqual(['default', 'default']);
+  });
+
+  test('idx_telemetry_vehicle_time does not exist while idx_telemetry_vehicle_time_seq exists and legacy index is dropped', () => {
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    let storage = initSqliteStorage(sqlitePath);
+    let indexes = storage.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(r => r.name);
+    expect(indexes).toContain('idx_telemetry_vehicle_time_seq');
+    expect(indexes).not.toContain('idx_telemetry_vehicle_time');
+
+    // Simulate existing legacy database having idx_telemetry_vehicle_time
+    storage.db.exec('CREATE INDEX idx_telemetry_vehicle_time ON telemetry(vehicle_id, timestamp);');
+    indexes = storage.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(r => r.name);
+    expect(indexes).toContain('idx_telemetry_vehicle_time');
+    storage.close();
+
+    // Re-initialization should drop idx_telemetry_vehicle_time
+    storage = initSqliteStorage(sqlitePath);
+    indexes = storage.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(r => r.name);
+    expect(indexes).toContain('idx_telemetry_vehicle_time_seq');
+    expect(indexes).not.toContain('idx_telemetry_vehicle_time');
+    storage.close();
+  });
+
+  test('streaming segmentDrives() in SQLite mode produces identical drives and summaries as JSON mode', () => {
+    const baseTime = 1700000000000;
+    const testRecords = [
+      // car-alpha Drive 1 (harsh acceleration & braking, high RPM, fuel rate)
+      { timestamp: baseTime, vehicleId: 'car-alpha', eventId: 'ca-1', speed: 0, rpm: 800, fuelLevel: 95.0, latitude: 37.7749, longitude: -122.4194, fuelSystemStatus: 2, estimatedFuelRateLph: 1.2, ingestSeq: 1 },
+      { timestamp: baseTime + 2000, vehicleId: 'car-alpha', eventId: 'ca-2', speed: 30, rpm: 4200, fuelLevel: 94.8, latitude: 37.7752, longitude: -122.4196, fuelSystemStatus: 2, estimatedFuelRateLph: 8.5, ingestSeq: 2 },
+      { timestamp: baseTime + 4000, vehicleId: 'car-alpha', eventId: 'ca-3', speed: 5, rpm: 1500, fuelLevel: 94.5, latitude: 37.7755, longitude: -122.4198, fuelSystemStatus: 2, estimatedFuelRateLph: 2.0, ingestSeq: 3 },
+      { timestamp: baseTime + 6000, vehicleId: 'car-alpha', eventId: 'ca-4', speed: 20, rpm: 2200, fuelLevel: 94.4, latitude: 37.7758, longitude: -122.4200, fuelSystemStatus: 2, estimatedFuelRateLph: 3.5, ingestSeq: 4 },
+      // Duplicate timestamp for car-alpha (deduplicated by timestamp tie-breaker in trip calculations)
+      { timestamp: baseTime + 6000, vehicleId: 'car-alpha', eventId: 'ca-4b', speed: 20, rpm: 2200, fuelLevel: 94.4, latitude: 37.7758, longitude: -122.4200, fuelSystemStatus: 2, estimatedFuelRateLph: 3.5, ingestSeq: 5 },
+      { timestamp: -1, vehicleId: 'car-alpha', eventId: 'ca-invalid', speed: 50, rpm: 2000, ingestSeq: 6 },
+
+      // car-alpha Drive 2 (after 6-minute gap > 5-min threshold)
+      { timestamp: baseTime + 370000, vehicleId: 'car-alpha', eventId: 'ca-5', speed: 40, rpm: 2500, fuelLevel: 90.0, latitude: 37.7800, longitude: -122.4250, fuelSystemStatus: 2, estimatedFuelRateLph: 4.5, ingestSeq: 7 },
+      { timestamp: baseTime + 380000, vehicleId: 'car-alpha', eventId: 'ca-6', speed: 60, rpm: 3000, fuelLevel: 89.5, latitude: 37.7850, longitude: -122.4300, fuelSystemStatus: 2, estimatedFuelRateLph: 6.0, ingestSeq: 8 },
+
+      // car-beta Drive 1 (interleaved chronologically with car-alpha)
+      { timestamp: baseTime + 10000, vehicleId: 'car-beta', eventId: 'cb-1', speed: 10, rpm: 1200, fuelLevel: 50.0, latitude: 37.7000, longitude: -122.4000, fuelSystemStatus: 2, estimatedFuelRateLph: 2.0, ingestSeq: 9 },
+      { timestamp: baseTime + 12000, vehicleId: 'car-beta', eventId: 'cb-2', speed: 45, rpm: 4800, fuelLevel: 49.5, latitude: 37.7010, longitude: -122.4010, fuelSystemStatus: 2, estimatedFuelRateLph: 9.0, ingestSeq: 10 },
+      { timestamp: baseTime + 14000, vehicleId: 'car-beta', eventId: 'cb-3', speed: 10, rpm: 1800, fuelLevel: 49.0, latitude: 37.7020, longitude: -122.4020, fuelSystemStatus: 2, estimatedFuelRateLph: 2.5, ingestSeq: 11 },
+
+      // car-beta Drive 2 (after 6-minute gap)
+      { timestamp: baseTime + 385000, vehicleId: 'car-beta', eventId: 'cb-4', speed: 55, rpm: 2800, fuelLevel: 45.0, latitude: 37.7100, longitude: -122.4100, fuelSystemStatus: 2, estimatedFuelRateLph: 5.5, ingestSeq: 12 },
+      { timestamp: baseTime + 395000, vehicleId: 'car-beta', eventId: 'cb-5', speed: 65, rpm: 3200, fuelLevel: 44.2, latitude: 37.7200, longitude: -122.4200, fuelSystemStatus: 2, estimatedFuelRateLph: 6.5, ingestSeq: 13 }
+    ];
+
+    // Seed SQLite
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    const storage = initSqliteStorage(sqlitePath);
+    storage.appendBatch(testRecords);
+    storage.close();
+
+    const testVehicles = [
+      { id: 'car-alpha', name: 'Alpha Car', tankLitres: 50 },
+      { id: 'car-beta', name: 'Beta Car', tankLitres: 60 }
+    ];
+
+    // 1. Run in SQLite mode
+    const sqliteResult = runServerProbe(tempDir, `
+      for (const v of ${JSON.stringify(testVehicles)}) {
+        backend.vehiclesStore.push(v);
+      }
+      const allDrives = backend.segmentDrives();
+      const alphaDrives = backend.segmentDrives('car-alpha');
+      const betaDrives = backend.segmentDrives('car-beta');
+      const filteredDrives = backend.segmentDrives(['car-alpha', 'car-beta']);
+      const emptyDrives = backend.segmentDrives([]);
+      process.stdout.write(JSON.stringify({
+        allDrives,
+        alphaDrives,
+        betaDrives,
+        filteredDrives,
+        emptyDrives
+      }));
+    `, 'sqlite');
+
+    // 2. Run in JSON mode
+    const jsonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-json-comp-'));
+    let jsonResult;
+    try {
+      jsonResult = runServerProbe(jsonDir, `
+        for (const v of ${JSON.stringify(testVehicles)}) {
+          backend.vehiclesStore.push(v);
+        }
+        backend.telemetryDataStore.push(...${JSON.stringify(testRecords)});
+        const allDrives = backend.segmentDrives();
+        const alphaDrives = backend.segmentDrives('car-alpha');
+        const betaDrives = backend.segmentDrives('car-beta');
+        const filteredDrives = backend.segmentDrives(['car-alpha', 'car-beta']);
+        const emptyDrives = backend.segmentDrives([]);
+        process.stdout.write(JSON.stringify({
+          allDrives,
+          alphaDrives,
+          betaDrives,
+          filteredDrives,
+          emptyDrives
+        }));
+      `, 'json');
+    } finally {
+      fs.rmSync(jsonDir, { recursive: true, force: true });
+    }
+
+    // Verify both modes yield identical output
+    expect(sqliteResult.allDrives).toHaveLength(4);
+    expect(sqliteResult.allDrives).toEqual(jsonResult.allDrives);
+    expect(sqliteResult.alphaDrives).toHaveLength(2);
+    expect(sqliteResult.alphaDrives).toEqual(jsonResult.alphaDrives);
+    expect(sqliteResult.betaDrives).toHaveLength(2);
+    expect(sqliteResult.betaDrives).toEqual(jsonResult.betaDrives);
+    expect(sqliteResult.filteredDrives).toEqual(jsonResult.filteredDrives);
+    expect(sqliteResult.emptyDrives).toEqual([]);
+    expect(sqliteResult.emptyDrives).toEqual(jsonResult.emptyDrives);
+
+    // Verify harsh events and score penalties
+    const alphaD1 = sqliteResult.allDrives.find(d => d.id === 'car-alpha-1');
+    expect(alphaD1).toBeDefined();
+    expect(alphaD1.summary.harshEvents.accel).toBe(1);
+    expect(alphaD1.summary.harshEvents.brake).toBe(1);
+    expect(alphaD1.summary.driverScore).toBeLessThan(100);
+    expect(alphaD1.summary.fuelEfficiencySource).toBe('legacy-tank-level-drop');
+    expect(alphaD1.summary.legacyTankEstimate.tankLitres).toBe(50);
   });
 });

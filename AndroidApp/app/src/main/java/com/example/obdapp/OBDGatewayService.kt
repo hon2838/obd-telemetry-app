@@ -242,6 +242,8 @@ class OBDGatewayService : Service(), LocationListener {
     private var syncJob: Job? = null
     private val syncWakeupChannel = Channel<Unit>(Channel.CONFLATED)
 
+    private val persistencePolicy = TelemetryPersistencePolicy()
+
     @Volatile private var obdCapabilities: ObdCapabilities = ObdCapabilities.EMPTY
 
     // Slow PID cache and timestamps
@@ -785,6 +787,7 @@ class OBDGatewayService : Service(), LocationListener {
     @Synchronized
     private fun startCollectorJob() {
         if (collectorJob?.isActive == true) return
+        persistencePolicy.reset()
         collectorJob = serviceScope.launch {
             val db = AppDatabase.getDatabase(applicationContext)
             val dao = db.telemetryDao()
@@ -972,7 +975,9 @@ class OBDGatewayService : Service(), LocationListener {
                     )
 
                     // Local persistence is independent of networking or slow PID completion
-                    dao.insert(telemetry)
+                    if (persistencePolicy.shouldPersist(telemetry, obdConnection != null, gpsFix != null)) {
+                        dao.insert(telemetry)
+                    }
 
                     val effectiveSpeed = gpsFix?.speedKmh ?: speed?.toFloat()
                     val effectiveSpeedSource = if (gpsFix?.speedKmh != null) "GPS" else if (speed != null) "OBD" else ""
@@ -1141,6 +1146,7 @@ class OBDGatewayService : Service(), LocationListener {
         super.onDestroy()
         isRunning = false
         GatewayStatusStore.setRunning(false)
+        persistencePolicy.reset()
         OutboxUploader.commandHandler = null
         stopAllJobs()
         serviceJob.cancel()
