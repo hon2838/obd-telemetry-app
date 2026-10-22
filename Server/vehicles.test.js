@@ -19,6 +19,7 @@ const {
   segmentDrives,
   telemetryDataStore,
   vehiclesStore,
+  replaceArrayContents,
   DEFAULT_VEHICLE_ID,
 } = require('./server');
 
@@ -295,6 +296,39 @@ describe('Multi-vehicle support', () => {
       expect(defaultScope.json().some(l => l.odometer === 50000)).toBe(true);
     });
 
+    it('reassigns records with production-scale telemetry volume without RangeError or state tearing', async () => {
+      await createVehicle({ name: 'Scale Car', vehicleId: 'scale-car' });
+      // Simulate production row volume (230,000 rows)
+      const count = 230000;
+      telemetryDataStore.length = 0;
+      const baseTime = Date.now() - count * 1000;
+      for (let i = 0; i < count; i++) {
+        telemetryDataStore.push({
+          timestamp: baseTime + i * 1000,
+          vehicleId: i < 5000 ? 'scale-car' : DEFAULT_VEHICLE_ID,
+          ingestSeq: i + 1,
+        });
+      }
+
+      const res = await fastify.inject({
+        method: 'DELETE',
+        url: '/api/vehicles/scale-car?reassign=default',
+        headers: AUTH,
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Verify the vehicle is deleted from the registry
+      const registry = await fastify.inject({ method: 'GET', url: '/api/vehicles', headers: AUTH });
+      expect(registry.json().some(v => v.id === 'scale-car')).toBe(false);
+
+      // Verify all telemetry records were reassigned and total count is preserved
+      expect(telemetryDataStore.length).toBe(count);
+      expect(telemetryDataStore.every(r => r.vehicleId === DEFAULT_VEHICLE_ID)).toBe(true);
+
+      // Cleanup
+      telemetryDataStore.length = 0;
+    });
+
     it('refuses deleting the default vehicle', async () => {
       const res = await fastify.inject({ method: 'DELETE', url: `/api/vehicles/${DEFAULT_VEHICLE_ID}`, headers: AUTH });
       expect(res.statusCode).toBe(400);
@@ -330,6 +364,37 @@ describe('Multi-vehicle support', () => {
       const defaultStatus = await fastify.inject({ method: 'GET', url: '/api/maintenance/status', headers: AUTH });
       // The default vehicle has no maintenance items of its own
       expect(defaultStatus.json().okCount).toBe(0);
+    });
+  });
+
+  describe('replaceArrayContents', () => {
+    it('handles 250,000+ elements without RangeError or stack overflow', () => {
+      const target = [1, 2, 3];
+      const largeSource = Array.from({ length: 250000 }, (_, i) => i);
+      expect(() => replaceArrayContents(target, largeSource)).not.toThrow();
+      expect(target.length).toBe(250000);
+      expect(target[0]).toBe(0);
+      expect(target[target.length - 1]).toBe(249999);
+    });
+
+    it('mutates target in place preserving array reference identity', () => {
+      const target = ['a', 'b'];
+      const alias = target;
+      replaceArrayContents(target, ['c', 'd', 'e']);
+      expect(alias).toBe(target);
+      expect(target).toEqual(['c', 'd', 'e']);
+    });
+
+    it('safely handles empty arrays and self-assignment', () => {
+      const target = [1, 2];
+      replaceArrayContents(target, target);
+      expect(target).toEqual([1, 2]);
+
+      replaceArrayContents(target, []);
+      expect(target).toEqual([]);
+
+      replaceArrayContents(target, null);
+      expect(target).toEqual([]);
     });
   });
 });

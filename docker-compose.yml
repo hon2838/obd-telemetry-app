@@ -26,6 +26,7 @@ services:
       - DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL:-https://obd.hon2838.name.my}
       - API_PUBLIC_URL=${NEXT_PUBLIC_API_URL:-https://obd-api.hon2838.name.my}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      - NODE_OPTIONS=${NODE_OPTIONS:-}
       - NODE_ENV=production
     volumes:
       - server-data:/app/data
