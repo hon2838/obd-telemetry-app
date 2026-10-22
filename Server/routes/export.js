@@ -50,10 +50,14 @@ async function exportRoutes(fastify, options) {
     getDriveBounds,
     telemetryDataStore,
     DEFAULT_VEHICLE_ID,
-    getRecordSpeed
+    getRecordSpeed,
+    sqliteStorage
   } = options;
 
   function driveRecords(bounds) {
+    if (sqliteStorage) {
+      return sqliteStorage.getRecordsForDrive(bounds.vehicleId || DEFAULT_VEHICLE_ID, bounds.startTime, bounds.endTime);
+    }
     return telemetryDataStore.filter(record =>
       record.timestamp >= bounds.startTime && record.timestamp <= bounds.endTime &&
       (record.vehicleId || DEFAULT_VEHICLE_ID) === bounds.vehicleId);

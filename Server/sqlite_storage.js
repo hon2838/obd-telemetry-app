@@ -61,6 +61,12 @@ function initSqliteStorage(sqlitePath) {
 
     CREATE INDEX IF NOT EXISTS idx_telemetry_vehicle_time
       ON telemetry(vehicle_id, timestamp);
+
+    CREATE INDEX IF NOT EXISTS idx_telemetry_time_seq
+      ON telemetry(timestamp, ingest_seq);
+
+    CREATE INDEX IF NOT EXISTS idx_telemetry_vehicle_time_seq
+      ON telemetry(vehicle_id, timestamp, ingest_seq);
   `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS storage_metadata (
@@ -89,6 +95,11 @@ function initSqliteStorage(sqlitePath) {
   }
 
   function ensureIngestSequences() {
+    const hasIndex = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_telemetry_ingest_seq'").get());
+    if (hasIndex) {
+      const needsRepair = Boolean(db.prepare('SELECT 1 FROM telemetry WHERE ingest_seq IS NULL OR ingest_seq <= 0 LIMIT 1').get());
+      if (!needsRepair) return 0;
+    }
     const rows = db.prepare('SELECT id, ingest_seq FROM telemetry ORDER BY id ASC').all();
     const seen = new Set();
     let nextSequence = rows.reduce((max, row) => {
@@ -226,9 +237,238 @@ function initSqliteStorage(sqlitePath) {
     return record;
   }
 
+  function buildScopeClause(requestedVehicleId, authorizedScope) {
+    if (requestedVehicleId) {
+      if (authorizedScope !== null && !authorizedScope.includes(requestedVehicleId)) {
+        return { where: '1 = 0', params: [] };
+      }
+      return { where: 'vehicle_id = ?', params: [requestedVehicleId] };
+    }
+    if (authorizedScope === null) {
+      return { where: '1 = 1', params: [] };
+    }
+    if (authorizedScope.length === 0) {
+      return { where: '1 = 0', params: [] };
+    }
+    return {
+      where: 'vehicle_id IN (' + authorizedScope.map(() => '?').join(',') + ')',
+      params: authorizedScope.slice()
+    };
+  }
+
   return {
     db,
+    rowToRecord,
+    buildScopeClause,
     ensureIngestSequences,
+    getMaxIngestSeq() {
+      const row = db.prepare('SELECT MAX(ingest_seq) as maxSeq FROM telemetry').get();
+      return Number(row?.maxSeq) || 0;
+    },
+    getVehicleCounts() {
+      const rows = db.prepare('SELECT vehicle_id, COUNT(*) as count FROM telemetry GROUP BY vehicle_id').all();
+      const counts = new Map();
+      for (const row of rows) {
+        counts.set(row.vehicle_id, Number(row.count) || 0);
+      }
+      return counts;
+    },
+    getLatest(requestedVehicleId = null, authorizedScope = null) {
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE ${scope.where}
+        ORDER BY timestamp DESC, ingest_seq DESC
+        LIMIT 1
+      `;
+      const row = db.prepare(sql).get(...scope.params);
+      return row ? rowToRecord(row) : null;
+    },
+    getSnapshotTail(limit, cursor = null, requestedVehicleId = null, authorizedScope = null) {
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const cursorClause = cursor !== null && cursor !== undefined ? 'AND ingest_seq <= ?' : '';
+      const params = [...scope.params];
+      if (cursorClause) params.push(cursor);
+      params.push(limit);
+
+      const sql = `
+        SELECT * FROM (
+          SELECT * FROM telemetry
+          WHERE ${scope.where} ${cursorClause}
+          ORDER BY timestamp DESC, ingest_seq DESC
+          LIMIT ?
+        ) ORDER BY timestamp ASC, ingest_seq ASC
+      `;
+      const rows = db.prepare(sql).all(...params);
+      return rows.map(rowToRecord);
+    },
+    getChanges(cursor, limit, requestedVehicleId = null, authorizedScope = null) {
+      const stmt = db.prepare('SELECT * FROM telemetry WHERE ingest_seq > ? ORDER BY ingest_seq ASC');
+      const iter = stmt.iterate(cursor);
+      const records = [];
+      let nextCursor = cursor;
+      let inspected = 0;
+      let hasMore = false;
+
+      while (true) {
+        const step = iter.next();
+        if (step.done) break;
+        const row = step.value;
+        inspected++;
+        nextCursor = Number(row.ingest_seq);
+        const vid = row.vehicle_id;
+        const isVisible = requestedVehicleId
+          ? vid === requestedVehicleId
+          : (authorizedScope === null || authorizedScope.includes(vid));
+
+        if (isVisible) {
+          records.push(rowToRecord(row));
+          if (records.length >= limit) {
+            const peek = iter.next();
+            if (!peek.done) hasMore = true;
+            break;
+          }
+        }
+      }
+      return { records, nextCursor, hasMore, inspected };
+    },
+    getSeries(start, end, requestedVehicleId = null, authorizedScope = null) {
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
+        ORDER BY timestamp ASC, ingest_seq ASC
+      `;
+      const rows = db.prepare(sql).all(...scope.params, start, end);
+      return rows.map(rowToRecord);
+    },
+    getHistory({ startTime = null, endTime = null, cutoff = null, cap = 50, pageOffset = 0, tailMode = true, requestedVehicleId = null, authorizedScope = null } = {}) {
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const conditions = [scope.where];
+      const params = [...scope.params];
+
+      if (startTime !== null && endTime !== null) {
+        conditions.push('timestamp >= ? AND timestamp <= ?');
+        params.push(startTime, endTime);
+      }
+      if (cutoff !== null) {
+        conditions.push('timestamp >= ?');
+        params.push(cutoff);
+      }
+      const whereClause = conditions.join(' AND ');
+
+      const countRow = db.prepare(`SELECT COUNT(*) as count FROM telemetry WHERE ${whereClause}`).get(...params);
+      const totalMatched = Number(countRow?.count) || 0;
+
+      let rows = [];
+      if (tailMode) {
+        const tailSql = `
+          SELECT * FROM (
+            SELECT * FROM telemetry
+            WHERE ${whereClause}
+            ORDER BY timestamp DESC, ingest_seq DESC
+            LIMIT ?
+          ) ORDER BY timestamp ASC, ingest_seq ASC
+        `;
+        rows = db.prepare(tailSql).all(...params, cap);
+      } else {
+        const pagedSql = `
+          SELECT * FROM telemetry
+          WHERE ${whereClause}
+          ORDER BY timestamp ASC, ingest_seq ASC
+          LIMIT ? OFFSET ?
+        `;
+        rows = db.prepare(pagedSql).all(...params, cap, pageOffset);
+      }
+
+      return {
+        records: rows.map(rowToRecord),
+        totalMatched
+      };
+    },
+    getPerformanceRuns(requestedVehicleId = null, authorizedScope = null) {
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE ${scope.where} AND accel_time IS NOT NULL AND accel_time > 0
+        ORDER BY timestamp ASC, ingest_seq ASC
+      `;
+      const rows = db.prepare(sql).all(...scope.params);
+      return rows.map(rowToRecord);
+    },
+    getTopSpeed(requestedVehicleId = null, authorizedScope = null) {
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE ${scope.where} AND (
+          (speed IS NOT NULL AND speed > 0) OR
+          (gps_speed IS NOT NULL AND gps_speed > 0)
+        )
+        ORDER BY MAX(COALESCE(speed, 0), COALESCE(gps_speed, 0)) DESC, timestamp DESC
+        LIMIT 1
+      `;
+      const row = db.prepare(sql).get(...scope.params);
+      return row ? rowToRecord(row) : null;
+    },
+    getHighestRpm(requestedVehicleId = null, authorizedScope = null) {
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE ${scope.where} AND rpm IS NOT NULL AND rpm > 0
+        ORDER BY rpm DESC, timestamp DESC
+        LIMIT 1
+      `;
+      const row = db.prepare(sql).get(...scope.params);
+      return row ? rowToRecord(row) : null;
+    },
+    getRecordsForDrive(vehicleId, startTime, endTime) {
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE vehicle_id = ? AND timestamp >= ? AND timestamp <= ?
+        ORDER BY timestamp ASC, ingest_seq ASC
+      `;
+      const rows = db.prepare(sql).all(vehicleId, startTime, endTime);
+      return rows.map(rowToRecord);
+    },
+    getRecordsForSegmentation(vehicleFilter = null) {
+      let where = '1 = 1';
+      let params = [];
+      if (typeof vehicleFilter === 'string') {
+        where = 'vehicle_id = ?';
+        params = [vehicleFilter];
+      } else if (Array.isArray(vehicleFilter)) {
+        if (vehicleFilter.length === 0) return [];
+        where = 'vehicle_id IN (' + vehicleFilter.map(() => '?').join(',') + ')';
+        params = vehicleFilter.slice();
+      }
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE ${where}
+        ORDER BY vehicle_id ASC, timestamp ASC, ingest_seq ASC
+      `;
+      const rows = db.prepare(sql).all(...params);
+      return rows.map(rowToRecord);
+    },
+    classifyBatchEventIds(records) {
+      const checkStmt = db.prepare('SELECT 1 FROM telemetry WHERE vehicle_id = ? AND event_id = ? LIMIT 1');
+      const seen = new Set();
+      const accepted = [];
+      const duplicate = [];
+      for (const record of records) {
+        const eventId = record.eventId;
+        const vid = record.vehicleId || 'default';
+        if (eventId) {
+          const key = `${vid}\u0000${eventId}`;
+          if (seen.has(key) || checkStmt.get(vid, eventId)) {
+            duplicate.push(eventId);
+            continue;
+          }
+          seen.add(key);
+        }
+        accepted.push(record);
+      }
+      return { accepted, duplicate };
+    },
     isLegacyImportComplete() {
       return Boolean(db.prepare("SELECT 1 FROM storage_metadata WHERE key = 'legacy_json_import_complete'").get());
     },

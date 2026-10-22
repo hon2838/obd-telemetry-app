@@ -64,8 +64,7 @@ test('SQLite and command queue recover together after a crash between participan
     const recovered = runServerProbe(dir, `
       process.stdout.write(JSON.stringify({
         dbCount: backend.sqliteStorage.count(),
-        memoryCount: backend.telemetryDataStore.length,
-        eventIds: backend.telemetryDataStore.map(row => row.eventId),
+        eventIds: backend.sqliteStorage.loadAllRecords().map(row => row.eventId),
         pendingCommands: backend.getPendingCommands().map(command => command.status),
         journal: fs.existsSync(path.join(process.env.OBD_DATA_DIR, 'txn_journal.json'))
       }));
@@ -73,7 +72,6 @@ test('SQLite and command queue recover together after a crash between participan
     `);
     expect(recovered).toEqual({
       dbCount: 1,
-      memoryCount: 1,
       eventIds: ['mixed-crash-1'],
       pendingCommands: ['unknown'],
       journal: false
@@ -229,7 +227,6 @@ test('vehicle reassignment recovers SQLite and all files after a mid-commit cras
     const recovered = runServerProbe(dir, `
       process.stdout.write(JSON.stringify({
         vehicleExists: backend.vehiclesStore.some(v => v.id === ${JSON.stringify(first.vehicleId)}),
-        telemetryVehicles: backend.telemetryDataStore.map(r => r.vehicleId),
         sqliteVehicles: backend.sqliteStorage.loadAllRecords().map(r => r.vehicleId),
         fuelVehicles: backend.fuelLogsStore.map(r => r.vehicleId),
         journal: fs.existsSync(path.join(process.env.OBD_DATA_DIR, 'txn_journal.json'))
@@ -238,7 +235,6 @@ test('vehicle reassignment recovers SQLite and all files after a mid-commit cras
     `);
     expect(recovered).toEqual({
       vehicleExists: false,
-      telemetryVehicles: ['default'],
       sqliteVehicles: ['default'],
       fuelVehicles: ['default'],
       journal: false

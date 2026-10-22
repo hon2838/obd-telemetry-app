@@ -13,7 +13,9 @@ async function healthRoutes(fastify, options) {
       build_commit: process.env.OBD_BUILD_COMMIT || 'unknown',
       build_time: process.env.OBD_BUILD_TIME || 'unknown',
       uptime_seconds: startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0,
-      telemetry_records: stores.telemetryDataStore ? stores.telemetryDataStore.length : 0,
+      telemetry_records: typeof stores.getTelemetryCount === 'function'
+        ? stores.getTelemetryCount()
+        : (stores.telemetryDataStore ? stores.telemetryDataStore.length : 0),
       fuel_logs: stores.fuelLogsStore ? stores.fuelLogsStore.length : 0,
       maintenance_items: stores.maintenanceStore ? stores.maintenanceStore.length : 0,
     });

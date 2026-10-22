@@ -50,10 +50,11 @@ async function vehiclesRoutes(fastify, options) {
   fastify.get('/api/vehicles', async (request, reply) => {
     const scope = vehicleScope(request.auth);
     const scopedVehicles = scope === null ? vehiclesStore : vehiclesStore.filter(v => scope.includes(v.id));
+    const telemetryCounts = sqliteStorage ? sqliteStorage.getVehicleCounts() : null;
     return reply.send(scopedVehicles.map(v => ({
       ...v,
       recordCount: {
-        telemetry: telemetryDataStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
+        telemetry: telemetryCounts ? (telemetryCounts.get(v.id) || 0) : telemetryDataStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
         fuelLogs: fuelLogsStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
         maintenance: maintenanceStore.filter(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === v.id).length,
       }
@@ -177,8 +178,11 @@ async function vehiclesRoutes(fastify, options) {
     return serializeMutation(async () => {
       try {
         const reassign = request.query.reassign === DEFAULT_VEHICLE_ID;
+        const ownsTelemetry = sqliteStorage
+          ? ((sqliteStorage.getVehicleCounts().get(id) || 0) > 0)
+          : telemetryDataStore.some(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === id);
         const ownsData = records => records.some(r => (r.vehicleId || DEFAULT_VEHICLE_ID) === id);
-        if (!reassign && (ownsData(telemetryDataStore) || ownsData(fuelLogsStore) || ownsData(maintenanceStore) || ownsData(dtcHistoryStore))) {
+        if (!reassign && (ownsTelemetry || ownsData(fuelLogsStore) || ownsData(maintenanceStore) || ownsData(dtcHistoryStore))) {
           return reply.status(409).send({
             error: 'Vehicle still owns records. Pass ?reassign=default to move them to the default vehicle.'
           });
@@ -187,7 +191,7 @@ async function vehiclesRoutes(fastify, options) {
         const move = record => reassign && (record.vehicleId || DEFAULT_VEHICLE_ID) === id
           ? { ...record, vehicleId: DEFAULT_VEHICLE_ID }
           : { ...record };
-        const telemetryCandidate = reassign ? telemetryDataStore.map(move) : telemetryDataStore.slice();
+        const telemetryCandidate = reassign && !sqliteStorage ? telemetryDataStore.map(move) : [];
         const fuelCandidate = reassign ? fuelLogsStore.map(move) : fuelLogsStore.slice();
         const maintenanceCandidate = reassign ? maintenanceStore.map(move) : maintenanceStore.slice();
         const dtcHistoryCandidate = reassign ? dtcHistoryStore.map(move) : dtcHistoryStore.slice();
@@ -249,8 +253,12 @@ async function vehiclesRoutes(fastify, options) {
 
         replaceArrayContents(vehiclesStore, vehiclesCandidate);
         if (reassign) {
-          replaceArrayContents(telemetryDataStore, telemetryCandidate);
-          syncTelemetryEventKeySet();
+          if (!sqliteStorage) {
+            replaceArrayContents(telemetryDataStore, telemetryCandidate);
+            syncTelemetryEventKeySet();
+          } else if (telemetryDataStore.length > 0) {
+            replaceArrayContents(telemetryDataStore, telemetryDataStore.map(move));
+          }
           replaceArrayContents(fuelLogsStore, fuelCandidate);
           replaceArrayContents(maintenanceStore, maintenanceCandidate);
           replaceArrayContents(dtcHistoryStore, dtcHistoryCandidate);

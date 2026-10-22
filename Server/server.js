@@ -412,16 +412,6 @@ recoverPendingTransactionsSync()
 let telemetryDataStore = []
 if (sqliteStorage) {
   try {
-    telemetryDataStore = sqliteStorage.loadAllRecords();
-    if (!Array.isArray(telemetryDataStore)) {
-      throw new Error('SQLite telemetry load did not return an array')
-    }
-    for (let index = 0; index < telemetryDataStore.length; index++) {
-      const record = telemetryDataStore[index]
-      if (!record || typeof record !== 'object' || !Number.isFinite(Number(record.timestamp))) {
-        throw new Error(`SQLite telemetry row ${index} has an invalid timestamp or record shape`)
-      }
-    }
     if (typeof sqliteStorage.isLegacyImportComplete !== 'function' ||
         typeof sqliteStorage.importLegacyJson !== 'function' ||
         typeof sqliteStorage.markLegacyImportComplete !== 'function') {
@@ -462,8 +452,7 @@ if (sqliteStorage) {
           assignedSequences.add(record.ingestSeq)
         }
         sqliteStorage.importLegacyJson(legacy)
-        telemetryDataStore = sqliteStorage.loadAllRecords()
-      } else if (telemetryDataStore.length === 0 && legacyJsonExists) {
+      } else if (sqliteStorage.count() === 0 && legacyJsonExists) {
         throw new Error('SQLite is empty while legacy JSON exists and no completed-import marker is present; refusing to guess which store is authoritative')
       } else {
         // A populated existing SQLite database is authoritative after the
@@ -726,30 +715,31 @@ stampLegacyVehicleIds(dtcHistoryStore)
 // sequences in file order; new rows always receive the next server sequence.
 let nextIngestSeq = 0
 let telemetryMigrationNeeded = false
-const assignedSequences = new Set()
-for (const record of telemetryDataStore) {
-  if (!Number.isInteger(record.ingestSeq) || record.ingestSeq <= 0 || assignedSequences.has(record.ingestSeq)) {
-    record.ingestSeq = 0
-    telemetryMigrationNeeded = true
-  } else {
-    assignedSequences.add(record.ingestSeq)
-    nextIngestSeq = Math.max(nextIngestSeq, record.ingestSeq)
+if (sqliteStorage) {
+  nextIngestSeq = sqliteStorage.getMaxIngestSeq()
+} else {
+  const assignedSequences = new Set()
+  for (const record of telemetryDataStore) {
+    if (!Number.isInteger(record.ingestSeq) || record.ingestSeq <= 0 || assignedSequences.has(record.ingestSeq)) {
+      record.ingestSeq = 0
+      telemetryMigrationNeeded = true
+    } else {
+      assignedSequences.add(record.ingestSeq)
+      nextIngestSeq = Math.max(nextIngestSeq, record.ingestSeq)
+    }
   }
-}
-for (const record of telemetryDataStore) {
-  if (record.ingestSeq === 0) {
-    record.ingestSeq = ++nextIngestSeq
-    assignedSequences.add(record.ingestSeq)
+  for (const record of telemetryDataStore) {
+    if (record.ingestSeq === 0) {
+      record.ingestSeq = ++nextIngestSeq
+      assignedSequences.add(record.ingestSeq)
+    }
   }
-}
-if (telemetryMigrationNeeded) {
-  if (STORAGE_ENGINE === 'json') {
-    // persistStartupMigration makes a backup before rewriting legacy data.
-    persistStartupMigration(DB_PATH, telemetryDataStore)
+  if (telemetryMigrationNeeded) {
+    if (STORAGE_ENGINE === 'json') {
+      // persistStartupMigration makes a backup before rewriting legacy data.
+      persistStartupMigration(DB_PATH, telemetryDataStore)
+    }
   }
-}
-if (STORAGE_ENGINE === 'sqlite') {
-  telemetryDataStore.sort((a, b) => Number(a.ingestSeq) - Number(b.ingestSeq))
 }
 
 function eventIdOf(record) {
@@ -767,24 +757,26 @@ function telemetryEventKey(record) {
 const telemetryEventKeySet = new Set()
 function syncTelemetryEventKeySet() {
   telemetryEventKeySet.clear()
-  for (const record of telemetryDataStore) {
-    const key = telemetryEventKey(record)
-    if (key) telemetryEventKeySet.add(key)
+  if (!sqliteStorage) {
+    for (const record of telemetryDataStore) {
+      const key = telemetryEventKey(record)
+      if (key) telemetryEventKeySet.add(key)
+    }
   }
 }
 syncTelemetryEventKeySet()
 
 let telemetryRevision = 0
 let vehicleRevision = 0
-let telemetrySequenceIndexValid = telemetryDataStore.every((record, index, records) => {
+let telemetrySequenceIndexValid = sqliteStorage ? true : telemetryDataStore.every((record, index, records) => {
   const sequence = Number(record.ingestSeq)
   return Number.isSafeInteger(sequence) && sequence > 0 &&
     (index === 0 || sequence > Number(records[index - 1].ingestSeq))
 })
-let telemetrySequenceIndexLength = telemetryDataStore.length
-let telemetrySequenceIndexLast = telemetryDataStore.length > 0
+let telemetrySequenceIndexLength = sqliteStorage ? 0 : telemetryDataStore.length
+let telemetrySequenceIndexLast = sqliteStorage ? nextIngestSeq : (telemetryDataStore.length > 0
   ? Number(telemetryDataStore[telemetryDataStore.length - 1].ingestSeq)
-  : 0
+  : 0)
 let lastChangesInspectedRows = 0
 const latestCaptureCache = new Map()
 const tripSummaryCache = new Map()
@@ -821,7 +813,11 @@ function validateEventId(record) {
   return record.eventId === undefined || (typeof record.eventId === 'string' && record.eventId.length >= 1 && record.eventId.length <= 256)
 }
 function replaceArrayContents(target, values) {
-  target.splice(0, target.length, ...values)
+  if (!Array.isArray(target) || !Array.isArray(values) || target === values) return
+  target.length = 0
+  for (let i = 0; i < values.length; i++) {
+    target.push(values[i])
+  }
 }
 function classifyEventIds(store, records, persistentKeys = null) {
   const existing = persistentKeys || new Set()
@@ -1546,7 +1542,9 @@ function segmentRecordsByGap(sorted) {
 
 function segmentDrives(vehicleFilter = null) {
   let source;
-  if (Array.isArray(vehicleFilter)) {
+  if (sqliteStorage) {
+    source = sqliteStorage.getRecordsForSegmentation(vehicleFilter);
+  } else if (Array.isArray(vehicleFilter)) {
     source = telemetryDataStore.filter(r => vehicleFilter.includes(r.vehicleId || DEFAULT_VEHICLE_ID));
   } else if (typeof vehicleFilter === 'string') {
     source = filterByVehicle(telemetryDataStore, vehicleFilter);
@@ -1701,9 +1699,13 @@ function cachedDrives(vehicleId, auth) {
 function latestCapture(vehicleId, auth) {
   const key = `${authCacheScope(auth)}|${vehicleId || 'all'}|${telemetryRevision}`
   if (!latestCaptureCache.has(key)) {
-    const records = filterRecordsByScope(telemetryDataStore, auth, vehicleId)
-    latestCaptureCache.set(key, records.reduce((latest, record) =>
-      !latest || Number(record.timestamp) > Number(latest.timestamp) ? record : latest, null))
+    if (sqliteStorage) {
+      latestCaptureCache.set(key, sqliteStorage.getLatest(vehicleId, vehicleScope(auth)))
+    } else {
+      const records = filterRecordsByScope(telemetryDataStore, auth, vehicleId)
+      latestCaptureCache.set(key, records.reduce((latest, record) =>
+        !latest || Number(record.timestamp) > Number(latest.timestamp) ? record : latest, null))
+    }
   }
   return latestCaptureCache.get(key)
 }
@@ -1803,7 +1805,8 @@ fastify.register(cors, {
 // Shared by authorization and export handlers so drive segmentation is not
 // performed twice for one export request.
 const getDriveBounds = (driveId) => {
-  if (telemetryDataStore.length === 0) return null
+  const hasTelemetry = sqliteStorage ? (sqliteStorage.count() > 0) : (telemetryDataStore.length > 0)
+  if (!hasTelemetry) return null
   if (!allDriveBoundsCache) allDriveBoundsCache = segmentDrives()
   const target = String(driveId)
   return allDriveBoundsCache.find(drive => String(drive.id) === target) || null
@@ -1952,7 +1955,9 @@ fastify.post('/api/telemetry/batch', {
         btConnected: record.btConnected,
         receivedAt: Date.now()
       }));
-      const classified = classifyEventIds(telemetryDataStore, normalized, telemetryEventKeySet);
+      const classified = sqliteStorage
+        ? sqliteStorage.classifyBatchEventIds(normalized)
+        : classifyEventIds(telemetryDataStore, normalized, telemetryEventKeySet);
       const accepted = classified.accepted.map((record, index) => ({
         ...record,
         ingestSeq: nextIngestSeq + index + 1
@@ -1995,13 +2000,15 @@ fastify.post('/api/telemetry/batch', {
         if (commandQueueChanged) ingestEntries.push([COMMANDS_QUEUE_PATH, remainingCommands]);
         runFileTransactionSync(ingestEntries);
       }
-      telemetryDataStore.push(...accepted);
-      for (const record of accepted) {
-        const key = telemetryEventKey(record);
-        if (key) telemetryEventKeySet.add(key);
+      if (!sqliteStorage) {
+        telemetryDataStore.push(...accepted);
+        for (const record of accepted) {
+          const key = telemetryEventKey(record);
+          if (key) telemetryEventKeySet.add(key);
+        }
+        updateTelemetrySequenceIndexAfterAppend(accepted);
       }
       nextIngestSeq += accepted.length;
-      updateTelemetrySequenceIndexAfterAppend(accepted);
       const affectedVehicles = new Set(accepted.map(record => record.vehicleId || DEFAULT_VEHICLE_ID));
       for (const vehicleId of affectedVehicles) {
         invalidateAnalyticsCaches({ telemetry: true, vehicleId });
@@ -2088,14 +2095,17 @@ fastify.post('/api/telemetry/batch', {
     filterRecordsByScope,
     telemetryDataStore,
     DEFAULT_VEHICLE_ID,
-    getRecordSpeed
+    getRecordSpeed,
+    sqliteStorage,
+    vehicleScope
   });
 
   fastify.register(exportRoutes, {
     getDriveBounds,
     telemetryDataStore,
     DEFAULT_VEHICLE_ID,
-    getRecordSpeed
+    getRecordSpeed,
+    sqliteStorage
   });
 
 // Endpoint to detect and segment drives
@@ -2206,28 +2216,43 @@ fastify.get('/api/telemetry/history', async (request, reply) => {
   // forward page and an offset for fetching the remainder.
   const tailMode = offset === undefined && !hasStart && !hasEnd
   let records = []
-  const tailRecords = tailMode ? new Array(cap) : null
-  let tailCount = 0
-  let tailWriteIndex = 0
   let totalMatched = 0
-  for (const record of telemetryDataStore) {
-    if (!recordIsVisibleToScope(record, request.auth, vehicle)) continue
-    if (startTime !== null && (record.timestamp < startTime || record.timestamp > endTime)) continue
-    if (cutoff !== null && record.timestamp < cutoff) continue
-    if (tailMode) {
-      tailRecords[tailWriteIndex] = record
-      tailWriteIndex = (tailWriteIndex + 1) % cap
-      tailCount = Math.min(tailCount + 1, cap)
-    } else if (totalMatched >= pageOffset && records.length < cap) {
-      records.push(record)
+  if (sqliteStorage) {
+    const historyResult = sqliteStorage.getHistory({
+      startTime,
+      endTime,
+      cutoff,
+      cap,
+      pageOffset,
+      tailMode,
+      requestedVehicleId: vehicle,
+      authorizedScope: vehicleScope(request.auth)
+    })
+    records = historyResult.records
+    totalMatched = historyResult.totalMatched
+  } else {
+    const tailRecords = tailMode ? new Array(cap) : null
+    let tailCount = 0
+    let tailWriteIndex = 0
+    for (const record of telemetryDataStore) {
+      if (!recordIsVisibleToScope(record, request.auth, vehicle)) continue
+      if (startTime !== null && (record.timestamp < startTime || record.timestamp > endTime)) continue
+      if (cutoff !== null && record.timestamp < cutoff) continue
+      if (tailMode) {
+        tailRecords[tailWriteIndex] = record
+        tailWriteIndex = (tailWriteIndex + 1) % cap
+        tailCount = Math.min(tailCount + 1, cap)
+      } else if (totalMatched >= pageOffset && records.length < cap) {
+        records.push(record)
+      }
+      totalMatched++
     }
-    totalMatched++
-  }
-  if (tailMode) {
-    records = []
-    const startIndex = tailCount < cap ? 0 : tailWriteIndex
-    for (let index = 0; index < tailCount; index++) {
-      records.push(tailRecords[(startIndex + index) % cap])
+    if (tailMode) {
+      records = []
+      const startIndex = tailCount < cap ? 0 : tailWriteIndex
+      for (let index = 0; index < tailCount; index++) {
+        records.push(tailRecords[(startIndex + index) % cap])
+      }
     }
   }
   const complete = tailMode
@@ -2253,12 +2278,19 @@ fastify.get('/api/telemetry/snapshot', async (request, reply) => {
   if (parsedLimit.error) return reply.status(400).send({ error: parsedLimit.error })
 
   const snapshotCursor = nextIngestSeq
-  const records = selectChronologicalTail(
-    telemetryDataStore,
-    parsedLimit.value,
-    record => Number(record.ingestSeq || 0) <= snapshotCursor &&
-      recordIsVisibleToScope(record, request.auth, vehicle)
-  )
+  const records = sqliteStorage
+    ? sqliteStorage.getSnapshotTail(
+        parsedLimit.value,
+        snapshotCursor,
+        vehicle,
+        vehicleScope(request.auth)
+      )
+    : selectChronologicalTail(
+        telemetryDataStore,
+        parsedLimit.value,
+        record => Number(record.ingestSeq || 0) <= snapshotCursor &&
+          recordIsVisibleToScope(record, request.auth, vehicle)
+      )
   return reply.send({ records, snapshotCursor })
 })
 
@@ -2280,10 +2312,20 @@ fastify.get('/api/telemetry/series', async (request, reply) => {
   const parsedPoints = parseStrictQueryInteger(rawPoints, 'points', { min: 1, max: 2000 })
   if (parsedPoints.error) return reply.status(400).send({ error: parsedPoints.error })
 
-  const records = telemetryDataStore.filter(record =>
-    record.timestamp >= parsedStart.value && record.timestamp <= parsedEnd.value &&
-    recordIsVisibleToScope(record, request.auth, vehicle))
-  records.sort(chronologicalRecordCompare)
+  let records
+  if (sqliteStorage) {
+    records = sqliteStorage.getSeries(
+      parsedStart.value,
+      parsedEnd.value,
+      vehicle,
+      vehicleScope(request.auth)
+    )
+  } else {
+    records = telemetryDataStore.filter(record =>
+      record.timestamp >= parsedStart.value && record.timestamp <= parsedEnd.value &&
+      recordIsVisibleToScope(record, request.auth, vehicle))
+    records.sort(chronologicalRecordCompare)
+  }
   return reply.send(downsampleTelemetrySeries(records, parsedPoints.value))
 })
 
@@ -2310,6 +2352,16 @@ fastify.get('/api/telemetry/changes', async (request, reply) => {
   }
   const vehicle = resolveVehicleQuery(request.query)
   if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' })
+
+  if (sqliteStorage) {
+    const changeResult = sqliteStorage.getChanges(cursor, limit, vehicle, vehicleScope(request.auth))
+    lastChangesInspectedRows = changeResult.inspected
+    return reply.send({
+      records: changeResult.records,
+      nextCursor: changeResult.nextCursor,
+      hasMore: changeResult.hasMore
+    })
+  }
 
   let index = telemetryCanBinarySeek() ? firstIngestSequenceAfter(telemetryDataStore, cursor) : 0
   const records = []
@@ -2445,7 +2497,12 @@ fastify.get('/api/telemetry/changes', async (request, reply) => {
 // secrets in the response.
   // Register modular domain route plugins
   fastify.register(healthRoutes, {
-    stores: { telemetryDataStore, fuelLogsStore, maintenanceStore },
+    stores: {
+      getTelemetryCount: () => sqliteStorage ? sqliteStorage.count() : telemetryDataStore.length,
+      telemetryDataStore,
+      fuelLogsStore,
+      maintenanceStore
+    },
     getStartedAt: () => SERVER_STARTED_AT
   });
 
@@ -2533,6 +2590,7 @@ module.exports = {
   downsampleTelemetrySeries,
   refreshTelemetrySequenceIndexForTesting,
   getLastChangesInspectedRows: () => lastChangesInspectedRows,
+  replaceArrayContents,
   sqliteStorage,
   getStorageEngine: () => STORAGE_ENGINE
 }

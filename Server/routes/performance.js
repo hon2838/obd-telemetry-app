@@ -7,7 +7,9 @@ async function performanceRoutes(fastify, options) {
     filterRecordsByScope,
     telemetryDataStore,
     DEFAULT_VEHICLE_ID,
-    getRecordSpeed
+    getRecordSpeed,
+    sqliteStorage,
+    vehicleScope
   } = options;
 
   // GET all acceleration runs
@@ -16,10 +18,16 @@ async function performanceRoutes(fastify, options) {
     if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
     const drives = cachedDrives(vehicle, request.auth);
-    const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
-    const sortedRuns = scopedStore
-      .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0)
-      .sort((a, b) => a.timestamp - b.timestamp);
+    let sortedRuns;
+    if (sqliteStorage) {
+      const scope = typeof vehicleScope === 'function' ? vehicleScope(request.auth) : null;
+      sortedRuns = sqliteStorage.getPerformanceRuns(vehicle, scope);
+    } else {
+      const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
+      sortedRuns = scopedStore
+        .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0)
+        .sort((a, b) => a.timestamp - b.timestamp);
+    }
 
     const runs = [];
     let dIndex = 0;
@@ -48,58 +56,90 @@ async function performanceRoutes(fastify, options) {
     if (vehicle === undefined) return reply.status(400).send({ error: 'Unknown vehicleId' });
 
     const drives = cachedDrives(vehicle, request.auth);
-    const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
 
     const findDrive = (record) => {
+      if (!record) return null;
       const ts = record.timestamp;
       const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
       return drives.find(d => ts >= d.startTime && ts <= d.endTime && d.vehicleId === vid);
     };
 
-    // 1. Find all runs with non-null accelTime
-    const runs = scopedStore
-      .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0);
-
     let bestRun = null;
-    if (runs.length > 0) {
-      const sortedRuns = [...runs].sort((a, b) => a.accelTime - b.accelTime);
-      const r = sortedRuns[0];
-      const drive = findDrive(r);
-      bestRun = {
-        time: r.accelTime,
-        timestamp: r.timestamp,
-        driveId: drive ? drive.id : null
-      };
-    }
-
-    // 2. Top speed ever
     let topSpeed = null;
-    const speedRecords = scopedStore
-      .filter(r => getRecordSpeed(r) > 0)
-      .sort((a, b) => getRecordSpeed(b) - getRecordSpeed(a));
-    if (speedRecords.length > 0) {
-      const r = speedRecords[0];
-      const drive = findDrive(r);
-      topSpeed = {
-        speed: getRecordSpeed(r),
-        timestamp: r.timestamp,
-        driveId: drive ? drive.id : null
-      };
-    }
-
-    // 3. Highest RPM ever
     let highestRpm = null;
-    const rpmRecords = scopedStore
-      .filter(r => r.rpm !== null && r.rpm !== undefined)
-      .sort((a, b) => b.rpm - a.rpm);
-    if (rpmRecords.length > 0 && rpmRecords[0].rpm > 0) {
-      const r = rpmRecords[0];
-      const drive = findDrive(r);
-      highestRpm = {
-        rpm: r.rpm,
-        timestamp: r.timestamp,
-        driveId: drive ? drive.id : null
-      };
+
+    if (sqliteStorage) {
+      const scope = typeof vehicleScope === 'function' ? vehicleScope(request.auth) : null;
+      const runs = sqliteStorage.getPerformanceRuns(vehicle, scope);
+      if (runs.length > 0) {
+        const sortedRuns = [...runs].sort((a, b) => a.accelTime - b.accelTime);
+        const r = sortedRuns[0];
+        const drive = findDrive(r);
+        bestRun = {
+          time: r.accelTime,
+          timestamp: r.timestamp,
+          driveId: drive ? drive.id : null
+        };
+      }
+      const topRecord = sqliteStorage.getTopSpeed(vehicle, scope);
+      if (topRecord) {
+        const drive = findDrive(topRecord);
+        topSpeed = {
+          speed: getRecordSpeed(topRecord),
+          timestamp: topRecord.timestamp,
+          driveId: drive ? drive.id : null
+        };
+      }
+      const rpmRecord = sqliteStorage.getHighestRpm(vehicle, scope);
+      if (rpmRecord) {
+        const drive = findDrive(rpmRecord);
+        highestRpm = {
+          rpm: rpmRecord.rpm,
+          timestamp: rpmRecord.timestamp,
+          driveId: drive ? drive.id : null
+        };
+      }
+    } else {
+      const scopedStore = filterRecordsByScope(telemetryDataStore, request.auth, vehicle);
+      const runs = scopedStore
+        .filter(r => r.accelTime !== null && r.accelTime !== undefined && r.accelTime > 0);
+
+      if (runs.length > 0) {
+        const sortedRuns = [...runs].sort((a, b) => a.accelTime - b.accelTime);
+        const r = sortedRuns[0];
+        const drive = findDrive(r);
+        bestRun = {
+          time: r.accelTime,
+          timestamp: r.timestamp,
+          driveId: drive ? drive.id : null
+        };
+      }
+
+      const speedRecords = scopedStore
+        .filter(r => getRecordSpeed(r) > 0)
+        .sort((a, b) => getRecordSpeed(b) - getRecordSpeed(a));
+      if (speedRecords.length > 0) {
+        const r = speedRecords[0];
+        const drive = findDrive(r);
+        topSpeed = {
+          speed: getRecordSpeed(r),
+          timestamp: r.timestamp,
+          driveId: drive ? drive.id : null
+        };
+      }
+
+      const rpmRecords = scopedStore
+        .filter(r => r.rpm !== null && r.rpm !== undefined)
+        .sort((a, b) => b.rpm - a.rpm);
+      if (rpmRecords.length > 0 && rpmRecords[0].rpm > 0) {
+        const r = rpmRecords[0];
+        const drive = findDrive(r);
+        highestRpm = {
+          rpm: r.rpm,
+          timestamp: r.timestamp,
+          driveId: drive ? drive.id : null
+        };
+      }
     }
 
     // 4. Longest Drive
