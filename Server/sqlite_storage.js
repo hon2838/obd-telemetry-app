@@ -59,8 +59,7 @@ function initSqliteStorage(sqlitePath) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_telemetry_vehicle_event
       ON telemetry(vehicle_id, event_id) WHERE event_id IS NOT NULL;
 
-    CREATE INDEX IF NOT EXISTS idx_telemetry_vehicle_time
-      ON telemetry(vehicle_id, timestamp);
+    DROP INDEX IF EXISTS idx_telemetry_vehicle_time;
 
     CREATE INDEX IF NOT EXISTS idx_telemetry_time_seq
       ON telemetry(timestamp, ingest_seq);
@@ -237,6 +236,24 @@ function initSqliteStorage(sqlitePath) {
     return record;
   }
 
+  function rowToSegmentationRecord(row) {
+    const record = {
+      timestamp: row.timestamp,
+      vehicleId: row.vehicle_id
+    };
+    if (row.event_id) record.eventId = row.event_id;
+    if (row.ingest_seq !== null) record.ingestSeq = row.ingest_seq;
+    if (row.rpm !== null) record.rpm = row.rpm;
+    if (row.speed !== null) record.speed = row.speed;
+    if (row.gps_speed !== null) record.gpsSpeed = row.gps_speed;
+    if (row.latitude !== null) record.latitude = row.latitude;
+    if (row.longitude !== null) record.longitude = row.longitude;
+    if (row.fuel_level !== null) record.fuelLevel = row.fuel_level;
+    if (row.fuel_system_status !== null) record.fuelSystemStatus = row.fuel_system_status;
+    if (row.estimated_fuel_rate_lph !== null) record.estimatedFuelRateLph = row.estimated_fuel_rate_lph;
+    return record;
+  }
+
   function buildScopeClause(requestedVehicleId, authorizedScope) {
     if (requestedVehicleId) {
       if (authorizedScope !== null && !authorizedScope.includes(requestedVehicleId)) {
@@ -259,6 +276,7 @@ function initSqliteStorage(sqlitePath) {
   return {
     db,
     rowToRecord,
+    rowToSegmentationRecord,
     buildScopeClause,
     ensureIngestSequences,
     getMaxIngestSeq() {
@@ -448,6 +466,29 @@ function initSqliteStorage(sqlitePath) {
       `;
       const rows = db.prepare(sql).all(...params);
       return rows.map(rowToRecord);
+    },
+    *iterateRecordsForSegmentation(vehicleFilter = null) {
+      let where = '1 = 1';
+      let params = [];
+      if (typeof vehicleFilter === 'string') {
+        where = 'vehicle_id = ?';
+        params = [vehicleFilter];
+      } else if (Array.isArray(vehicleFilter)) {
+        if (vehicleFilter.length === 0) return;
+        where = 'vehicle_id IN (' + vehicleFilter.map(() => '?').join(',') + ')';
+        params = vehicleFilter.slice();
+      }
+      const sql = `
+        SELECT timestamp, vehicle_id, event_id, ingest_seq, rpm, speed, gps_speed,
+               latitude, longitude, fuel_level, fuel_system_status, estimated_fuel_rate_lph
+        FROM telemetry
+        WHERE ${where}
+        ORDER BY vehicle_id ASC, timestamp ASC, ingest_seq ASC
+      `;
+      const iterator = db.prepare(sql).iterate(...params);
+      for (const row of iterator) {
+        yield rowToSegmentationRecord(row);
+      }
     },
     classifyBatchEventIds(records) {
       const checkStmt = db.prepare('SELECT 1 FROM telemetry WHERE vehicle_id = ? AND event_id = ? LIMIT 1');

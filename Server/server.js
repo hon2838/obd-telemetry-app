@@ -1540,11 +1540,199 @@ function segmentRecordsByGap(sorted) {
   return drives;
 }
 
+function summarizeDriveSegment(drive) {
+  let score = 100;
+  let harshAccelCount = 0;
+  let harshBrakeCount = 0;
+  let highRpmCount = 0;
+
+  if (drive.points.length > 1) {
+    for (let i = 1; i < drive.points.length; i++) {
+      const p1 = drive.points[i - 1];
+      const p2 = drive.points[i];
+
+      // Calculate time diff in seconds
+      const dt = (p2.timestamp - p1.timestamp) / 1000;
+      if (dt > 0 && dt < 10) { // Only compare points reasonably close
+        // Calculate speed diff in km/h
+        const s1 = knownSpeed(p1), s2 = knownSpeed(p2);
+        const accel = s1 !== null && s2 !== null ? (s2 - s1) / dt : 0; // km/h per second
+
+        if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
+          harshAccelCount++;
+          score -= 1;
+        } else if (accel < -12) { // Harsh braking (< -12 km/h per second)
+          harshBrakeCount++;
+          score -= 1.5; // Penalize braking slightly more
+        }
+      }
+
+      if ((p2.rpm || 0) > 4000) {
+        highRpmCount++;
+      }
+    }
+    // Penalize for excessive high RPM duration
+    if (highRpmCount > 10) {
+      score -= (highRpmCount * 0.1);
+    }
+  }
+
+  const finalScore = Math.max(0, Math.min(100, Math.round(score)));
+
+  const durationMin = Math.round((drive.endTime - drive.startTime) / 60000);
+  const startStr = new Date(drive.startTime).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+
+  const tripMetrics = calculateTripMetrics(drive.points);
+  // Preserve the legacy tank-based field's original GPS-only denominator.
+  // New interval-based metrics use bounded GPS with an OBD-speed fallback.
+  let legacyDistanceKm = 0;
+  let prevPoint = null;
+  for (const p of drive.points) {
+    if (p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0) {
+      if (prevPoint) legacyDistanceKm += getHaversineDistance(prevPoint.latitude, prevPoint.longitude, p.latitude, p.longitude);
+      prevPoint = p;
+    }
+  }
+  const validGpsPoints = drive.points.filter(validGps);
+  const startLocation = validGpsPoints.length > 0 ? { lat: validGpsPoints[0].latitude, lon: validGpsPoints[0].longitude } : null;
+  const lastGpsPoint = validGpsPoints.at(-1);
+  const endLocation = lastGpsPoint ? { lat: lastGpsPoint.latitude, lon: lastGpsPoint.longitude } : null;
+
+  // 4. Fuel used and fuel efficiency. Tank size is a per-vehicle
+  // property (set on the vehicle in the registry); cars without one
+  // fall back to the original default so existing stats don't shift.
+  let fuelUsedPercent = 0;
+  if (drive.startLevel !== null && drive.endLevel !== null) {
+    fuelUsedPercent = Math.max(0, drive.startLevel - drive.endLevel);
+  }
+  const vehicle = vehiclesStore.find(v => v.id === drive.vehicleId);
+  const tankLitres = (vehicle && Number(vehicle.tankLitres) > 0) ? Number(vehicle.tankLitres) : 36;
+  const fuelUsedLitres = (fuelUsedPercent / 100) * tankLitres;
+  const fuelEfficiencyKmL = (fuelUsedLitres > 0 && legacyDistanceKm > 0) ? (legacyDistanceKm / fuelUsedLitres) : null;
+
+  return {
+    id: drive.id,
+    vehicleId: drive.vehicleId,
+    startTime: drive.startTime,
+    endTime: drive.endTime,
+    label: `Drive #${drive.id} - ${startStr} (${durationMin} min, ${drive.recordCount} pts)`,
+    summary: {
+      durationMin,
+      maxRpm: drive.maxRpm,
+      maxSpeed: drive.maxSpeed,
+      fuelUsedPercent: parseFloat(fuelUsedPercent.toFixed(1)),
+      pointCount: drive.recordCount,
+      ...tripMetrics,
+      startLocation,
+      endLocation,
+      fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+      fuelEfficiencySource: 'legacy-tank-level-drop',
+      legacyTankEstimate: {
+        fuelUsedLitres: drive.startLevel !== null && drive.endLevel !== null ? parseFloat(fuelUsedLitres.toFixed(3)) : null,
+        fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+        tankLitres,
+        tankCapacitySource: vehicle && Number(vehicle.tankLitres) > 0 ? 'vehicle-configured' : 'legacy-default-36-litres',
+        distanceMethod: 'legacy-unbounded-gps-polyline',
+        method: 'positive-endpoint-tank-level-drop-times-capacity',
+        reliability: 'unvalidated-not-used-for-leaderboard'
+      },
+      driverScore: finalScore,
+      harshEvents: { accel: harshAccelCount, brake: harshBrakeCount }
+    }
+  };
+}
+
 function segmentDrives(vehicleFilter = null) {
+  if (sqliteStorage && typeof sqliteStorage.iterateRecordsForSegmentation === 'function') {
+    const GAP_THRESHOLD_MS = 5 * 60 * 1000;
+    const summarizedDrives = [];
+    let currentVid = null;
+    let driveCountForVid = 0;
+    let currentDrive = null;
+
+    for (const record of sqliteStorage.iterateRecordsForSegmentation(vehicleFilter)) {
+      if (typeof record.timestamp !== 'number' || !Number.isFinite(record.timestamp) || record.timestamp < 0) {
+        continue;
+      }
+      const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
+      const recordFuel = (record.fuelLevel !== null && record.fuelLevel !== undefined) ? record.fuelLevel : null;
+      const recordRpm = record.rpm || 0;
+      const recordSpeed = getRecordSpeed(record);
+
+      if (currentVid !== vid) {
+        if (currentDrive) {
+          summarizedDrives.push(summarizeDriveSegment({
+            ...currentDrive,
+            id: `${currentVid}-${++driveCountForVid}`,
+            vehicleId: currentVid
+          }));
+          currentDrive = null;
+        }
+        currentVid = vid;
+        driveCountForVid = 0;
+      }
+
+      if (!currentDrive) {
+        currentDrive = {
+          startTime: record.timestamp,
+          endTime: record.timestamp,
+          maxRpm: recordRpm,
+          maxSpeed: recordSpeed,
+          startLevel: recordFuel,
+          endLevel: recordFuel,
+          recordCount: 1,
+          points: [record]
+        };
+      } else if (record.timestamp - currentDrive.endTime > GAP_THRESHOLD_MS) {
+        summarizedDrives.push(summarizeDriveSegment({
+          ...currentDrive,
+          id: `${currentVid}-${++driveCountForVid}`,
+          vehicleId: currentVid
+        }));
+        currentDrive = {
+          startTime: record.timestamp,
+          endTime: record.timestamp,
+          maxRpm: recordRpm,
+          maxSpeed: recordSpeed,
+          startLevel: recordFuel,
+          endLevel: recordFuel,
+          recordCount: 1,
+          points: [record]
+        };
+      } else {
+        currentDrive.endTime = record.timestamp;
+        currentDrive.maxRpm = Math.max(currentDrive.maxRpm, recordRpm);
+        currentDrive.maxSpeed = Math.max(currentDrive.maxSpeed, recordSpeed);
+        if (recordFuel !== null) {
+          if (currentDrive.startLevel === null) {
+            currentDrive.startLevel = recordFuel;
+          }
+          currentDrive.endLevel = recordFuel;
+        }
+        currentDrive.recordCount++;
+        currentDrive.points.push(record);
+      }
+    }
+
+    if (currentDrive) {
+      summarizedDrives.push(summarizeDriveSegment({
+        ...currentDrive,
+        id: `${currentVid}-${++driveCountForVid}`,
+        vehicleId: currentVid
+      }));
+    }
+
+    summarizedDrives.sort((a, b) => a.startTime - b.startTime);
+    return summarizedDrives;
+  }
+
   let source;
-  if (sqliteStorage) {
-    source = sqliteStorage.getRecordsForSegmentation(vehicleFilter);
-  } else if (Array.isArray(vehicleFilter)) {
+  if (Array.isArray(vehicleFilter)) {
     source = telemetryDataStore.filter(r => vehicleFilter.includes(r.vehicleId || DEFAULT_VEHICLE_ID));
   } else if (typeof vehicleFilter === 'string') {
     source = filterByVehicle(telemetryDataStore, vehicleFilter);
@@ -1574,112 +1762,7 @@ function segmentDrives(vehicleFilter = null) {
   }
   drives.sort((a, b) => a.startTime - b.startTime);
 
-  return drives.map(drive => {
-    let score = 100;
-    let harshAccelCount = 0;
-    let harshBrakeCount = 0;
-    let highRpmCount = 0;
-
-    if (drive.points.length > 1) {
-      for (let i = 1; i < drive.points.length; i++) {
-        const p1 = drive.points[i - 1];
-        const p2 = drive.points[i];
-
-        // Calculate time diff in seconds
-        const dt = (p2.timestamp - p1.timestamp) / 1000;
-        if (dt > 0 && dt < 10) { // Only compare points reasonably close
-          // Calculate speed diff in km/h
-          const s1 = knownSpeed(p1), s2 = knownSpeed(p2);
-          const accel = s1 !== null && s2 !== null ? (s2 - s1) / dt : 0; // km/h per second
-
-          if (accel > 10) { // Harsh acceleration (> 10 km/h per second)
-            harshAccelCount++;
-            score -= 1;
-          } else if (accel < -12) { // Harsh braking (< -12 km/h per second)
-            harshBrakeCount++;
-            score -= 1.5; // Penalize braking slightly more
-          }
-        }
-
-        if ((p2.rpm || 0) > 4000) {
-          highRpmCount++;
-        }
-      }
-      // Penalize for excessive high RPM duration
-      if (highRpmCount > 10) {
-        score -= (highRpmCount * 0.1);
-      }
-    }
-
-    const finalScore = Math.max(0, Math.min(100, Math.round(score)));
-
-    const durationMin = Math.round((drive.endTime - drive.startTime) / 60000);
-    const startStr = new Date(drive.startTime).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    const tripMetrics = calculateTripMetrics(drive.points);
-    // Preserve the legacy tank-based field's original GPS-only denominator.
-    // New interval-based metrics use bounded GPS with an OBD-speed fallback.
-    let legacyDistanceKm = 0;
-    let prevPoint = null;
-    for (const p of drive.points) {
-      if (p.latitude && p.longitude && p.latitude !== 0 && p.longitude !== 0) {
-        if (prevPoint) legacyDistanceKm += getHaversineDistance(prevPoint.latitude, prevPoint.longitude, p.latitude, p.longitude);
-        prevPoint = p;
-      }
-    }
-    const validGpsPoints = drive.points.filter(validGps);
-    const startLocation = validGpsPoints.length > 0 ? { lat: validGpsPoints[0].latitude, lon: validGpsPoints[0].longitude } : null;
-    const lastGpsPoint = validGpsPoints.at(-1);
-    const endLocation = lastGpsPoint ? { lat: lastGpsPoint.latitude, lon: lastGpsPoint.longitude } : null;
-
-    // 4. Fuel used and fuel efficiency. Tank size is a per-vehicle
-    // property (set on the vehicle in the registry); cars without one
-    // fall back to the original default so existing stats don't shift.
-    let fuelUsedPercent = 0;
-    if (drive.startLevel !== null && drive.endLevel !== null) {
-      fuelUsedPercent = Math.max(0, drive.startLevel - drive.endLevel);
-    }
-    const vehicle = vehiclesStore.find(v => v.id === drive.vehicleId);
-    const tankLitres = (vehicle && Number(vehicle.tankLitres) > 0) ? Number(vehicle.tankLitres) : 36;
-    const fuelUsedLitres = (fuelUsedPercent / 100) * tankLitres;
-    const fuelEfficiencyKmL = (fuelUsedLitres > 0 && legacyDistanceKm > 0) ? (legacyDistanceKm / fuelUsedLitres) : null;
-
-    return {
-      id: drive.id,
-      vehicleId: drive.vehicleId,
-      startTime: drive.startTime,
-      endTime: drive.endTime,
-      label: `Drive #${drive.id} - ${startStr} (${durationMin} min, ${drive.recordCount} pts)`,
-      summary: {
-        durationMin,
-        maxRpm: drive.maxRpm,
-        maxSpeed: drive.maxSpeed,
-        fuelUsedPercent: parseFloat(fuelUsedPercent.toFixed(1)),
-        pointCount: drive.recordCount,
-        ...tripMetrics,
-        startLocation,
-        endLocation,
-        fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
-        fuelEfficiencySource: 'legacy-tank-level-drop',
-        legacyTankEstimate: {
-          fuelUsedLitres: drive.startLevel !== null && drive.endLevel !== null ? parseFloat(fuelUsedLitres.toFixed(3)) : null,
-          fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
-          tankLitres,
-          tankCapacitySource: vehicle && Number(vehicle.tankLitres) > 0 ? 'vehicle-configured' : 'legacy-default-36-litres',
-          distanceMethod: 'legacy-unbounded-gps-polyline',
-          method: 'positive-endpoint-tank-level-drop-times-capacity',
-          reliability: 'unvalidated-not-used-for-leaderboard'
-        },
-        driverScore: finalScore,
-        harshEvents: { accel: harshAccelCount, brake: harshBrakeCount }
-      }
-    };
-  });
+  return drives.map(summarizeDriveSegment);
 }
 
 function authCacheScope(auth) {
@@ -2556,6 +2639,7 @@ if (require.main === module) {
 module.exports = {
   fastify,
   segmentDrives,
+  summarizeDriveSegment,
   getHaversineDistance,
   telemetryDataStore,
   telemetryEventKeySet,
