@@ -321,44 +321,262 @@ function initSqliteStorage(sqlitePath) {
       return rows.map(rowToRecord);
     },
     getChanges(cursor, limit, requestedVehicleId = null, authorizedScope = null) {
-      const stmt = db.prepare('SELECT * FROM telemetry WHERE ingest_seq > ? ORDER BY ingest_seq ASC');
-      const iter = stmt.iterate(cursor);
+      const scope = buildScopeClause(requestedVehicleId, authorizedScope);
+      const whereClause = scope.where === '1 = 1'
+        ? 'WHERE ingest_seq > ?'
+        : `WHERE ingest_seq > ? AND (${scope.where})`;
+      const stmt = db.prepare(`SELECT * FROM telemetry ${whereClause} ORDER BY ingest_seq ASC`);
+      const iter = stmt.iterate(cursor, ...scope.params);
       const records = [];
       let nextCursor = cursor;
       let inspected = 0;
       let hasMore = false;
 
-      while (true) {
-        const step = iter.next();
-        if (step.done) break;
-        const row = step.value;
-        inspected++;
-        nextCursor = Number(row.ingest_seq);
-        const vid = row.vehicle_id;
-        const isVisible = requestedVehicleId
-          ? vid === requestedVehicleId
-          : (authorizedScope === null || authorizedScope.includes(vid));
-
-        if (isVisible) {
+      try {
+        while (true) {
+          const step = iter.next();
+          if (step.done) break;
+          const row = step.value;
+          inspected++;
+          nextCursor = Number(row.ingest_seq);
           records.push(rowToRecord(row));
           if (records.length >= limit) {
             const peek = iter.next();
-            if (!peek.done) hasMore = true;
+            if (!peek.done) {
+              hasMore = true;
+            } else {
+              hasMore = Boolean(db.prepare('SELECT 1 FROM telemetry WHERE ingest_seq > ? LIMIT 1').get(nextCursor));
+            }
             break;
           }
         }
+        if (records.length < limit) {
+          hasMore = false;
+          const maxRow = db.prepare('SELECT MAX(ingest_seq) as maxSeq FROM telemetry WHERE ingest_seq > ?').get(cursor);
+          if (maxRow && maxRow.maxSeq !== null && Number(maxRow.maxSeq) > nextCursor) {
+            nextCursor = Number(maxRow.maxSeq);
+          }
+        }
+      } finally {
+        if (typeof iter.return === 'function') iter.return();
       }
+
       return { records, nextCursor, hasMore, inspected };
     },
-    getSeries(start, end, requestedVehicleId = null, authorizedScope = null) {
+    getSeries(start, end, requestedVehicleId = null, authorizedScope = null, pointLimit = null) {
       const scope = buildScopeClause(requestedVehicleId, authorizedScope);
-      const sql = `
+      if (pointLimit === null || pointLimit === undefined || !Number.isInteger(pointLimit) || pointLimit <= 0) {
+        const sql = `
+          SELECT * FROM telemetry
+          WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
+          ORDER BY timestamp ASC, ingest_seq ASC
+        `;
+        const rows = db.prepare(sql).all(...scope.params, start, end);
+        return rows.map(rowToRecord);
+      }
+
+      // Bounded streaming downsampling matching downsampleTelemetrySeries bit-for-bit
+      const rawSpeedValue = row => row.speed !== null && row.speed !== undefined ? (Number(row.speed) || 0) : (Number(row.gps_speed) || 0);
+      const rawRpmValue = row => Number(row.rpm) || 0;
+
+      // Pass 1 (lightweight scalar scan):
+      const scalarSql = `
+        SELECT speed, gps_speed, rpm FROM telemetry
+        WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
+        ORDER BY timestamp ASC, ingest_seq ASC
+      `;
+      const scalarIter = db.prepare(scalarSql).iterate(...scope.params, start, end);
+      let N = 0;
+      let minSpeedIdx = 0, minSpeedVal = 0;
+      let maxSpeedIdx = 0, maxSpeedVal = 0;
+      let minRpmIdx = 0, minRpmVal = 0;
+      let maxRpmIdx = 0, maxRpmVal = 0;
+
+      try {
+        for (const row of scalarIter) {
+          const sp = rawSpeedValue(row);
+          const rpm = rawRpmValue(row);
+          if (N === 0) {
+            minSpeedIdx = 0; minSpeedVal = sp;
+            maxSpeedIdx = 0; maxSpeedVal = sp;
+            minRpmIdx = 0; minRpmVal = rpm;
+            maxRpmIdx = 0; maxRpmVal = rpm;
+          } else {
+            if (sp < minSpeedVal) { minSpeedVal = sp; minSpeedIdx = N; }
+            if (sp > maxSpeedVal) { maxSpeedVal = sp; maxSpeedIdx = N; }
+            if (rpm < minRpmVal) { minRpmVal = rpm; minRpmIdx = N; }
+            if (rpm > maxRpmVal) { maxRpmVal = rpm; maxRpmIdx = N; }
+          }
+          N++;
+        }
+      } finally {
+        if (typeof scalarIter.return === 'function') scalarIter.return();
+      }
+
+      if (N === 0) return [];
+
+      // Pass 2:
+      if (N <= pointLimit) {
+        const fullSql = `
+          SELECT * FROM telemetry
+          WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
+          ORDER BY timestamp ASC, ingest_seq ASC
+        `;
+        const fullIter = db.prepare(fullSql).iterate(...scope.params, start, end);
+        const records = [];
+        try {
+          for (const row of fullIter) {
+            records.push(rowToRecord(row));
+          }
+        } finally {
+          if (typeof fullIter.return === 'function') fullIter.return();
+        }
+        return records;
+      }
+
+      if (pointLimit === 1) {
+        const sql = `
+          SELECT * FROM telemetry
+          WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
+          ORDER BY timestamp ASC, ingest_seq ASC
+          LIMIT 1
+        `;
+        const row = db.prepare(sql).get(...scope.params, start, end);
+        return row ? [rowToRecord(row)] : [];
+      }
+
+      if (pointLimit === 2) {
+        const firstSql = `
+          SELECT * FROM telemetry
+          WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
+          ORDER BY timestamp ASC, ingest_seq ASC
+          LIMIT 1
+        `;
+        const lastSql = `
+          SELECT * FROM telemetry
+          WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
+          ORDER BY timestamp DESC, ingest_seq DESC
+          LIMIT 1
+        `;
+        const firstRow = db.prepare(firstSql).get(...scope.params, start, end);
+        const lastRow = db.prepare(lastSql).get(...scope.params, start, end);
+        const records = [];
+        if (firstRow) records.push(rowToRecord(firstRow));
+        if (lastRow && (!firstRow || lastRow.id !== firstRow.id)) records.push(rowToRecord(lastRow));
+        return records;
+      }
+
+      const mandatory = new Set([0, N - 1, minSpeedIdx, maxSpeedIdx, minRpmIdx, maxRpmIdx]);
+      const retainedByIndex = new Map();
+      const candidates = new Set();
+      const selected = Array.from(mandatory);
+
+      const fullSql = `
         SELECT * FROM telemetry
         WHERE ${scope.where} AND timestamp >= ? AND timestamp <= ?
         ORDER BY timestamp ASC, ingest_seq ASC
       `;
-      const rows = db.prepare(sql).all(...scope.params, start, end);
-      return rows.map(rowToRecord);
+      const fullIter = db.prepare(fullSql).iterate(...scope.params, start, end);
+
+      try {
+        if (selected.length >= pointLimit) {
+          let index = 0;
+          for (const row of fullIter) {
+            if (mandatory.has(index)) {
+              retainedByIndex.set(index, rowToRecord(row));
+            }
+            index++;
+          }
+        } else {
+          const bucketCount = Math.max(1, pointLimit - selected.length);
+          let currentBucket = 0;
+          let bStart = Math.floor(currentBucket * N / bucketCount);
+          let bEnd = Math.max(bStart + 1, Math.floor((currentBucket + 1) * N / bucketCount));
+
+          let bMinSpeedIdx = bStart, bMinSpeedVal = 0, bMinSpeedRow = null;
+          let bMaxSpeedIdx = bStart, bMaxSpeedVal = 0, bMaxSpeedRow = null;
+          let bMinRpmIdx = bStart, bMinRpmVal = 0, bMinRpmRow = null;
+          let bMaxRpmIdx = bStart, bMaxRpmVal = 0, bMaxRpmRow = null;
+
+          let index = 0;
+          for (const row of fullIter) {
+            if (index === bStart) {
+              const sp = rawSpeedValue(row);
+              const rpm = rawRpmValue(row);
+              bMinSpeedIdx = index; bMinSpeedVal = sp; bMinSpeedRow = row;
+              bMaxSpeedIdx = index; bMaxSpeedVal = sp; bMaxSpeedRow = row;
+              bMinRpmIdx = index; bMinRpmVal = rpm; bMinRpmRow = row;
+              bMaxRpmIdx = index; bMaxRpmVal = rpm; bMaxRpmRow = row;
+            } else if (index < bEnd) {
+              const sp = rawSpeedValue(row);
+              const rpm = rawRpmValue(row);
+              if (sp < bMinSpeedVal) { bMinSpeedIdx = index; bMinSpeedVal = sp; bMinSpeedRow = row; }
+              if (sp > bMaxSpeedVal) { bMaxSpeedIdx = index; bMaxSpeedVal = sp; bMaxSpeedRow = row; }
+              if (rpm < bMinRpmVal) { bMinRpmIdx = index; bMinRpmVal = rpm; bMinRpmRow = row; }
+              if (rpm > bMaxRpmVal) { bMaxRpmIdx = index; bMaxRpmVal = rpm; bMaxRpmRow = row; }
+            }
+
+            if (mandatory.has(index)) {
+              retainedByIndex.set(index, rowToRecord(row));
+            }
+
+            if (index === bEnd - 1) {
+              candidates.add(bMinSpeedIdx);
+              candidates.add(bMaxSpeedIdx);
+              candidates.add(bMinRpmIdx);
+              candidates.add(bMaxRpmIdx);
+
+              if (!retainedByIndex.has(bMinSpeedIdx)) retainedByIndex.set(bMinSpeedIdx, rowToRecord(bMinSpeedRow));
+              if (!retainedByIndex.has(bMaxSpeedIdx)) retainedByIndex.set(bMaxSpeedIdx, rowToRecord(bMaxSpeedRow));
+              if (!retainedByIndex.has(bMinRpmIdx)) retainedByIndex.set(bMinRpmIdx, rowToRecord(bMinRpmRow));
+              if (!retainedByIndex.has(bMaxRpmIdx)) retainedByIndex.set(bMaxRpmIdx, rowToRecord(bMaxRpmRow));
+
+              currentBucket++;
+              if (currentBucket < bucketCount) {
+                bStart = Math.floor(currentBucket * N / bucketCount);
+                bEnd = Math.max(bStart + 1, Math.floor((currentBucket + 1) * N / bucketCount));
+              }
+            }
+
+            index++;
+          }
+        }
+      } finally {
+        if (typeof fullIter.return === 'function') fullIter.return();
+      }
+
+      const recSpeed = rec => rec.speed !== null && rec.speed !== undefined ? (Number(rec.speed) || 0) : (Number(rec.gpsSpeed) || 0);
+      const recRpm = rec => Number(rec.rpm) || 0;
+
+      if (selected.length >= pointLimit) {
+        const endpointIndexes = [0, N - 1];
+        const remainingIndexes = selected
+          .filter(idx => !endpointIndexes.includes(idx))
+          .sort((a, b) => {
+            const aRec = retainedByIndex.get(a);
+            const bRec = retainedByIndex.get(b);
+            const aScore = Math.max(Math.abs(recSpeed(aRec)), Math.abs(recRpm(aRec)));
+            const bScore = Math.max(Math.abs(recSpeed(bRec)), Math.abs(recRpm(bRec)));
+            return bScore - aScore || a - b;
+          });
+        return endpointIndexes
+          .concat(remainingIndexes.slice(0, pointLimit - endpointIndexes.length))
+          .sort((a, b) => a - b)
+          .map(idx => retainedByIndex.get(idx));
+      }
+
+      const remaining = pointLimit - selected.length;
+      const ranked = Array.from(candidates)
+        .filter(idx => !mandatory.has(idx))
+        .sort((a, b) => {
+          const aRec = retainedByIndex.get(a);
+          const bRec = retainedByIndex.get(b);
+          const aScore = Math.max(Math.abs(recSpeed(aRec)), Math.abs(recRpm(aRec)));
+          const bScore = Math.max(Math.abs(recSpeed(bRec)), Math.abs(recRpm(bRec)));
+          return bScore - aScore || a - b;
+        });
+      selected.push(...ranked.slice(0, remaining));
+      return selected.sort((a, b) => a - b).map(idx => retainedByIndex.get(idx));
     },
     getHistory({ startTime = null, endTime = null, cutoff = null, cap = 50, pageOffset = 0, tailMode = true, requestedVehicleId = null, authorizedScope = null } = {}) {
       const scope = buildScopeClause(requestedVehicleId, authorizedScope);
@@ -384,16 +602,16 @@ function initSqliteStorage(sqlitePath) {
           SELECT * FROM (
             SELECT * FROM telemetry
             WHERE ${whereClause}
-            ORDER BY timestamp DESC, ingest_seq DESC
+            ORDER BY ingest_seq DESC
             LIMIT ?
-          ) ORDER BY timestamp ASC, ingest_seq ASC
+          ) ORDER BY ingest_seq ASC
         `;
         rows = db.prepare(tailSql).all(...params, cap);
       } else {
         const pagedSql = `
           SELECT * FROM telemetry
           WHERE ${whereClause}
-          ORDER BY timestamp ASC, ingest_seq ASC
+          ORDER BY ingest_seq ASC
           LIMIT ? OFFSET ?
         `;
         rows = db.prepare(pagedSql).all(...params, cap, pageOffset);
@@ -418,11 +636,8 @@ function initSqliteStorage(sqlitePath) {
       const scope = buildScopeClause(requestedVehicleId, authorizedScope);
       const sql = `
         SELECT * FROM telemetry
-        WHERE ${scope.where} AND (
-          (speed IS NOT NULL AND speed > 0) OR
-          (gps_speed IS NOT NULL AND gps_speed > 0)
-        )
-        ORDER BY MAX(COALESCE(speed, 0), COALESCE(gps_speed, 0)) DESC, timestamp DESC
+        WHERE ${scope.where} AND COALESCE(speed, gps_speed, 0) > 0
+        ORDER BY COALESCE(speed, gps_speed, 0) DESC, ingest_seq ASC
         LIMIT 1
       `;
       const row = db.prepare(sql).get(...scope.params);
@@ -433,7 +648,7 @@ function initSqliteStorage(sqlitePath) {
       const sql = `
         SELECT * FROM telemetry
         WHERE ${scope.where} AND rpm IS NOT NULL AND rpm > 0
-        ORDER BY rpm DESC, timestamp DESC
+        ORDER BY rpm DESC, ingest_seq ASC
         LIMIT 1
       `;
       const row = db.prepare(sql).get(...scope.params);
@@ -447,6 +662,21 @@ function initSqliteStorage(sqlitePath) {
       `;
       const rows = db.prepare(sql).all(vehicleId, startTime, endTime);
       return rows.map(rowToRecord);
+    },
+    *iterateRecordsForDrive(vehicleId, startTime, endTime) {
+      const sql = `
+        SELECT * FROM telemetry
+        WHERE vehicle_id = ? AND timestamp >= ? AND timestamp <= ?
+        ORDER BY timestamp ASC, ingest_seq ASC
+      `;
+      const iterator = db.prepare(sql).iterate(vehicleId, startTime, endTime);
+      try {
+        for (const row of iterator) {
+          yield rowToRecord(row);
+        }
+      } finally {
+        if (typeof iterator.return === 'function') iterator.return();
+      }
     },
     getRecordsForSegmentation(vehicleFilter = null) {
       let where = '1 = 1';
@@ -486,8 +716,12 @@ function initSqliteStorage(sqlitePath) {
         ORDER BY vehicle_id ASC, timestamp ASC, ingest_seq ASC
       `;
       const iterator = db.prepare(sql).iterate(...params);
-      for (const row of iterator) {
-        yield rowToSegmentationRecord(row);
+      try {
+        for (const row of iterator) {
+          yield rowToSegmentationRecord(row);
+        }
+      } finally {
+        if (typeof iterator.return === 'function') iterator.return();
       }
     },
     classifyBatchEventIds(records) {

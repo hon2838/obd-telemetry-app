@@ -358,4 +358,219 @@ describe('Bounded SQLite Telemetry Engine', () => {
     expect(alphaD1.summary.fuelEfficiencySource).toBe('legacy-tank-level-drop');
     expect(alphaD1.summary.legacyTankEstimate.tankLitres).toBe(50);
   });
+
+  test('F1: getSeries downsamples boundedly and matches downsampleTelemetrySeries across budgets', () => {
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    const storage = initSqliteStorage(sqlitePath);
+    const baseTime = 1700000000000;
+    const records = [];
+    for (let i = 1; i <= 2000; i++) {
+      records.push({
+        timestamp: baseTime + i * 1000,
+        vehicleId: 'default',
+        eventId: `ev-${i}`,
+        rpm: (i * 37) % 6000,
+        speed: (i * 13) % 140,
+        gpsSpeed: (i * 17) % 150,
+        ingestSeq: i
+      });
+    }
+    storage.appendBatch(records);
+    storage.close();
+
+    const result = runServerProbe(tempDir, `
+      const allRecords = backend.sqliteStorage.getSeries(${baseTime}, ${baseTime + 2001000});
+      const comparisons = {};
+      for (const points of [1, 2, 4, 5, 10, 750]) {
+        const bounded = backend.sqliteStorage.getSeries(${baseTime}, ${baseTime + 2001000}, null, null, points);
+        const expected = backend.downsampleTelemetrySeries(allRecords, points);
+        comparisons[points] = {
+          boundedLen: bounded.length,
+          matches: JSON.stringify(bounded) === JSON.stringify(expected)
+        };
+      }
+
+      let getSeriesRecordCount = 0;
+      const originalSeries = backend.sqliteStorage.getSeries.bind(backend.sqliteStorage);
+      backend.sqliteStorage.getSeries = (...args) => {
+        const res = originalSeries(...args);
+        getSeriesRecordCount = res.length;
+        return res;
+      };
+      const res = await fastify.inject({
+        method: 'GET',
+        url: '/api/telemetry/series?start=' + ${baseTime} + '&end=' + ${baseTime + 2001000} + '&points=5',
+        headers: auth
+      });
+      process.stdout.write(JSON.stringify({
+        status: res.statusCode,
+        responseLength: res.json().length,
+        getSeriesRecordCount,
+        allRecordsLength: allRecords.length,
+        comparisons
+      }));
+    `);
+
+    expect(result.allRecordsLength).toBe(2000);
+    for (const points of [1, 2, 4, 5, 10, 750]) {
+      expect(result.comparisons[points].boundedLen).toBeLessThanOrEqual(points);
+      expect(result.comparisons[points].matches).toBe(true);
+    }
+    expect(result.status).toBe(200);
+    expect(result.responseLength).toBeLessThanOrEqual(5);
+    expect(result.getSeriesRecordCount).toBeLessThanOrEqual(5);
+  });
+
+  test('F1: getChanges with empty scope inspects 0 rows while advancing nextCursor', () => {
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    const storage = initSqliteStorage(sqlitePath);
+    const baseTime = 1700000000000;
+    const records = [];
+    for (let i = 1; i <= 2000; i++) {
+      records.push({
+        timestamp: baseTime + i * 1000,
+        vehicleId: 'default',
+        eventId: `ev-${i}`,
+        ingestSeq: i
+      });
+    }
+    storage.appendBatch(records);
+
+    const res = storage.getChanges(0, 1, null, []);
+    expect(res.records).toHaveLength(0);
+    expect(res.inspected).toBe(0);
+    expect(res.nextCursor).toBe(2000);
+    storage.close();
+  });
+
+  test('F2: getChanges closes iterator immediately allowing WAL checkpoint without lock', () => {
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    const storage = initSqliteStorage(sqlitePath);
+    const baseTime = 1700000000000;
+    const records = [];
+    for (let i = 1; i <= 50; i++) {
+      records.push({
+        timestamp: baseTime + i * 1000,
+        vehicleId: 'default',
+        eventId: `ev-${i}`,
+        ingestSeq: i
+      });
+    }
+    storage.appendBatch(records);
+
+    // Call partial getChanges
+    const change = storage.getChanges(0, 1);
+    expect(change.records).toHaveLength(1);
+
+    // Immediate checkpoint must succeed without "database table is locked" error
+    const checkpoint = storage.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    expect(checkpoint.busy).toBe(0);
+    storage.close();
+  });
+
+  test('F3: conflicting GPS/OBD speed rows respect speed precedence and match JSON mode', () => {
+    const baseTime = 1700000000000;
+    const records = [
+      { timestamp: baseTime, vehicleId: 'default', eventId: 'gps-spike', speed: 10, gpsSpeed: 200, ingestSeq: 1 },
+      { timestamp: baseTime + 1000, vehicleId: 'default', eventId: 'true-top', speed: 80, gpsSpeed: 70, ingestSeq: 2 },
+      { timestamp: baseTime + 2000, vehicleId: 'default', eventId: 'zero-speed-high-gps', speed: 0, gpsSpeed: 150, ingestSeq: 3 }
+    ];
+
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    const storage = initSqliteStorage(sqlitePath);
+    storage.appendBatch(records);
+
+    const top = storage.getTopSpeed();
+    expect(top).toBeDefined();
+    expect(top.eventId).toBe('true-top');
+    expect(top.speed).toBe(80);
+    storage.close();
+
+    // Verify /api/performance/records HTTP endpoint
+    const result = runServerProbe(tempDir, `
+      const res = await fastify.inject({ method: 'GET', url: '/api/performance/records', headers: auth });
+      process.stdout.write(JSON.stringify({
+        status: res.statusCode,
+        topSpeed: res.json().topSpeed?.speed
+      }));
+    `);
+    expect(result.status).toBe(200);
+    expect(result.topSpeed).toBe(80);
+  });
+
+  test('F4: out-of-order offline backfill preserves ingestSeq ordering in getHistory', () => {
+    const baseTime = 1700000000000;
+    const records = [
+      { timestamp: baseTime + 1000, vehicleId: 'default', eventId: 'newer-capture', ingestSeq: 1 },
+      { timestamp: baseTime, vehicleId: 'default', eventId: 'offline-backfill', ingestSeq: 2 }
+    ];
+
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    const storage = initSqliteStorage(sqlitePath);
+    storage.appendBatch(records);
+
+    // Tail mode
+    const tail = storage.getHistory({ cap: 1, tailMode: true });
+    expect(tail.records).toHaveLength(1);
+    expect(tail.records[0].eventId).toBe('offline-backfill');
+
+    // Paged mode
+    const page0 = storage.getHistory({ cap: 1, pageOffset: 0, tailMode: false });
+    expect(page0.records[0].eventId).toBe('newer-capture');
+    const page1 = storage.getHistory({ cap: 1, pageOffset: 1, tailMode: false });
+    expect(page1.records[0].eventId).toBe('offline-backfill');
+    storage.close();
+
+    // Verify /api/telemetry/history via HTTP
+    const result = runServerProbe(tempDir, `
+      const tailRes = await fastify.inject({ method: 'GET', url: '/api/telemetry/history?limit=1', headers: auth });
+      const paged0 = await fastify.inject({ method: 'GET', url: '/api/telemetry/history?limit=1&offset=0', headers: auth });
+      const paged1 = await fastify.inject({ method: 'GET', url: '/api/telemetry/history?limit=1&offset=1', headers: auth });
+      process.stdout.write(JSON.stringify({
+        tailEventId: tailRes.json()[0]?.eventId,
+        page0EventId: paged0.json()[0]?.eventId,
+        page1EventId: paged1.json()[0]?.eventId
+      }));
+    `);
+    expect(result.tailEventId).toBe('offline-backfill');
+    expect(result.page0EventId).toBe('newer-capture');
+    expect(result.page1EventId).toBe('offline-backfill');
+  });
+
+  test('F1: stream drive exports using iterateRecordsForDrive without array materialization', () => {
+    const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+    const storage = initSqliteStorage(sqlitePath);
+    const baseTime = 1700000000000;
+    const records = [
+      { timestamp: baseTime, vehicleId: 'default', eventId: 'exp-1', speed: 20, rpm: 1500, latitude: 37.77, longitude: -122.41, ingestSeq: 1 },
+      { timestamp: baseTime + 1000, vehicleId: 'default', eventId: 'exp-2', speed: 30, rpm: 2000, latitude: 37.78, longitude: -122.42, ingestSeq: 2 }
+    ];
+    storage.appendBatch(records);
+
+    const iter = storage.iterateRecordsForDrive('default', baseTime, baseTime + 1000);
+    const iterated = [];
+    for (const r of iter) {
+      iterated.push(r.eventId);
+    }
+    expect(iterated).toEqual(['exp-1', 'exp-2']);
+    storage.close();
+
+    // Verify CSV export endpoint
+    const result = runServerProbe(tempDir, `
+      const drives = backend.segmentDrives();
+      const driveId = drives[0].id;
+      const csv = await fastify.inject({ method: 'GET', url: '/api/drives/' + driveId + '/export/csv', headers: auth });
+      const gpx = await fastify.inject({ method: 'GET', url: '/api/drives/' + driveId + '/export/gpx', headers: auth });
+      process.stdout.write(JSON.stringify({
+        csvStatus: csv.statusCode,
+        csvHasHeader: csv.body.startsWith('Timestamp,Time,RPM,Speed'),
+        gpxStatus: gpx.statusCode,
+        gpxHasTrk: gpx.body.includes('<trkpt')
+      }));
+    `);
+    expect(result.csvStatus).toBe(200);
+    expect(result.csvHasHeader).toBe(true);
+    expect(result.gpxStatus).toBe(200);
+    expect(result.gpxHasTrk).toBe(true);
+  });
 });

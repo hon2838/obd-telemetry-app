@@ -2,11 +2,13 @@
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/cockpitRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
-    android:padding="4dp">
+    android:padding="4dp"
+    tools:ignore="MissingConstraints">
 
     <!-- Pre-inflated 12 polymorphic telemetry slots.
          Dynamic layout topologies (COMPACT_LAND, ULTRAWIDE_LAND, PORTRAIT_COCKPIT, EXPANSIVE_LAND)
