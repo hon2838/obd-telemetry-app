@@ -55,6 +55,9 @@ async function exportRoutes(fastify, options) {
   } = options;
 
   function driveRecords(bounds) {
+    if (sqliteStorage && typeof sqliteStorage.iterateRecordsForDrive === 'function') {
+      return sqliteStorage.iterateRecordsForDrive(bounds.vehicleId || DEFAULT_VEHICLE_ID, bounds.startTime, bounds.endTime);
+    }
     if (sqliteStorage) {
       return sqliteStorage.getRecordsForDrive(bounds.vehicleId || DEFAULT_VEHICLE_ID, bounds.startTime, bounds.endTime);
     }

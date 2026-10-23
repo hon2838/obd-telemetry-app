@@ -129,4 +129,155 @@ function calculateTripMetrics(records) {
   };
 }
 
-module.exports = { calculateTripMetrics, normalizeTripRecords, knownSpeed, validGps, MAX_INTERVAL_MS };
+function createTripMetricsAccumulator(vehicleId = 'default') {
+  let prevPoint = null;
+  let pendingPoint = null;
+  let firstTimestamp = null;
+  let lastTimestamp = null;
+  let usablePointCount = 0;
+  let duplicateCount = 0;
+  let invalidTimestampCount = 0;
+
+  let coveredMs = 0, gapCount = 0, maxGapMs = 0;
+  let speedMs = 0, speedIntegral = 0, fuelMs = 0, litres = 0;
+  let economyMs = 0, economyLitres = 0, economyDistanceKm = 0;
+  let distanceMs = 0, distanceKm = 0, gpsMs = 0, obdDistanceMs = 0, rejectedGpsIntervals = 0;
+  let idleStateMs = 0, idleMs = 0, idleFuelMs = 0, idleLitres = 0;
+
+  function flushPoint(point) {
+    if (usablePointCount === 0) {
+      firstTimestamp = point.timestamp;
+      lastTimestamp = point.timestamp;
+      prevPoint = point;
+      usablePointCount = 1;
+      return;
+    }
+    const a = prevPoint;
+    const b = point;
+    const dt = b.timestamp - a.timestamp;
+    maxGapMs = Math.max(maxGapMs, dt);
+    if (dt <= 0 || dt > MAX_INTERVAL_MS) {
+      if (dt > MAX_INTERVAL_MS) gapCount++;
+    } else {
+      coveredMs += dt;
+      const hours = dt / 3_600_000;
+      const sa = knownSpeed(a), sb = knownSpeed(b);
+      if (sa !== null && sb !== null) { speedMs += dt; speedIntegral += (sa + sb) / 2 * dt; }
+      const oa = knownObdSpeed(a), ob = knownObdSpeed(b);
+      const obdDistance = oa !== null && ob !== null ? (oa + ob) / 2 * hours : null;
+      let gpsKm = null;
+      if (validGps(a) && validGps(b)) {
+        const candidate = gpsDistance(a, b);
+        if (candidate / hours <= 500) gpsKm = candidate;
+        else rejectedGpsIntervals++;
+      }
+      if (gpsKm !== null) { distanceKm += gpsKm; gpsMs += dt; distanceMs += dt; }
+      else if (obdDistance !== null) { distanceKm += obdDistance; obdDistanceMs += dt; distanceMs += dt; }
+      const fa = fuelRate(a), fb = fuelRate(b);
+      const intervalLitres = fa !== null && fb !== null ? (fa + fb) / 2 * hours : null;
+      if (intervalLitres !== null) {
+        fuelMs += dt; litres += intervalLitres;
+        if (obdDistance !== null) { economyMs += dt; economyLitres += intervalLitres; economyDistanceKm += obdDistance; }
+      }
+      if (oa !== null && ob !== null && numeric(a.rpm, 20_000) && numeric(b.rpm, 20_000)) {
+        idleStateMs += dt;
+        if (engineRunning(a) && engineRunning(b) && oa <= IDLE_SPEED_KMH && ob <= IDLE_SPEED_KMH) {
+          idleMs += dt;
+          if (intervalLitres !== null) { idleFuelMs += dt; idleLitres += intervalLitres; }
+        }
+      }
+    }
+    prevPoint = point;
+    lastTimestamp = point.timestamp;
+    usablePointCount++;
+  }
+
+  return {
+    add(record) {
+      if (!record || typeof record !== 'object') return;
+      if (!numeric(record.timestamp)) {
+        invalidTimestampCount++;
+        return;
+      }
+      const recordVid = record.vehicleId || 'default';
+      if (recordVid !== vehicleId) {
+        throw new TypeError('Trip metrics require records from one vehicle');
+      }
+
+      if (pendingPoint === null) {
+        pendingPoint = record;
+        return;
+      }
+
+      if (record.timestamp === pendingPoint.timestamp) {
+        duplicateCount++;
+        if ((record.ingestSeq || 0) >= (pendingPoint.ingestSeq || 0)) {
+          pendingPoint = record;
+        }
+        return;
+      }
+
+      if (record.timestamp > pendingPoint.timestamp) {
+        flushPoint(pendingPoint);
+        pendingPoint = record;
+      }
+    },
+    finalize() {
+      if (pendingPoint !== null) {
+        flushPoint(pendingPoint);
+        pendingPoint = null;
+      }
+      const durationMs = usablePointCount > 1 ? lastTimestamp - firstTimestamp : 0;
+      const ratio = ms => durationMs > 0 ? rounded(ms / durationMs) : null;
+      const economy = economyMs > 0 && economyLitres > 0 ? economyDistanceKm / economyLitres : null;
+      const quality = {
+        durationSeconds: durationMs / 1000,
+        maxIntervalSeconds: MAX_INTERVAL_MS / 1000,
+        coveredSeconds: coveredMs / 1000,
+        coverageRatio: ratio(coveredMs),
+        gapCount,
+        maxGapSeconds: maxGapMs / 1000,
+        usablePointCount,
+        duplicateCount,
+        invalidTimestampCount,
+        distanceCoveredSeconds: distanceMs / 1000,
+        distanceCoverageRatio: ratio(distanceMs),
+        speedCoveredSeconds: speedMs / 1000,
+        speedCoverageRatio: ratio(speedMs),
+        fuelCoveredSeconds: fuelMs / 1000,
+        fuelCoverageRatio: ratio(fuelMs),
+        economyCoveredSeconds: economyMs / 1000,
+        economyCoverageRatio: ratio(economyMs),
+        idleStateCoveredSeconds: idleStateMs / 1000,
+        idleStateCoverageRatio: ratio(idleStateMs),
+        idleFuelCoveredSeconds: idleFuelMs / 1000,
+        idleFuelCoverageRatio: idleMs > 0 ? rounded(idleFuelMs / idleMs) : null,
+        gpsDistanceCoveredSeconds: gpsMs / 1000,
+        obdFallbackCoveredSeconds: obdDistanceMs / 1000,
+        rejectedGpsIntervals,
+        efficiencyLeaderboardEligible: economy !== null && economyDistanceKm >= 1 && durationMs >= 60_000 && economyMs / durationMs >= MIN_LEADERBOARD_COVERAGE,
+        minimumLeaderboardCoverageRatio: MIN_LEADERBOARD_COVERAGE
+      };
+      return {
+        distanceKm: distanceMs > 0 ? rounded(distanceKm, 2) : null,
+        distanceSource: gpsMs > 0 && obdDistanceMs > 0 ? 'gps-with-obd-speed-fallback' : gpsMs > 0 ? 'gps' : obdDistanceMs > 0 ? 'obd-speed' : 'unavailable',
+        distanceMethod: 'bounded-adjacent-gps-or-trapezoidal-obd-speed',
+        avgSpeed: speedMs > 0 ? rounded(speedIntegral / speedMs, 1) : null,
+        avgSpeedMethod: 'time-weighted-obd-speed-with-gps-speed-fallback',
+        estimatedFuelUsedLitres: fuelMs > 0 ? rounded(litres, 6) : null,
+        estimatedFuelEconomyKmL: rounded(economy, 2),
+        economyDistanceKm: economyMs > 0 ? rounded(economyDistanceKm, 4) : null,
+        economyFuelUsedLitres: economyMs > 0 ? rounded(economyLitres, 6) : null,
+        estimatedFuelSource: 'collector-maf-stoichiometric-petrol-estimate',
+        estimatedFuelMethod: 'adjacent-trapezoidal-rate-integration',
+        estimatedEconomyMethod: 'paired-obd-speed-distance-over-estimated-litres',
+        idleSeconds: idleStateMs > 0 ? idleMs / 1000 : null,
+        idleSpeedThresholdKmh: IDLE_SPEED_KMH,
+        estimatedIdleFuelLitres: idleFuelMs > 0 ? rounded(idleLitres, 6) : idleStateMs > 0 && idleMs === 0 ? 0 : null,
+        quality
+      };
+    }
+  };
+}
+
+module.exports = { calculateTripMetrics, normalizeTripRecords, knownSpeed, validGps, MAX_INTERVAL_MS, createTripMetricsAccumulator };

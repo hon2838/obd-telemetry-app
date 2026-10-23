@@ -27,7 +27,7 @@ const vehiclesRoutes = require('./routes/vehicles')
 const authRoutes = require('./routes/auth')
 const exportRoutes = require('./routes/export')
 const { initSqliteStorage } = require('./sqlite_storage')
-const { calculateTripMetrics, knownSpeed, validGps } = require('./trip_calculations')
+const { calculateTripMetrics, knownSpeed, validGps, createTripMetricsAccumulator } = require('./trip_calculations')
 
 // Read the expected API key from the environment at module load.
 // We deliberately do NOT provide a default: shipping a literal
@@ -1655,76 +1655,188 @@ function segmentDrives(vehicleFilter = null) {
     let driveCountForVid = 0;
     let currentDrive = null;
 
-    for (const record of sqliteStorage.iterateRecordsForSegmentation(vehicleFilter)) {
-      if (typeof record.timestamp !== 'number' || !Number.isFinite(record.timestamp) || record.timestamp < 0) {
-        continue;
-      }
-      const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
+    const createIncrementalDrive = (vid, record) => {
       const recordFuel = (record.fuelLevel !== null && record.fuelLevel !== undefined) ? record.fuelLevel : null;
       const recordRpm = record.rpm || 0;
       const recordSpeed = getRecordSpeed(record);
+      const tripAccumulator = createTripMetricsAccumulator(vid);
+      tripAccumulator.add(record);
 
-      if (currentVid !== vid) {
-        if (currentDrive) {
-          summarizedDrives.push(summarizeDriveSegment({
-            ...currentDrive,
-            id: `${currentVid}-${++driveCountForVid}`,
-            vehicleId: currentVid
-          }));
-          currentDrive = null;
-        }
-        currentVid = vid;
-        driveCountForVid = 0;
+      let legacyDistanceKm = 0;
+      let prevLegacyGps = null;
+      let startLocation = null;
+      let endLocation = null;
+
+      if (record.latitude && record.longitude && record.latitude !== 0 && record.longitude !== 0) {
+        prevLegacyGps = { lat: record.latitude, lon: record.longitude };
+      }
+      if (validGps(record)) {
+        startLocation = { lat: record.latitude, lon: record.longitude };
+        endLocation = { lat: record.latitude, lon: record.longitude };
       }
 
-      if (!currentDrive) {
-        currentDrive = {
-          startTime: record.timestamp,
-          endTime: record.timestamp,
-          maxRpm: recordRpm,
-          maxSpeed: recordSpeed,
-          startLevel: recordFuel,
-          endLevel: recordFuel,
-          recordCount: 1,
-          points: [record]
-        };
-      } else if (record.timestamp - currentDrive.endTime > GAP_THRESHOLD_MS) {
-        summarizedDrives.push(summarizeDriveSegment({
-          ...currentDrive,
-          id: `${currentVid}-${++driveCountForVid}`,
-          vehicleId: currentVid
-        }));
-        currentDrive = {
-          startTime: record.timestamp,
-          endTime: record.timestamp,
-          maxRpm: recordRpm,
-          maxSpeed: recordSpeed,
-          startLevel: recordFuel,
-          endLevel: recordFuel,
-          recordCount: 1,
-          points: [record]
-        };
-      } else {
-        currentDrive.endTime = record.timestamp;
-        currentDrive.maxRpm = Math.max(currentDrive.maxRpm, recordRpm);
-        currentDrive.maxSpeed = Math.max(currentDrive.maxSpeed, recordSpeed);
-        if (recordFuel !== null) {
-          if (currentDrive.startLevel === null) {
-            currentDrive.startLevel = recordFuel;
+      return {
+        vehicleId: vid,
+        startTime: record.timestamp,
+        endTime: record.timestamp,
+        maxRpm: recordRpm,
+        maxSpeed: recordSpeed,
+        startLevel: recordFuel,
+        endLevel: recordFuel,
+        recordCount: 1,
+        score: 100,
+        harshAccelCount: 0,
+        harshBrakeCount: 0,
+        highRpmCount: 0,
+        prevRawPoint: record,
+        legacyDistanceKm,
+        prevLegacyGps,
+        startLocation,
+        endLocation,
+        tripAccumulator
+      };
+    };
+
+    const addRecordToDrive = (drive, record) => {
+      drive.endTime = record.timestamp;
+      const recordFuel = (record.fuelLevel !== null && record.fuelLevel !== undefined) ? record.fuelLevel : null;
+      const recordRpm = record.rpm || 0;
+      const recordSpeed = getRecordSpeed(record);
+      drive.maxRpm = Math.max(drive.maxRpm, recordRpm);
+      drive.maxSpeed = Math.max(drive.maxSpeed, recordSpeed);
+      if (recordFuel !== null) {
+        if (drive.startLevel === null) {
+          drive.startLevel = recordFuel;
+        }
+        drive.endLevel = recordFuel;
+      }
+      drive.recordCount++;
+
+      const p1 = drive.prevRawPoint;
+      const p2 = record;
+      const dt = (p2.timestamp - p1.timestamp) / 1000;
+      if (dt > 0 && dt < 10) {
+        const s1 = knownSpeed(p1), s2 = knownSpeed(p2);
+        const accel = s1 !== null && s2 !== null ? (s2 - s1) / dt : 0;
+        if (accel > 10) {
+          drive.harshAccelCount++;
+          drive.score -= 1;
+        } else if (accel < -12) {
+          drive.harshBrakeCount++;
+          drive.score -= 1.5;
+        }
+      }
+      if ((p2.rpm || 0) > 4000) {
+        drive.highRpmCount++;
+      }
+      drive.prevRawPoint = p2;
+
+      if (record.latitude && record.longitude && record.latitude !== 0 && record.longitude !== 0) {
+        if (drive.prevLegacyGps) {
+          drive.legacyDistanceKm += getHaversineDistance(drive.prevLegacyGps.lat, drive.prevLegacyGps.lon, record.latitude, record.longitude);
+        }
+        drive.prevLegacyGps = { lat: record.latitude, lon: record.longitude };
+      }
+
+      if (validGps(record)) {
+        if (!drive.startLocation) {
+          drive.startLocation = { lat: record.latitude, lon: record.longitude };
+        }
+        drive.endLocation = { lat: record.latitude, lon: record.longitude };
+      }
+
+      drive.tripAccumulator.add(record);
+    };
+
+    const finalizeDrive = (drive, id) => {
+      let score = drive.score;
+      if (drive.highRpmCount > 10) {
+        score -= (drive.highRpmCount * 0.1);
+      }
+      const finalScore = Math.max(0, Math.min(100, Math.round(score)));
+      const durationMin = Math.round((drive.endTime - drive.startTime) / 60000);
+      const startStr = new Date(drive.startTime).toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      const tripMetrics = drive.tripAccumulator.finalize();
+
+      let fuelUsedPercent = 0;
+      if (drive.startLevel !== null && drive.endLevel !== null) {
+        fuelUsedPercent = Math.max(0, drive.startLevel - drive.endLevel);
+      }
+      const vehicle = vehiclesStore.find(v => v.id === drive.vehicleId);
+      const tankLitres = (vehicle && Number(vehicle.tankLitres) > 0) ? Number(vehicle.tankLitres) : 36;
+      const fuelUsedLitres = (fuelUsedPercent / 100) * tankLitres;
+      const fuelEfficiencyKmL = (fuelUsedLitres > 0 && drive.legacyDistanceKm > 0) ? (drive.legacyDistanceKm / fuelUsedLitres) : null;
+
+      return {
+        id,
+        vehicleId: drive.vehicleId,
+        startTime: drive.startTime,
+        endTime: drive.endTime,
+        label: `Drive #${id} - ${startStr} (${durationMin} min, ${drive.recordCount} pts)`,
+        summary: {
+          durationMin,
+          maxRpm: drive.maxRpm,
+          maxSpeed: drive.maxSpeed,
+          fuelUsedPercent: parseFloat(fuelUsedPercent.toFixed(1)),
+          pointCount: drive.recordCount,
+          ...tripMetrics,
+          startLocation: drive.startLocation,
+          endLocation: drive.endLocation,
+          fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+          fuelEfficiencySource: 'legacy-tank-level-drop',
+          legacyTankEstimate: {
+            fuelUsedLitres: drive.startLevel !== null && drive.endLevel !== null ? parseFloat(fuelUsedLitres.toFixed(3)) : null,
+            fuelEfficiencyKmL: fuelEfficiencyKmL ? parseFloat(fuelEfficiencyKmL.toFixed(2)) : null,
+            tankLitres,
+            tankCapacitySource: vehicle && Number(vehicle.tankLitres) > 0 ? 'vehicle-configured' : 'legacy-default-36-litres',
+            distanceMethod: 'legacy-unbounded-gps-polyline',
+            method: 'positive-endpoint-tank-level-drop-times-capacity',
+            reliability: 'unvalidated-not-used-for-leaderboard'
+          },
+          driverScore: finalScore,
+          harshEvents: { accel: drive.harshAccelCount, brake: drive.harshBrakeCount }
+        }
+      };
+    };
+
+    const iterator = sqliteStorage.iterateRecordsForSegmentation(vehicleFilter);
+    try {
+      for (const record of iterator) {
+        if (typeof record.timestamp !== 'number' || !Number.isFinite(record.timestamp) || record.timestamp < 0) {
+          continue;
+        }
+        const vid = record.vehicleId || DEFAULT_VEHICLE_ID;
+
+        if (currentVid !== vid) {
+          if (currentDrive) {
+            summarizedDrives.push(finalizeDrive(currentDrive, `${currentVid}-${++driveCountForVid}`));
+            currentDrive = null;
           }
-          currentDrive.endLevel = recordFuel;
+          currentVid = vid;
+          driveCountForVid = 0;
         }
-        currentDrive.recordCount++;
-        currentDrive.points.push(record);
-      }
-    }
 
-    if (currentDrive) {
-      summarizedDrives.push(summarizeDriveSegment({
-        ...currentDrive,
-        id: `${currentVid}-${++driveCountForVid}`,
-        vehicleId: currentVid
-      }));
+        if (!currentDrive) {
+          currentDrive = createIncrementalDrive(vid, record);
+        } else if (record.timestamp - currentDrive.endTime > GAP_THRESHOLD_MS) {
+          summarizedDrives.push(finalizeDrive(currentDrive, `${currentVid}-${++driveCountForVid}`));
+          currentDrive = createIncrementalDrive(vid, record);
+        } else {
+          addRecordToDrive(currentDrive, record);
+        }
+      }
+
+      if (currentDrive) {
+        summarizedDrives.push(finalizeDrive(currentDrive, `${currentVid}-${++driveCountForVid}`));
+      }
+    } finally {
+      if (typeof iterator?.return === 'function') iterator.return();
     }
 
     summarizedDrives.sort((a, b) => a.startTime - b.startTime);
@@ -2401,7 +2513,8 @@ fastify.get('/api/telemetry/series', async (request, reply) => {
       parsedStart.value,
       parsedEnd.value,
       vehicle,
-      vehicleScope(request.auth)
+      vehicleScope(request.auth),
+      parsedPoints.value
     )
   } else {
     records = telemetryDataStore.filter(record =>

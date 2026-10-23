@@ -1,4 +1,4 @@
-const { calculateTripMetrics, normalizeTripRecords, MAX_INTERVAL_MS } = require('./trip_calculations');
+const { calculateTripMetrics, normalizeTripRecords, MAX_INTERVAL_MS, createTripMetricsAccumulator } = require('./trip_calculations');
 const point = (seconds, overrides = {}) => ({ timestamp: seconds * 1000, speed: 60, rpm: 2000, fuelSystemStatus: 2, estimatedFuelRateLph: 6, ...overrides });
 
 test('integrates irregular capture intervals rather than averaging sample economy', () => {
@@ -155,4 +155,40 @@ test('never integrates between different vehicle endpoints or deduplicates their
   const records = [point(0, { vehicleId: 'a', eventId: 'same' }), point(10, { vehicleId: 'b', eventId: 'same' })];
   expect(normalizeTripRecords(records).points).toHaveLength(2);
   expect(() => calculateTripMetrics(records)).toThrow('one vehicle');
+});
+
+test('createTripMetricsAccumulator produces identical results to calculateTripMetrics incrementally', () => {
+  const dataset = [
+    point(0, { speed: 20, rpm: 1000, estimatedFuelRateLph: 2 }),
+    point(5, { speed: 40, rpm: 2000, estimatedFuelRateLph: 4 }),
+    // same timestamp duplicate with higher ingestSeq
+    point(5, { speed: 45, rpm: 2200, estimatedFuelRateLph: 4.5, ingestSeq: 10 }),
+    point(15, { speed: 0, rpm: 800, estimatedFuelRateLph: 1 }), // idle
+    point(25, { speed: 0, rpm: 800, estimatedFuelRateLph: 1 }), // idle
+    { timestamp: 'invalid', speed: 50 },
+    point(70, { speed: 60, rpm: 2500, estimatedFuelRateLph: 5 }) // gap > MAX_INTERVAL_MS
+  ];
+
+  const fullResult = calculateTripMetrics(dataset);
+  const acc = createTripMetricsAccumulator('default');
+  for (const r of dataset) {
+    acc.add(r);
+  }
+  const incrementalResult = acc.finalize();
+  expect(incrementalResult).toEqual(fullResult);
+});
+
+test('createTripMetricsAccumulator handles empty and singleton sequences identically', () => {
+  const emptyAcc = createTripMetricsAccumulator('default');
+  expect(emptyAcc.finalize()).toEqual(calculateTripMetrics([]));
+
+  const singleAcc = createTripMetricsAccumulator('default');
+  singleAcc.add(point(0));
+  expect(singleAcc.finalize()).toEqual(calculateTripMetrics([point(0)]));
+});
+
+test('createTripMetricsAccumulator rejects records with mismatched vehicleId', () => {
+  const acc = createTripMetricsAccumulator('car-1');
+  acc.add(point(0, { vehicleId: 'car-1' }));
+  expect(() => acc.add(point(10, { vehicleId: 'car-2' }))).toThrow('one vehicle');
 });
