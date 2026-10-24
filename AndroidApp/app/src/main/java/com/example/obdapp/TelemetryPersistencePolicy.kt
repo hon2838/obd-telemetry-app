@@ -19,7 +19,7 @@ internal class TelemetryPersistencePolicy(
     @Synchronized
     fun shouldPersist(sample: TelemetryEntity, obdConnected: Boolean, hasGpsFix: Boolean): Boolean {
         val last = lastPersisted
-        val shouldSave = when {
+        return when {
             // 1. First sample or vehicle switch
             last == null || sample.vehicleId != last.vehicleId -> true
 
@@ -49,14 +49,27 @@ internal class TelemetryPersistencePolicy(
 
             else -> false
         }
+    }
 
-        if (shouldSave) {
-            lastPersisted = sample
-            lastObdConnected = obdConnected
-            lastHasGpsFix = hasGpsFix
+    @Synchronized
+    fun recordPersisted(sample: TelemetryEntity, obdConnected: Boolean, hasGpsFix: Boolean) {
+        lastPersisted = sample
+        lastObdConnected = obdConnected
+        lastHasGpsFix = hasGpsFix
+    }
+
+    suspend fun persistIfEligible(
+        sample: TelemetryEntity,
+        obdConnected: Boolean,
+        hasGpsFix: Boolean,
+        insert: suspend (TelemetryEntity) -> Unit
+    ): Boolean {
+        if (!shouldPersist(sample, obdConnected, hasGpsFix)) {
+            return false
         }
-
-        return shouldSave
+        insert(sample)
+        recordPersisted(sample, obdConnected, hasGpsFix)
+        return true
     }
 
     private fun hasMeaningfulVoltageChange(current: Float?, previous: Float?): Boolean {
