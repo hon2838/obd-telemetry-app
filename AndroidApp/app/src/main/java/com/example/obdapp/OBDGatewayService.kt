@@ -975,8 +975,8 @@ class OBDGatewayService : Service(), LocationListener {
                     )
 
                     // Local persistence is independent of networking or slow PID completion
-                    if (persistencePolicy.shouldPersist(telemetry, obdConnection != null, gpsFix != null)) {
-                        dao.insert(telemetry)
+                    persistencePolicy.persistIfEligible(telemetry, obdConnection != null, gpsFix != null) { sample ->
+                        dao.insert(sample)
                     }
 
                     val effectiveSpeed = gpsFix?.speedKmh ?: speed?.toFloat()
