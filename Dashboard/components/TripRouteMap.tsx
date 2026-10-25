@@ -112,11 +112,11 @@ export default function TripRouteMap({ points, startLocation, endLocation }: Tri
       }).addTo(map);
 
       if (routeCoordinates.length > 1) {
-        L.polyline(routeCoordinates, { color: '#38bdf8', weight: 4, opacity: 0.9 }).addTo(map);
+        L.polyline(routeCoordinates, { color: '#5b8a9a', weight: 4, opacity: 0.9 }).addTo(map);
       }
-      if (start) L.circleMarker(start, { radius: 7, color: '#22c55e', fillOpacity: 1 }).addTo(map).bindTooltip('Start');
+      if (start) L.circleMarker(start, { radius: 7, color: '#3d8b6e', fillOpacity: 1 }).addTo(map).bindTooltip('Start');
       if (end && (!start || start[0] !== end[0] || start[1] !== end[1])) {
-        L.circleMarker(end, { radius: 7, color: '#f97316', fillOpacity: 1 }).addTo(map).bindTooltip('End');
+        L.circleMarker(end, { radius: 7, color: '#c2883a', fillOpacity: 1 }).addTo(map).bindTooltip('End');
       }
 
       const boundsPoints = routeCoordinates.length > 1 ? routeCoordinates : [start, end].filter(Boolean);
@@ -155,7 +155,7 @@ export default function TripRouteMap({ points, startLocation, endLocation }: Tri
   </div>;
 }
 
-const mapWrapperStyle: React.CSSProperties = { height: 320, borderRadius: 12, overflow: 'hidden', background: '#121214', position: 'relative' };
-const emptyStyle: React.CSSProperties = { padding: 28, textAlign: 'center', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.03)', borderRadius: 12 };
+const mapWrapperStyle: React.CSSProperties = { height: 320, borderRadius: 12, overflow: 'hidden', background: 'var(--surface-inset)', border: '1px solid var(--border)', position: 'relative' };
+const emptyStyle: React.CSSProperties = { padding: 28, textAlign: 'center', color: 'var(--text-secondary)', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12 };
 const mapErrorStyle: React.CSSProperties = { ...emptyStyle, position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 600 };
-const routeNoticeStyle: React.CSSProperties = { position: 'absolute', top: 8, left: 8, right: 8, padding: '6px 10px', background: 'rgba(18,18,20,0.88)', color: '#fff', fontSize: 12, borderRadius: 6, zIndex: 500 };
+const routeNoticeStyle: React.CSSProperties = { position: 'absolute', top: 8, left: 8, right: 8, padding: '6px 10px', background: 'var(--header-bg)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontSize: 12, borderRadius: 6, zIndex: 500 };

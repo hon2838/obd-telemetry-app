@@ -209,3 +209,142 @@ test.describe('Diagnostics Command Confirmation', () => {
     });
   });
 });
+
+test.describe('Theme Appearance & Color Scheme', () => {
+  test('switches theme between Dark, Light, and System, verifying meta, localStorage, data-theme, and computed colors', async ({ page }) => {
+    await page.route('**/api/vehicles', route => route.fulfill({ json: [mockVehicle] }));
+    await page.goto('/');
+
+    // Theme toggle button is present in the header
+    const toggleBtn = page.locator('.desktop-nav .theme-toggle-btn');
+    await expect(toggleBtn).toBeVisible();
+
+    // Verify initial default is system ('light dark') or dark
+    const initialMeta = await page.locator('meta[name="color-scheme"]').getAttribute('content');
+    expect(['light dark', 'dark', 'light']).toContain(initialMeta);
+
+    // 1. Switch to Light Mode via toggle button
+    let currentScheme = await page.evaluate(() => localStorage.getItem('color-scheme'));
+    for (let i = 0; i < 3 && currentScheme !== 'light'; i++) {
+      await toggleBtn.click();
+      currentScheme = await page.evaluate(() => localStorage.getItem('color-scheme'));
+    }
+    expect(currentScheme).toBe('light');
+
+    // Verify DOM updates for Light Mode
+    await expect(page.locator('meta[name="color-scheme"]')).toHaveAttribute('content', 'light');
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('light');
+
+    // Verify computed background color matches light mode token (#f3f5f8 = rgb(243, 245, 248))
+    const bodyBgLight = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    expect(bodyBgLight).toBe('rgb(243, 245, 248)');
+
+    // 2. Switch to Dark Mode
+    for (let i = 0; i < 3 && currentScheme !== 'dark'; i++) {
+      await toggleBtn.click();
+      currentScheme = await page.evaluate(() => localStorage.getItem('color-scheme'));
+    }
+    expect(currentScheme).toBe('dark');
+
+    // Verify DOM updates for Dark Mode
+    await expect(page.locator('meta[name="color-scheme"]')).toHaveAttribute('content', 'dark');
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');
+
+    // Verify computed background color matches dark mode token (#0f1318 = rgb(15, 19, 24))
+    const bodyBgDark = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    expect(bodyBgDark).toBe('rgb(15, 19, 24)');
+
+    // 3. Switch to System Mode
+    for (let i = 0; i < 3 && currentScheme !== 'light dark'; i++) {
+      await toggleBtn.click();
+      currentScheme = await page.evaluate(() => localStorage.getItem('color-scheme'));
+    }
+    expect(currentScheme).toBe('light dark');
+
+    // Verify DOM updates for System Mode
+    await expect(page.locator('meta[name="color-scheme"]')).toHaveAttribute('content', 'light dark');
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBeNull();
+
+    // 4. Also verify explicit selection on Account & Security page
+    await page.goto('/account');
+    const systemRadio = page.getByRole('radio', { name: /system/i });
+    const lightRadio = page.getByRole('radio', { name: /light/i });
+    const darkRadio = page.getByRole('radio', { name: /dark/i });
+
+    await expect(systemRadio).toBeVisible();
+    await expect(lightRadio).toBeVisible();
+    await expect(darkRadio).toBeVisible();
+
+    // Click Light on Account page
+    await lightRadio.click();
+    expect(await page.evaluate(() => localStorage.getItem('color-scheme'))).toBe('light');
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('light');
+    const bodyBgAccountLight = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    expect(bodyBgAccountLight).toBe('rgb(243, 245, 248)');
+
+    // Click Dark on Account page
+    await darkRadio.click();
+    expect(await page.evaluate(() => localStorage.getItem('color-scheme'))).toBe('dark');
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');
+    const bodyBgAccountDark = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    expect(bodyBgAccountDark).toBe('rgb(15, 19, 24)');
+
+    // Click System on Account page
+    await systemRadio.click();
+    expect(await page.evaluate(() => localStorage.getItem('color-scheme'))).toBe('light dark');
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBeNull();
+  });
+
+  test('theme radios support native tab and arrow-key selection', async ({ page }) => {
+    await page.route('**/api/vehicles', route => route.fulfill({ json: [mockVehicle] }));
+    await page.goto('/account');
+
+    const group = page.getByRole('radiogroup', { name: 'Color scheme options' });
+    const radios = group.getByRole('radio');
+    const system = group.getByRole('radio', { name: 'System' });
+    const light = group.getByRole('radio', { name: 'Light' });
+    const dark = group.getByRole('radio', { name: 'Dark' });
+
+    await system.check();
+    await page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+
+    // Tab enters the group at its checked radio; the next Tab leaves the whole group.
+    let enteredGroup = false;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await page.keyboard.press('Tab');
+      if (await system.evaluate(element => element === document.activeElement)) {
+        enteredGroup = true;
+        break;
+      }
+    }
+    expect(enteredGroup).toBe(true);
+    await expect(system).toBeFocused();
+    await expect(system).toBeChecked();
+    await expect(radios).toHaveCount(3);
+    await expect(group.getByRole('radio', { checked: true })).toHaveCount(1);
+
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => (document.activeElement as HTMLInputElement | null)?.name))
+      .not.toBe('color-scheme');
+    await page.keyboard.press('Shift+Tab');
+    await expect(system).toBeFocused();
+
+    const pressAndCheck = async (key: string, selected: typeof system) => {
+      await page.keyboard.press(key);
+      await expect(selected).toBeFocused();
+      await expect(selected).toBeChecked();
+      await expect(group.getByRole('radio', { checked: true })).toHaveCount(1);
+      await expect.poll(() => page.evaluate(() => localStorage.getItem('color-scheme')))
+        .toBe(await selected.getAttribute('value'));
+    };
+
+    await pressAndCheck('ArrowRight', light);
+    await pressAndCheck('ArrowDown', dark);
+    await pressAndCheck('ArrowLeft', light);
+    await pressAndCheck('ArrowUp', system);
+    await pressAndCheck('ArrowLeft', dark); // wraps backward
+    await pressAndCheck('ArrowRight', system); // wraps forward
+  });
+});

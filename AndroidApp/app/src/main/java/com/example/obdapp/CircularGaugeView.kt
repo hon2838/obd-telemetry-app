@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
 import android.view.View
+import androidx.core.content.ContextCompat
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -192,6 +193,12 @@ class CircularGaugeView @JvmOverloads constructor(
         }
     }
 
+    // Theme-aware semantic colors
+    private val colorCritical get() = ContextCompat.getColor(context, R.color.accent_red)
+    private val colorWarning get() = ContextCompat.getColor(context, R.color.accent_amber)
+    private val colorNormal get() = ContextCompat.getColor(context, R.color.accent_cyan)
+    private val colorUnavailable get() = ContextCompat.getColor(context, R.color.text_muted)
+
     // Pre-allocated graphic objects
     private val arcBounds = RectF()
     private val needlePath = Path()
@@ -199,70 +206,70 @@ class CircularGaugeView @JvmOverloads constructor(
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#1F2430")
+        color = ContextCompat.getColor(context, R.color.gauge_track)
     }
 
     private val activeArcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#5ED7D0")
+        color = ContextCompat.getColor(context, R.color.accent_cyan)
     }
 
     private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.parseColor("#4B5563")
+        color = ContextCompat.getColor(context, R.color.border_subtle)
     }
 
     private val majorTickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.parseColor("#9CA3AF")
+        color = ContextCompat.getColor(context, R.color.text_muted)
     }
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
-        color = Color.parseColor("#9CA3AF")
+        color = ContextCompat.getColor(context, R.color.text_muted)
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
 
     private val unitTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
-        color = Color.parseColor("#9CA3AF")
+        color = ContextCompat.getColor(context, R.color.text_secondary)
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
 
     private val valueTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
-        color = Color.WHITE
+        color = ContextCompat.getColor(context, R.color.text_primary)
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
 
     private val titleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
-        color = Color.parseColor("#6B7280")
+        color = ContextCompat.getColor(context, R.color.text_muted)
         letterSpacing = 0.08f
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
 
     private val needlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL_AND_STROKE
-        color = Color.parseColor("#EF4444")
+        color = ContextCompat.getColor(context, R.color.accent_red)
     }
 
     private val hubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.parseColor("#111827")
+        color = ContextCompat.getColor(context, R.color.card_elevated)
     }
 
     private val hubStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 3f
-        color = Color.parseColor("#374151")
+        color = ContextCompat.getColor(context, R.color.border_subtle)
     }
 
     private val peakPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#F59E0B")
+        color = ContextCompat.getColor(context, R.color.accent_amber)
     }
 
     private val startAngle = 135f
@@ -318,18 +325,18 @@ class CircularGaugeView @JvmOverloads constructor(
         // 2. Determine Color Zone based on current value (handles inverted thresholds & availability)
         val isLowCritical = criticalThreshold < warningThreshold
         val currentColor = if (!isAvailable) {
-            COLOR_UNAVAILABLE
+            colorUnavailable
         } else if (isLowCritical) {
             when {
-                currentValue <= criticalThreshold -> COLOR_CRITICAL
-                currentValue <= warningThreshold -> COLOR_WARNING
-                else -> COLOR_NORMAL
+                currentValue <= criticalThreshold -> colorCritical
+                currentValue <= warningThreshold -> colorWarning
+                else -> colorNormal
             }
         } else {
             when {
-                currentValue >= criticalThreshold -> COLOR_CRITICAL
-                currentValue >= warningThreshold -> COLOR_WARNING
-                else -> COLOR_NORMAL
+                currentValue >= criticalThreshold -> colorCritical
+                currentValue >= warningThreshold -> colorWarning
+                else -> colorNormal
             }
         }
         activeArcPaint.color = currentColor
@@ -430,12 +437,5 @@ class CircularGaugeView @JvmOverloads constructor(
 
         // Title at upper center
         canvas.drawText(title, cx, cy - (radius * 0.42f), titleTextPaint)
-    }
-
-    companion object {
-        private val COLOR_CRITICAL = Color.parseColor("#EF4444")
-        private val COLOR_WARNING = Color.parseColor("#F59E0B")
-        private val COLOR_NORMAL = Color.parseColor("#5ED7D0")
-        private val COLOR_UNAVAILABLE = Color.parseColor("#6B7280")
     }
 }

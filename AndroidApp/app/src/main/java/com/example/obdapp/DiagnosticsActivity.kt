@@ -24,6 +24,7 @@ class DiagnosticsActivity : AppCompatActivity() {
     private var refreshPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        DashboardConfigManager.applySavedTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_diagnostics)
 
@@ -183,17 +184,17 @@ class DiagnosticsActivity : AppCompatActivity() {
         val container = findViewById<LinearLayout>(R.id.dtcListContainer)
         container.removeAllViews()
         if (result.state == DtcReadDisplay.State.FAILED) {
-            container.addView(infoLine("Latest scan failed; current fault status is unknown.", Color.parseColor("#FF9500")))
-            result.error?.let { container.addView(infoLine("Read error: $it", Color.parseColor("#8E8E93"))) }
-            if (result.historical) container.addView(infoLine("Previous successful scan result (historical):", Color.parseColor("#8E8E93")))
+            container.addView(infoLine("Latest scan failed; current fault status is unknown.", getColor(R.color.accent_amber)))
+            result.error?.let { container.addView(infoLine("Read error: $it", getColor(R.color.text_muted))) }
+            if (result.historical) container.addView(infoLine("Previous successful scan result (historical):", getColor(R.color.text_muted)))
             if (result.historical && result.codes.isEmpty()) {
-                container.addView(infoLine("Previous successful scan had no stored codes.", Color.parseColor("#8E8E93")))
+                container.addView(infoLine("Previous successful scan had no stored codes.", getColor(R.color.text_muted)))
             }
         } else if (result.state == DtcReadDisplay.State.UNKNOWN) {
-            container.addView(infoLine("No confirmed scan result. Read codes when the vehicle connects.", Color.parseColor("#8E8E93")))
+            container.addView(infoLine("No confirmed scan result. Read codes when the vehicle connects.", getColor(R.color.text_muted)))
             return
         } else if (result.state == DtcReadDisplay.State.EMPTY) {
-            container.addView(infoLine("No fault codes detected in the last successful scan.", Color.parseColor("#34C759")))
+            container.addView(infoLine("No fault codes detected in the last successful scan.", getColor(R.color.accent_green_text)))
             return
         }
 
@@ -202,9 +203,9 @@ class DiagnosticsActivity : AppCompatActivity() {
             val d = detailByCode[code]
             val severity = d?.optString("severity") ?: "info"
             val color = when (severity) {
-                "severe" -> Color.parseColor("#FF3B30")
-                "moderate" -> Color.parseColor("#FF9500")
-                else -> Color.parseColor("#2563EB")
+                "severe" -> getColor(R.color.accent_red_text)
+                "moderate" -> getColor(R.color.accent_amber)
+                else -> getColor(R.color.accent_cyan)
             }
             val badge = TextView(this).apply {
                 text = code
@@ -216,7 +217,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             }
             val system = TextView(this).apply {
                 text = d?.optString("system") ?: ""
-                setTextColor(Color.parseColor("#8E8E93"))
+                setTextColor(getColor(R.color.text_muted))
                 textSize = 11f
             }
             val header = LinearLayout(this).apply {
@@ -230,7 +231,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             }
             val desc = TextView(this).apply {
                 text = d?.optString("description") ?: "No description available for this code."
-                setTextColor(Color.parseColor("#AEAEB2"))
+                setTextColor(getColor(R.color.text_secondary))
                 textSize = 13f
                 setPadding(0, 0, 0, 12)
             }
@@ -243,7 +244,7 @@ class DiagnosticsActivity : AppCompatActivity() {
         val container = findViewById<LinearLayout>(R.id.historyContainer)
         container.removeAllViews()
         if (history == null || history.length() == 0) {
-            container.addView(infoLine("No historical diagnostic events recorded.", Color.parseColor("#8E8E93")))
+            container.addView(infoLine("No historical diagnostic events recorded.", getColor(R.color.text_muted)))
             return
         }
         // newest first
@@ -265,10 +266,10 @@ class DiagnosticsActivity : AppCompatActivity() {
                 else "Clear command — failed/executing"
             }
             val color = if ((isRead && readSuccess == false) || (!isRead && !ev.optBoolean("success", false)))
-                Color.parseColor("#FF9500")
+                getColor(R.color.accent_amber)
             else if (isRead && codeList.isNotEmpty())
-                Color.parseColor("#FF3B30")
-            else Color.parseColor("#AEAEB2")
+                getColor(R.color.accent_red_text)
+            else getColor(R.color.text_secondary)
             container.addView(infoLine("$time — $summary", color))
         }
     }

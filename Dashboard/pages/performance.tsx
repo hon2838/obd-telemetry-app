@@ -138,7 +138,7 @@ export default function PerformanceDashboard() {
         <div className="glass-panel-static metric-summary-card">
           <div className="metric-summary-header">
             <span className="metric-summary-label">Highest RPM</span>
-            <Activity size={16} color="var(--accent-purple)" />
+            <Activity size={16} color="var(--accent-cyan)" />
           </div>
           <div className="metric-summary-value">
             {records.highestRpm && typeof records.highestRpm.rpm === 'number' && records.highestRpm.rpm > 0
@@ -253,11 +253,11 @@ export default function PerformanceDashboard() {
             <div style={{ height: '280px', width: '100%' }}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                   <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={11} />
                   <YAxis stroke="var(--text-muted)" fontSize={11} domain={['dataMin - 1', 'dataMax + 1']} unit="s" />
-                  <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
-                  <Line type="monotone" dataKey="time" name="0-100 Time (s)" stroke="var(--accent-amber)" strokeWidth={2} dot={{ r: 4, fill: 'var(--accent-amber)' }} isAnimationActive={false} />
+                  <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
+                  <Line type="monotone" dataKey="time" name="0-100 Time (s)" stroke="var(--chart-4)" strokeWidth={2} dot={{ r: 4, fill: 'var(--chart-4)' }} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

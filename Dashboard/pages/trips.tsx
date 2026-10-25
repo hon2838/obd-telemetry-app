@@ -363,7 +363,7 @@ export default function TripsDashboard() {
         <div className="glass-panel-static metric-summary-card">
           <div className="metric-summary-header">
             <span className="metric-summary-label">Longest Trip</span>
-            <TrendingUp size={16} color="var(--accent-purple)" />
+            <TrendingUp size={16} color="var(--accent-cyan)" />
           </div>
           <div className="metric-summary-value">{loaded ? formatTripMetric(longestTrip, 2, 'km') : '—'}</div>
           <div className="metric-summary-subtext">Single longest recorded journey</div>
@@ -563,22 +563,22 @@ export default function TripsDashboard() {
                 <AreaChart data={chartData}>
                   <defs>
                     <linearGradient id="colorDist" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#48c5b3" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="#48c5b3" stopOpacity={0}/>
+                      <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0}/>
                     </linearGradient>
                     <linearGradient id="colorEff" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#34d399" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="#34d399" stopOpacity={0}/>
+                      <stop offset="5%" stopColor="var(--chart-3)" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="var(--chart-3)" stopOpacity={0}/>
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                   <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={11} />
                   <YAxis yAxisId="left" stroke="var(--text-muted)" fontSize={11} unit=" km" />
                   <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" fontSize={11} unit=" km/L" />
-                  <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                  <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
                   <Legend wrapperStyle={{ fontSize: '12px' }} />
-                  <Area yAxisId="left" type="monotone" dataKey="distance" name="Distance (km)" stroke="#48c5b3" fillOpacity={1} fill="url(#colorDist)" />
-                  <Area yAxisId="right" type="monotone" dataKey="efficiency" name="Estimated economy (km/L)" connectNulls={false} stroke="#34d399" fillOpacity={1} fill="url(#colorEff)" />
+                  <Area yAxisId="left" type="monotone" dataKey="distance" name="Distance (km)" stroke="var(--chart-1)" fillOpacity={1} fill="url(#colorDist)" />
+                  <Area yAxisId="right" type="monotone" dataKey="efficiency" name="Estimated economy (km/L)" connectNulls={false} stroke="var(--chart-3)" fillOpacity={1} fill="url(#colorEff)" />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -783,15 +783,15 @@ export default function TripsDashboard() {
                 <div style={{ height: '280px', width: '100%' }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={selectedDrivePoints}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                       <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={11} minTickGap={30} />
-                      <YAxis yAxisId="left" stroke="#48c5b3" fontSize={11} unit=" km/h" />
-                      <YAxis yAxisId="right" orientation="right" stroke="#b395f5" fontSize={11} />
-                      <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                      <YAxis yAxisId="left" stroke="var(--chart-1)" fontSize={11} unit=" km/h" />
+                      <YAxis yAxisId="right" orientation="right" stroke="var(--chart-2)" fontSize={11} />
+                      <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
                       <Legend wrapperStyle={{ fontSize: '12px' }} />
-                      <Brush dataKey="time" height={24} stroke="#48c5b3" fill="rgba(0,0,0,0.2)" />
-                      <Line yAxisId="left" type="monotone" dataKey="speed" name="Speed (km/h)" connectNulls={false} stroke="#48c5b3" dot={false} strokeWidth={2} isAnimationActive={false} />
-                      <Line yAxisId="right" type="monotone" dataKey="rpm" name="RPM" connectNulls={false} stroke="#b395f5" dot={false} strokeWidth={2} isAnimationActive={false} />
+                      <Brush dataKey="time" height={24} stroke="var(--chart-1)" fill="var(--surface-inset)" />
+                      <Line yAxisId="left" type="monotone" dataKey="speed" name="Speed (km/h)" connectNulls={false} stroke="var(--chart-1)" dot={false} strokeWidth={2} isAnimationActive={false} />
+                      <Line yAxisId="right" type="monotone" dataKey="rpm" name="RPM" connectNulls={false} stroke="var(--chart-2)" dot={false} strokeWidth={2} isAnimationActive={false} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>

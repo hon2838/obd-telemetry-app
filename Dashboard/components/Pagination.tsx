@@ -149,7 +149,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '14px',
     padding: '14px 18px',
     borderTop: '1px solid var(--border)',
-    backgroundColor: 'rgba(7, 11, 15, 0.45)',
+    backgroundColor: 'var(--surface-inset)',
     borderBottomLeftRadius: 'var(--radius-lg)',
     borderBottomRightRadius: 'var(--radius-lg)'
   },
@@ -177,7 +177,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)'
   },
   select: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'var(--surface)',
     border: '1px solid var(--border)',
     borderRadius: 'var(--radius-sm)',
     color: 'var(--text-primary)',
@@ -187,8 +187,8 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none'
   },
   option: {
-    backgroundColor: '#151a21',
-    color: '#f3f5f4'
+    backgroundColor: 'var(--surface)',
+    color: 'var(--text-primary)'
   },
   buttonGroup: {
     display: 'flex',
@@ -202,11 +202,11 @@ const styles: Record<string, React.CSSProperties> = {
     width: '32px',
     height: '32px',
     borderRadius: 'var(--radius-sm)',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'var(--surface-control)',
     border: '1px solid var(--border)',
     color: 'var(--text-primary)',
     cursor: 'pointer',
-    transition: 'all 0.15s ease'
+    transition: 'color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease'
   },
   pageBtn: {
     display: 'flex',
@@ -216,16 +216,16 @@ const styles: Record<string, React.CSSProperties> = {
     height: '32px',
     padding: '0 8px',
     borderRadius: 'var(--radius-sm)',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: 'transparent',
     border: '1px solid transparent',
     color: 'var(--text-secondary)',
     fontSize: '13px',
     fontWeight: 500,
     cursor: 'pointer',
-    transition: 'all 0.15s ease'
+    transition: 'color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease'
   },
   activePageBtn: {
-    backgroundColor: 'rgba(94, 215, 208, 0.15)',
+    backgroundColor: 'var(--od-tint)',
     borderColor: 'var(--accent-cyan)',
     color: 'var(--accent-cyan)',
     fontWeight: 700

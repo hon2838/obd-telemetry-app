@@ -7,6 +7,7 @@ import android.view.View
 import android.widget.ImageButton
 import android.widget.TextView
 import androidx.appcompat.widget.PopupMenu
+import androidx.core.content.ContextCompat
 
 // Shared pill and hamburger navigation across app pages. Add a Page entry + a pill in
 // view_nav_bar.xml, then call AppNav.setup(activity, page) in onCreate.
@@ -78,7 +79,12 @@ object AppNav {
         val pill = activity.findViewById<TextView>(pillId) ?: return
         val active = page == current
         pill.setBackgroundResource(if (active) R.drawable.nav_pill_active else R.drawable.nav_pill_inactive)
-        pill.setTextColor(if (active) Color.parseColor("#5ED7D0") else Color.parseColor("#AEAEB2"))
+        pill.setTextColor(
+            ContextCompat.getColor(
+                activity,
+                if (active) R.color.accent_cyan else R.color.text_secondary
+            )
+        )
         pill.setOnClickListener {
             if (!active) activity.startActivity(Intent(activity, target))
         }

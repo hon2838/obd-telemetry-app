@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
 import android.view.View
+import androidx.core.content.ContextCompat
 
 /**
  * Modern, high-performance horizontal bar gauge for automotive metrics
@@ -102,6 +103,12 @@ class LinearBarGaugeView @JvmOverloads constructor(
 
     private var baseTitleTextSize = 14f
     private var baseValueTextSize = 18f
+    // Theme-aware semantic colors
+    private val colorCritical get() = ContextCompat.getColor(context, R.color.accent_red)
+    private val colorWarning get() = ContextCompat.getColor(context, R.color.accent_amber)
+    private val colorNormal get() = ContextCompat.getColor(context, R.color.accent_cyan)
+    private val colorUnavailable get() = ContextCompat.getColor(context, R.color.text_muted)
+
     private var barHeightPx = 18f
 
     private val trackBounds = RectF()
@@ -109,29 +116,29 @@ class LinearBarGaugeView @JvmOverloads constructor(
 
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.parseColor("#1F2430")
+        color = ContextCompat.getColor(context, R.color.gauge_track)
     }
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.parseColor("#5ED7D0")
+        color = ContextCompat.getColor(context, R.color.accent_cyan)
     }
 
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.LEFT
-        color = Color.parseColor("#9CA3AF")
+        color = ContextCompat.getColor(context, R.color.text_muted)
         letterSpacing = 0.05f
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
 
     private val valuePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.RIGHT
-        color = Color.WHITE
+        color = ContextCompat.getColor(context, R.color.text_primary)
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
     }
 
     private val limitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#6B7280")
+        color = ContextCompat.getColor(context, R.color.text_muted)
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
 
@@ -167,7 +174,7 @@ class LinearBarGaugeView @JvmOverloads constructor(
         // Format Value + Unit from cache (zero allocation)
         val formattedValue = cachedFormattedValue
 
-        valuePaint.color = if (isAvailable) Color.WHITE else COLOR_UNAVAILABLE
+        valuePaint.color = if (isAvailable) ContextCompat.getColor(context, R.color.text_primary) else colorUnavailable
 
         // Adjust text sizes if title + value collide
         val availableW = w - paddingH - rightMargin
@@ -202,15 +209,15 @@ class LinearBarGaugeView @JvmOverloads constructor(
             val isLowCritical = criticalThreshold < warningThreshold
             val barColor = if (isLowCritical) {
                 when {
-                    currentValue <= criticalThreshold -> COLOR_CRITICAL
-                    currentValue <= warningThreshold -> COLOR_WARNING
-                    else -> COLOR_NORMAL
+                    currentValue <= criticalThreshold -> colorCritical
+                    currentValue <= warningThreshold -> colorWarning
+                    else -> colorNormal
                 }
             } else {
                 when {
-                    currentValue >= criticalThreshold -> COLOR_CRITICAL
-                    currentValue >= warningThreshold -> COLOR_WARNING
-                    else -> COLOR_NORMAL
+                    currentValue >= criticalThreshold -> colorCritical
+                    currentValue >= warningThreshold -> colorWarning
+                    else -> colorNormal
                 }
             }
             fillPaint.color = barColor
@@ -230,12 +237,5 @@ class LinearBarGaugeView @JvmOverloads constructor(
             limitPaint.textAlign = Paint.Align.RIGHT
             canvas.drawText(cachedMaxLabel, w - paddingH, footerY, limitPaint)
         }
-    }
-
-    companion object {
-        private val COLOR_UNAVAILABLE = Color.parseColor("#6B7280")
-        private val COLOR_CRITICAL = Color.parseColor("#EF4444")
-        private val COLOR_WARNING = Color.parseColor("#F59E0B")
-        private val COLOR_NORMAL = Color.parseColor("#5ED7D0")
     }
 }

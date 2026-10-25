@@ -318,7 +318,7 @@ export default function Maintenance() {
                           type="button"
                           onClick={() => handleMarkServiced(item.id)}
                           className="btn-secondary"
-                          style={{ padding: '0.3rem 0.55rem', fontSize: '0.75rem', color: 'var(--accent-green)', borderColor: 'rgba(52, 211, 153, 0.3)' }}
+                          style={{ padding: '0.3rem 0.55rem', fontSize: '0.75rem', color: 'var(--accent-green)', borderColor: 'var(--accent-green)' }}
                         >
                           Mark Completed
                         </button>

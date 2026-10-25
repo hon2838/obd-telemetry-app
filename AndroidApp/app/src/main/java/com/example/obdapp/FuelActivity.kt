@@ -33,6 +33,7 @@ class FuelActivity : AppCompatActivity() {
     private val dateFmt = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        DashboardConfigManager.applySavedTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_fuel)
 
@@ -124,13 +125,13 @@ class FuelActivity : AppCompatActivity() {
             val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             header.addView(TextView(this).apply {
                 text = String.format(Locale.getDefault(), "%.1f L", log.litres)
-                setTextColor(Color.WHITE)
+                setTextColor(getColor(R.color.text_primary))
                 textSize = 16f
                 setTypeface(Typeface.DEFAULT_BOLD)
             })
             header.addView(TextView(this).apply {
                 text = if (log.ts > 0) dateFmt.format(Date(log.ts)) else ""
-                setTextColor(Color.parseColor("#8E8E93"))
+                setTextColor(getColor(R.color.text_muted))
                 textSize = 12f
                 gravity = Gravity.END
             }, LinearLayout.LayoutParams(
@@ -147,7 +148,7 @@ class FuelActivity : AppCompatActivity() {
 
             row.addView(TextView(this).apply {
                 text = "$economyText  •  $fillLabel  •  ${String.format(Locale.getDefault(), "%,.0f", log.odo)} km  •  ${if (log.source == "app") "logged in app" else "logged on web"}"
-                setTextColor(Color.parseColor("#AEAEB2"))
+                setTextColor(getColor(R.color.text_secondary))
                 textSize = 13f
                 setPadding(0, 10, 0, 0)
             })
@@ -158,7 +159,7 @@ class FuelActivity : AppCompatActivity() {
     private fun muted(text: String, sizeSp: Int): TextView {
         return TextView(this).apply {
             this.text = text
-            setTextColor(Color.parseColor("#8E8E93"))
+            setTextColor(getColor(R.color.text_muted))
             textSize = sizeSp.toFloat()
         }
     }

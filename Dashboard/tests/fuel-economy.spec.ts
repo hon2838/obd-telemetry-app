@@ -43,8 +43,10 @@ for (const sample of [
     page.on('pageerror', error => pageErrors.push(error.message));
     await page.goto('/');
     const data = await (await snapshot).json();
-    expect(data.records[0].estimatedFuelEconomyKmL).toBe(sample.value);
-    if (sample.rate !== undefined) expect(data.records[0].estimatedFuelRateLph).toBe(sample.rate);
+    // JSON history can retain null, while SQLite omits nullable optional fields.
+    // Both mean unavailable; nullish normalization must still preserve zero.
+    expect(data.records[0].estimatedFuelEconomyKmL ?? null).toBe(sample.value);
+    if (sample.rate !== undefined) expect(data.records[0].estimatedFuelRateLph ?? null).toBe(sample.rate);
     await expect(page.locator('.glass-panel').filter({
       has: page.getByText('Engine Speed', { exact: true }),
     })).toContainText('1,000');

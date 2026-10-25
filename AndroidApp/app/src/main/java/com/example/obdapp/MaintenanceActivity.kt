@@ -28,6 +28,7 @@ class MaintenanceActivity : AppCompatActivity() {
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        DashboardConfigManager.applySavedTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_maintenance)
 
@@ -165,9 +166,9 @@ class MaintenanceActivity : AppCompatActivity() {
         val notes = item.optString("notes", "")
 
         val chipColor = when (status) {
-            "overdue" -> Color.parseColor("#FF3B30")
-            "due_soon" -> Color.parseColor("#FF9500")
-            else -> Color.parseColor("#34C759")
+            "overdue" -> getColor(R.color.accent_red_text)
+            "due_soon" -> getColor(R.color.accent_amber)
+            else -> getColor(R.color.accent_green_text)
         }
         val chipLabel = when (status) {
             "overdue" -> "OVERDUE"
@@ -187,7 +188,7 @@ class MaintenanceActivity : AppCompatActivity() {
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         header.addView(TextView(this).apply {
             text = name
-            setTextColor(Color.WHITE)
+            setTextColor(getColor(R.color.text_primary))
             textSize = 16f
             setTypeface(Typeface.DEFAULT_BOLD)
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -209,7 +210,7 @@ class MaintenanceActivity : AppCompatActivity() {
                         if (kmUntil <= 0) append(" — overdue!") else append(String.format(Locale.getDefault(), " • %.0f km left", kmUntil))
                     }
                 }
-                setTextColor(Color.parseColor("#AEAEB2"))
+                setTextColor(getColor(R.color.text_secondary))
                 textSize = 13f
                 setPadding(0, 10, 0, 0)
             })
@@ -222,7 +223,7 @@ class MaintenanceActivity : AppCompatActivity() {
                         if (daysUntil <= 0) append(" — overdue!") else append(" • $daysUntil days left")
                     }
                 }
-                setTextColor(Color.parseColor("#AEAEB2"))
+                setTextColor(getColor(R.color.text_secondary))
                 textSize = 13f
                 setPadding(0, 4, 0, 0)
             })
@@ -231,7 +232,7 @@ class MaintenanceActivity : AppCompatActivity() {
             row.addView(TextView(this).apply {
                 text = "Last service: ${String.format(Locale.getDefault(), "%,.0f", lastServiceOdo)} km" +
                         if (lastServiceDate > 0) " \u2022 ${SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(lastServiceDate))}" else ""
-                setTextColor(Color.parseColor("#8E8E93"))
+                setTextColor(getColor(R.color.text_muted))
                 textSize = 12f
                 setPadding(0, 10, 0, 0)
             })
@@ -239,7 +240,7 @@ class MaintenanceActivity : AppCompatActivity() {
         if (notes.isNotBlank()) {
             row.addView(TextView(this).apply {
                 text = "Notes: $notes"
-                setTextColor(Color.parseColor("#8E8E93"))
+                setTextColor(getColor(R.color.text_muted))
                 textSize = 12f
                 setPadding(0, 6, 0, 0)
             })
@@ -252,7 +253,7 @@ class MaintenanceActivity : AppCompatActivity() {
         }
         actions.addView(TextView(this).apply {
             text = "MARK SERVICED"
-            setTextColor(Color.parseColor("#34C759"))
+            setTextColor(getColor(R.color.accent_green_text))
             textSize = 12f
             setTypeface(Typeface.DEFAULT_BOLD)
             background = androidx.core.content.ContextCompat.getDrawable(this@MaintenanceActivity, R.drawable.btn_diag_read_bg)
@@ -262,7 +263,7 @@ class MaintenanceActivity : AppCompatActivity() {
         })
         actions.addView(TextView(this).apply {
             text = "DELETE"
-            setTextColor(Color.parseColor("#FF6B62"))
+            setTextColor(getColor(R.color.accent_red_text))
             textSize = 12f
             setTypeface(Typeface.DEFAULT_BOLD)
             background = androidx.core.content.ContextCompat.getDrawable(this@MaintenanceActivity, R.drawable.btn_diag_clear_bg)
@@ -351,7 +352,7 @@ class MaintenanceActivity : AppCompatActivity() {
     private fun muted(text: String, sizeSp: Int): TextView {
         return TextView(this).apply {
             this.text = text
-            setTextColor(Color.parseColor("#8E8E93"))
+            setTextColor(getColor(R.color.text_muted))
             textSize = sizeSp.toFloat()
         }
     }

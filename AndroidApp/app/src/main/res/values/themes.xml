@@ -1,12 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dark theme so system widgets match the hand-painted dark UI -->
-    <style name="Theme.OBDGateway" parent="Theme.AppCompat.NoActionBar">
+    <style name="Theme.OBDApp.Base" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
         <item name="android:colorBackground">@color/background</item>
-        <item name="colorPrimary">@color/accent_blue</item>
-        <item name="colorPrimaryDark">@color/background</item>
-        <item name="colorAccent">@color/accent_green</item>
+        <item name="android:statusBarColor">@color/header_bg</item>
+        <item name="android:navigationBarColor">@color/navigation_bar_color</item>
+        <item name="android:windowLightStatusBar">@bool/system_bar_dark_icons</item>
+        <item name="colorPrimary">@color/btn_primary_bg</item>
+        <item name="colorPrimaryDark">@color/header_bg</item>
+        <item name="colorAccent">@color/accent_cyan</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
         <item name="android:textColorHint">@color/text_muted</item>
     </style>
+
+    <style name="Theme.OBDApp" parent="Theme.OBDApp.Base" />
+    <style name="Theme.OBDGateway" parent="Theme.OBDApp" />
 </resources>

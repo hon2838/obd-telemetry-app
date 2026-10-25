@@ -3,9 +3,11 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { apiFetch, applyAuthResponse } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import PageHeader from '../components/PageHeader';
 import {
-  Shield, KeyRound, Smartphone, Trash2, CheckCircle2, AlertCircle, RefreshCw, Radio, Lock, Car, Plus
+  Shield, KeyRound, Smartphone, Trash2, CheckCircle2, AlertCircle, RefreshCw, Radio, Lock, Car, Plus,
+  Sun, Moon, Monitor
 } from 'lucide-react';
 
 interface PairedDevice {
@@ -26,6 +28,7 @@ interface PairedDevice {
 
 export default function AccountSecurityPage() {
   const { profile, refreshProfile } = useAuth();
+  const { colorScheme, resolvedTheme, setColorScheme } = useTheme();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -174,6 +177,82 @@ export default function AccountSecurityPage() {
         gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 380px), 1fr))',
         gap: '1rem'
       }}>
+        {/* Card: Theme Appearance */}
+        <section className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }} aria-label="Theme appearance">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <Monitor size={18} color="var(--accent-cyan)" />
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+              Theme Appearance
+            </h2>
+          </div>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
+            Configure dashboard appearance: choose dark, light, or automatic system mode.
+          </p>
+          <div
+            role="radiogroup"
+            aria-label="Color scheme options"
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}
+          >
+            {[
+              { id: 'light dark' as const, label: 'System', icon: Monitor, desc: 'Follows OS' },
+              { id: 'light' as const, label: 'Light', icon: Sun, desc: 'High contrast' },
+              { id: 'dark' as const, label: 'Dark', icon: Moon, desc: 'Automotive slate' },
+            ].map(option => {
+              const isSelected = colorScheme === option.id;
+              const Icon = option.icon;
+              return (
+                <label
+                  key={option.id}
+                  className="btn-secondary theme-option"
+                  style={{
+                    position: 'relative',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    padding: '0.85rem 0.5rem',
+                    borderRadius: 'var(--radius-md)',
+                    background: isSelected ? 'var(--od-tint)' : 'var(--surface-control)',
+                    borderColor: isSelected ? 'var(--accent-cyan)' : 'var(--border)',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="color-scheme"
+                    value={option.id}
+                    checked={isSelected}
+                    onChange={() => setColorScheme(option.id)}
+                    aria-label={option.label}
+                    style={{ position: 'absolute', opacity: 0, width: 1, height: 1, margin: 0 }}
+                  />
+                  <span className="theme-option-content" aria-hidden="true">
+                    <Icon size={18} />
+                    <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{option.label}</span>
+                    <span style={{ fontSize: '0.7rem', color: isSelected ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                      {option.desc}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <style jsx>{`
+            .theme-option:focus-within .theme-option-content {
+              outline: 2px solid var(--accent-cyan);
+              outline-offset: 4px;
+              border-radius: var(--radius-sm);
+            }
+            .theme-option-content {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 0.45rem;
+            }
+          `}</style>
+        </section>
+
         {/* Card: Change Password */}
         <section className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }} aria-label="Change password">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>

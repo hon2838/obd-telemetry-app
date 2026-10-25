@@ -2,11 +2,18 @@ package com.example.obdapp
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.appcompat.app.AppCompatDelegate
 
 data class SlotConfig(
     val metric: TelemetryMetric,
     val style: DisplayStyle
 )
+
+enum class AppThemeMode(val displayName: String, val nightMode: Int) {
+    SYSTEM("System", AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM),
+    LIGHT("Light", AppCompatDelegate.MODE_NIGHT_NO),
+    DARK("Dark", AppCompatDelegate.MODE_NIGHT_YES)
+}
 
 enum class DashboardPreset(val displayName: String) {
     SPORT("Sport / Performance"),
@@ -32,6 +39,15 @@ class DashboardConfigManager(context: Context) {
         const val MAX_SLOTS = 12
         const val SLOT_COUNT = MAX_SLOTS
         private const val KEY_ACTIVE_PRESET = "active_preset"
+        private const val KEY_THEME_MODE = "app_theme_mode"
+
+        @JvmStatic
+        fun applySavedTheme(context: Context): AppThemeMode {
+            val manager = DashboardConfigManager(context)
+            val mode = manager.getThemeMode()
+            AppCompatDelegate.setDefaultNightMode(mode.nightMode)
+            return mode
+        }
 
         // SPORT PRESET: Ordered by visual priority
         val PRESET_SPORT_SLOTS = listOf(
@@ -93,6 +109,37 @@ class DashboardConfigManager(context: Context) {
 
     fun setActivePreset(preset: DashboardPreset) {
         prefs.edit().putString(KEY_ACTIVE_PRESET, preset.name).apply()
+    }
+
+    fun getThemeMode(): AppThemeMode {
+        val name = prefs.getString(KEY_THEME_MODE, AppThemeMode.DARK.name)
+        return try {
+            AppThemeMode.valueOf(name ?: AppThemeMode.DARK.name)
+        } catch (_: Exception) {
+            AppThemeMode.DARK
+        }
+    }
+
+    fun setThemeMode(mode: AppThemeMode) {
+        prefs.edit().putString(KEY_THEME_MODE, mode.name).apply()
+        AppCompatDelegate.setDefaultNightMode(mode.nightMode)
+    }
+
+    fun cycleThemeMode(): AppThemeMode {
+        val current = getThemeMode()
+        val nextMode = when (current) {
+            AppThemeMode.DARK -> AppThemeMode.LIGHT
+            AppThemeMode.LIGHT -> AppThemeMode.SYSTEM
+            AppThemeMode.SYSTEM -> AppThemeMode.DARK
+        }
+        setThemeMode(nextMode)
+        return nextMode
+    }
+
+    fun applySavedTheme(): AppThemeMode {
+        val mode = getThemeMode()
+        AppCompatDelegate.setDefaultNightMode(mode.nightMode)
+        return mode
     }
 
     /**
