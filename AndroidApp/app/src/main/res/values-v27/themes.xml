@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.OBDApp" parent="Theme.OBDApp.Base">
+        <item name="android:windowLightNavigationBar">@bool/system_bar_dark_icons</item>
+    </style>
+</resources>

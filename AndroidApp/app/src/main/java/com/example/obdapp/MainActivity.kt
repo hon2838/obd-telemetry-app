@@ -289,13 +289,13 @@ class MainActivity : AppCompatActivity() {
 
         tvEngineRpm.text = if (rpm != -1) "$rpm RPM" else "N/A"
         tvCoolantTemp.text = if (coolant != -1) "$coolant °C" else "N/A"
-        tvCoolantTemp.setTextColor(if (coolant > 105) getColor(R.color.accent_red) else getColor(R.color.text_primary))
+        tvCoolantTemp.setTextColor(if (coolant > 105) getColor(R.color.accent_red_text) else getColor(R.color.text_primary))
         tvThrottlePos.text = if (throttle != -1) "$throttle %" else "N/A"
         tvVoltage.text = if (volt >= 0f) String.format("%.1f V", volt) else "N/A"
         tvVoltage.setTextColor(
             when {
                 volt < 0f -> getColor(R.color.text_primary)
-                volt < 11.8f -> getColor(R.color.accent_red)
+                volt < 11.8f -> getColor(R.color.accent_red_text)
                 volt < 12.5f -> getColor(R.color.accent_amber)
                 else -> getColor(R.color.text_primary)
             }
@@ -339,9 +339,9 @@ class MainActivity : AppCompatActivity() {
         }
         tvFuelLoopStatus.setTextColor(
             when (fuelStatus) {
-                2 -> getColor(R.color.accent_green)
+                2 -> getColor(R.color.accent_green_text)
                 1, 4 -> getColor(R.color.accent_amber)
-                8, 16 -> getColor(R.color.accent_red)
+                8, 16 -> getColor(R.color.accent_red_text)
                 else -> getColor(R.color.text_primary)
             }
         )
@@ -433,9 +433,9 @@ class MainActivity : AppCompatActivity() {
         }
         val ageSec = (System.currentTimeMillis() - lastTelemetryAt) / 1000
         tvTelemetryAge.text = if (ageSec < 5) getString(R.string.telemetry_live) else getString(R.string.telemetry_updated, ageSec)
-        tvTelemetryAge.setTextColor(if (ageSec > 90) getColor(R.color.accent_red) else getColor(R.color.text_muted))
+        tvTelemetryAge.setTextColor(if (ageSec > 90) getColor(R.color.accent_red_text) else getColor(R.color.text_muted))
         tvCockpitAge?.text = if (ageSec < 5) "LIVE" else "${ageSec}s"
-        tvCockpitAge?.setTextColor(if (ageSec > 90) getColor(R.color.accent_red) else getColor(R.color.accent_cyan))
+        tvCockpitAge?.setTextColor(if (ageSec > 90) getColor(R.color.accent_red_text) else getColor(R.color.accent_cyan))
     }
 
     private fun updateFuelEstimate() {
@@ -445,7 +445,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        DashboardConfigManager.applySavedTheme(this)
         super.onCreate(savedInstanceState)
+        dashboardConfigManager = DashboardConfigManager(this)
         setContentView(R.layout.activity_main)
 
         AppNav.setup(this, AppNav.Page.GATEWAY)
@@ -498,6 +500,22 @@ class MainActivity : AppCompatActivity() {
             drawerLayout?.closeDrawer(GravityCompat.START)
         }
 
+        val btnThemeToggle = findViewById<TextView?>(R.id.btnThemeToggle)
+        val btnThemeMode = findViewById<Button?>(R.id.btnThemeMode)
+
+        fun updateThemeButtonsUi(mode: AppThemeMode) {
+            btnThemeMode?.text = mode.displayName
+            btnThemeToggle?.text = mode.displayName.uppercase()
+        }
+        updateThemeButtonsUi(dashboardConfigManager.getThemeMode())
+
+        val onThemeCycle = View.OnClickListener {
+            val nextMode = dashboardConfigManager.cycleThemeMode()
+            updateThemeButtonsUi(nextMode)
+        }
+        btnThemeToggle?.setOnClickListener(onThemeCycle)
+        btnThemeMode?.setOnClickListener(onThemeCycle)
+
         val slotIds = listOf(
             R.id.widgetSlot0, R.id.widgetSlot1, R.id.widgetSlot2, R.id.widgetSlot3,
             R.id.widgetSlot4, R.id.widgetSlot5, R.id.widgetSlot6, R.id.widgetSlot7,
@@ -531,7 +549,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        dashboardConfigManager = DashboardConfigManager(this)
         setupCockpitPresetsAndSlots()
 
         btnSimulateData = findViewById(R.id.btnSimulateData)
@@ -1079,7 +1096,7 @@ class MainActivity : AppCompatActivity() {
             !token.isNullOrEmpty() -> {
                 val preview = if (token.length > 14) "${token.take(12)}..." else token
                 tvDeviceTokenStatus?.text = "Device Authorization: ✓ Paired ($preview)"
-                tvDeviceTokenStatus?.setTextColor(getColor(R.color.accent_green))
+                tvDeviceTokenStatus?.setTextColor(getColor(R.color.accent_green_text))
                 btnPairDeviceCard?.text = "Re-pair Head Unit via PIN / QR"
             }
             key.isNotEmpty() -> {
@@ -1089,7 +1106,7 @@ class MainActivity : AppCompatActivity() {
             }
             else -> {
                 tvDeviceTokenStatus?.text = "Device Authorization: Not Paired"
-                tvDeviceTokenStatus?.setTextColor(getColor(R.color.accent_red))
+                tvDeviceTokenStatus?.setTextColor(getColor(R.color.accent_red_text))
                 btnPairDeviceCard?.text = "Pair Head Unit via PIN / QR"
             }
         }
@@ -1562,7 +1579,7 @@ class MainActivity : AppCompatActivity() {
             android.content.res.ColorStateList.valueOf(getColor(R.color.accent_green))
         statusText.text = "Simulation Running"
         btnSimulateData?.text = "Stop Simulation"
-        btnSimulateData?.setTextColor(getColor(R.color.accent_red))
+        btnSimulateData?.setTextColor(getColor(R.color.accent_red_text))
 
         demoJob = mainScope.launch {
             var speed = 0.0

@@ -27,6 +27,7 @@ class TripsActivity : AppCompatActivity() {
     private val dateFmt = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        DashboardConfigManager.applySavedTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_trips)
 
@@ -113,13 +114,13 @@ class TripsActivity : AppCompatActivity() {
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         header.addView(TextView(this).apply {
             text = "Drive #$id"
-            setTextColor(Color.WHITE)
+            setTextColor(getColor(R.color.text_primary))
             textSize = 16f
             setTypeface(Typeface.DEFAULT_BOLD)
         })
         val when_ = TextView(this).apply {
             text = if (start > 0) dateFmt.format(Date(start)) else ""
-            setTextColor(Color.parseColor("#8E8E93"))
+            setTextColor(getColor(R.color.text_muted))
             textSize = 12f
         }
         header.addView(when_, LinearLayout.LayoutParams(
@@ -134,7 +135,7 @@ class TripsActivity : AppCompatActivity() {
         row.addView(TextView(this).apply {
             text = String.format(Locale.getDefault(),
                 "%.2f km  •  %d min  •  avg %.0f / max %.0f km/h", distanceKm, durationMin, avgSpeed, maxSpeed)
-            setTextColor(Color.parseColor("#AEAEB2"))
+            setTextColor(getColor(R.color.text_secondary))
             textSize = 13f
             setPadding(0, 10, 0, 0)
         })
@@ -142,9 +143,9 @@ class TripsActivity : AppCompatActivity() {
         row.addView(TextView(this).apply {
             text = "Safety $score/100  •  $accel accel / $brake brake"
             setTextColor(when {
-                score in 90..100 -> Color.parseColor("#34C759")
-                score in 70..89 -> Color.parseColor("#FF9500")
-                else -> Color.parseColor("#FF3B30")
+                score in 90..100 -> getColor(R.color.accent_green_text)
+                score in 70..89 -> getColor(R.color.accent_amber)
+                else -> getColor(R.color.accent_red_text)
             })
             textSize = 12f
             setPadding(0, 6, 0, 0)
@@ -162,7 +163,7 @@ class TripsActivity : AppCompatActivity() {
                 append("$points telemetry points\n")
                 append("Fuel used: ").append(if (fuel > 0) String.format(Locale.getDefault(), "%.2f%%", fuel) else "— (fuel level not reported)")
             }
-            setTextColor(Color.parseColor("#8E8E93"))
+            setTextColor(getColor(R.color.text_muted))
             textSize = 12f
             setPadding(0, 14, 0, 0)
             visibility = View.GONE
@@ -175,7 +176,7 @@ class TripsActivity : AppCompatActivity() {
     private fun muted(text: String, sizeSp: Int): TextView {
         return TextView(this).apply {
             this.text = text
-            setTextColor(Color.parseColor("#8E8E93"))
+            setTextColor(getColor(R.color.text_muted))
             textSize = sizeSp.toFloat()
         }
     }

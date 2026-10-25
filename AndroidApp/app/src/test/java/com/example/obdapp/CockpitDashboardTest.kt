@@ -1,6 +1,10 @@
 package com.example.obdapp
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.View.MeasureSpec
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -235,5 +239,129 @@ class CockpitDashboardTest {
         assertTrue(widget.isMetricAvailable)
         assertTrue(bar.isAvailable)
         assertEquals(45f, bar.currentValue)
+    }
+
+    @Test
+    fun themeModeDefaultsToDarkAndCyclesCorrectly() {
+        assertEquals(AppThemeMode.DARK, configManager.getThemeMode())
+
+        val mode1 = configManager.cycleThemeMode()
+        assertEquals(AppThemeMode.LIGHT, mode1)
+        assertEquals(AppThemeMode.LIGHT, configManager.getThemeMode())
+        assertEquals(AppCompatDelegate.MODE_NIGHT_NO, AppCompatDelegate.getDefaultNightMode())
+
+        val mode2 = configManager.cycleThemeMode()
+        assertEquals(AppThemeMode.SYSTEM, mode2)
+        assertEquals(AppThemeMode.SYSTEM, configManager.getThemeMode())
+        assertEquals(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM, AppCompatDelegate.getDefaultNightMode())
+
+        val mode3 = configManager.cycleThemeMode()
+        assertEquals(AppThemeMode.DARK, mode3)
+        assertEquals(AppThemeMode.DARK, configManager.getThemeMode())
+        assertEquals(AppCompatDelegate.MODE_NIGHT_YES, AppCompatDelegate.getDefaultNightMode())
+
+        // Explicit set
+        configManager.setThemeMode(AppThemeMode.LIGHT)
+        assertEquals(AppThemeMode.LIGHT, configManager.getThemeMode())
+        assertEquals(AppCompatDelegate.MODE_NIGHT_NO, AppCompatDelegate.getDefaultNightMode())
+
+        // Persisted across new manager instance
+        val newManager = DashboardConfigManager(context)
+        assertEquals(AppThemeMode.LIGHT, newManager.getThemeMode())
+
+        // Static apply
+        val applied = DashboardConfigManager.applySavedTheme(context)
+        assertEquals(AppThemeMode.LIGHT, applied)
+        assertEquals(AppCompatDelegate.MODE_NIGHT_NO, AppCompatDelegate.getDefaultNightMode())
+    }
+
+    @Test
+    fun customGaugesInitializeAndRenderCleanly() {
+        val bitmap = Bitmap.createBitmap(300, 300, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        // 1. CircularGaugeView
+        val circularGauge = CircularGaugeView(context)
+        circularGauge.minValue = 0f
+        circularGauge.maxValue = 220f
+        circularGauge.currentValue = 85f
+        circularGauge.warningThreshold = 120f
+        circularGauge.criticalThreshold = 160f
+        circularGauge.title = "SPEED"
+        circularGauge.unit = "km/h"
+        circularGauge.measure(
+            MeasureSpec.makeMeasureSpec(300, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(300, MeasureSpec.EXACTLY)
+        )
+        circularGauge.layout(0, 0, 300, 300)
+        circularGauge.draw(canvas)
+
+        // Test with inverted thresholds and unavailable state
+        circularGauge.warningThreshold = 15f
+        circularGauge.criticalThreshold = 8f
+        circularGauge.currentValue = 5f
+        circularGauge.draw(canvas)
+        circularGauge.isAvailable = false
+        circularGauge.draw(canvas)
+
+        // 2. LinearBarGaugeView
+        val linearBar = LinearBarGaugeView(context)
+        linearBar.minValue = 0f
+        linearBar.maxValue = 100f
+        linearBar.currentValue = 55f
+        linearBar.title = "COOLANT"
+        linearBar.unit = "°C"
+        linearBar.measure(
+            MeasureSpec.makeMeasureSpec(300, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(100, MeasureSpec.EXACTLY)
+        )
+        linearBar.layout(0, 0, 300, 100)
+        linearBar.draw(canvas)
+
+        // Test with unavailable state
+        linearBar.isAvailable = false
+        linearBar.draw(canvas)
+
+        // 3. SparklineView
+        val sparkline = SparklineView(context)
+        sparkline.measure(
+            MeasureSpec.makeMeasureSpec(300, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(80, MeasureSpec.EXACTLY)
+        )
+        sparkline.layout(0, 0, 300, 80)
+        sparkline.push(3000, 60f)
+        sparkline.push(3500, 75f)
+        sparkline.draw(canvas)
+
+        // 4. TelemetryWidgetView across styles
+        val widget = TelemetryWidgetView(context)
+        widget.bindMetric(TelemetryMetric.SPEED, DisplayStyle.DIAL)
+        widget.measure(
+            MeasureSpec.makeMeasureSpec(300, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(300, MeasureSpec.EXACTLY)
+        )
+        widget.layout(0, 0, 300, 300)
+        widget.updateValue(95.0)
+        widget.draw(canvas)
+
+        // Render with BAR style
+        widget.setStyle(DisplayStyle.BAR)
+        widget.measure(
+            MeasureSpec.makeMeasureSpec(300, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(100, MeasureSpec.EXACTLY)
+        )
+        widget.layout(0, 0, 300, 100)
+        widget.updateValue(98.0)
+        widget.draw(canvas)
+
+        // Render with DIGITAL style
+        widget.setStyle(DisplayStyle.DIGITAL)
+        widget.updateValue(100.0)
+        widget.draw(canvas)
+
+        // Render with GRAPH style
+        widget.setStyle(DisplayStyle.GRAPH)
+        widget.updateValue(105.0)
+        widget.draw(canvas)
     }
 }

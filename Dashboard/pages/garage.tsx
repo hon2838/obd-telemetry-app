@@ -194,7 +194,7 @@ export default function Garage() {
         <div className="glass-panel-static metric-summary-card">
           <div className="metric-summary-header">
             <span className="metric-summary-label">Maintenance Schedules</span>
-            <Wrench size={16} color="var(--accent-purple)" />
+            <Wrench size={16} color="var(--accent-cyan)" />
           </div>
           <div className="metric-summary-value">{totalMaint.toLocaleString()}</div>
           <div className="metric-summary-subtext">Tracked service schedules</div>
@@ -214,7 +214,7 @@ export default function Garage() {
               style={{
                 padding: '1.25rem',
                 border: isActive ? '1px solid var(--accent-cyan)' : '1px solid var(--border)',
-                background: isActive ? 'rgba(72, 197, 179, 0.05)' : 'var(--surface)',
+                background: isActive ? 'var(--od-tint)' : 'var(--surface)',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'space-between',

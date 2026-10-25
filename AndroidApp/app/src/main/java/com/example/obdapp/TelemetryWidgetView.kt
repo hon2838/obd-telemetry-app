@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 
 enum class DisplayStyle(val displayName: String) {
     DIAL("Dial Gauge"),
@@ -239,6 +240,15 @@ class TelemetryWidgetView @JvmOverloads constructor(
 
         // Configure Graph
         tvGraphTitle.text = metric.displayName
+
+        // Theme-aware instrument accents: speed uses accent_cyan, others accent_blue
+        val isSpeed = metric == TelemetryMetric.SPEED
+        val accentColor = ContextCompat.getColor(
+            context,
+            if (isSpeed) R.color.accent_cyan else R.color.accent_blue
+        )
+        tvDigitalUnit.setTextColor(accentColor)
+        tvGraphValue.setTextColor(accentColor)
 
         // Clear history and show unavailable until a sample arrives
         sessionMin = Double.MAX_VALUE

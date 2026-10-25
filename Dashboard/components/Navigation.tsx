@@ -17,15 +17,20 @@ import {
   Plus,
   Menu,
   X,
-  LogOut
+  LogOut,
+  Sun,
+  Moon,
+  Monitor
 } from 'lucide-react';
 import { useVehicle } from '../context/VehicleContext';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 
 export default function Navigation() {
   const router = useRouter();
   const { vehicles, activeVehicleId, selectVehicle } = useVehicle();
   const { profile, logout } = useAuth();
+  const { colorScheme, resolvedTheme, setColorScheme, cycleTheme } = useTheme();
   const mustChangePassword = !!profile?.mustChangePassword;
 
   const [vehicleMenuOpen, setVehicleMenuOpen] = useState(false);
@@ -355,6 +360,22 @@ export default function Navigation() {
             )}
           </div>
 
+          <button
+            type="button"
+            className="theme-toggle-btn"
+            onClick={cycleTheme}
+            aria-label="Toggle color theme"
+            title={`Theme: ${colorScheme === 'light dark' ? `System (${resolvedTheme})` : colorScheme}. Click to cycle.`}
+          >
+            {colorScheme === 'light' ? (
+              <Sun size={15} aria-hidden="true" />
+            ) : colorScheme === 'dark' ? (
+              <Moon size={15} aria-hidden="true" />
+            ) : (
+              <Monitor size={15} aria-hidden="true" />
+            )}
+          </button>
+
           {mustChangePassword && (
             <Link href="/account" className="password-alert-pill" title="Default password active - change now">
               <AlertCircle size={13} aria-hidden="true" />
@@ -370,6 +391,21 @@ export default function Navigation() {
               <AlertCircle size={14} aria-hidden="true" />
             </Link>
           )}
+          <button
+            type="button"
+            className="theme-toggle-btn"
+            onClick={cycleTheme}
+            aria-label="Toggle color theme"
+            title={`Theme: ${colorScheme === 'light dark' ? `System (${resolvedTheme})` : colorScheme}. Click to cycle.`}
+          >
+            {colorScheme === 'light' ? (
+              <Sun size={16} aria-hidden="true" />
+            ) : colorScheme === 'dark' ? (
+              <Moon size={16} aria-hidden="true" />
+            ) : (
+              <Monitor size={16} aria-hidden="true" />
+            )}
+          </button>
           <button
             ref={mobileBtnRef}
             type="button"
@@ -476,6 +512,72 @@ export default function Navigation() {
               <Shield size={17} aria-hidden="true" />
               <span>Account & Security</span>
             </Link>
+          </div>
+
+          <div className="mobile-nav-group">
+            <div className="mobile-nav-caption">Appearance</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', padding: '0 0.25rem' }}>
+              <button
+                type="button"
+                className={`btn-secondary ${colorScheme === 'light dark' ? 'active' : ''}`}
+                style={{
+                  fontSize: '0.8rem',
+                  padding: '0.5rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '0.25rem',
+                  background: colorScheme === 'light dark' ? 'var(--od-tint)' : 'var(--surface-control)',
+                  color: colorScheme === 'light dark' ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+                  borderColor: colorScheme === 'light dark' ? 'var(--accent-cyan)' : 'var(--border)'
+                }}
+                onClick={() => setColorScheme('light dark')}
+                aria-label="System theme"
+              >
+                <Monitor size={15} aria-hidden="true" />
+                <span>System</span>
+              </button>
+              <button
+                type="button"
+                className={`btn-secondary ${colorScheme === 'light' ? 'active' : ''}`}
+                style={{
+                  fontSize: '0.8rem',
+                  padding: '0.5rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '0.25rem',
+                  background: colorScheme === 'light' ? 'var(--od-tint)' : 'var(--surface-control)',
+                  color: colorScheme === 'light' ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+                  borderColor: colorScheme === 'light' ? 'var(--accent-cyan)' : 'var(--border)'
+                }}
+                onClick={() => setColorScheme('light')}
+                aria-label="Light theme"
+              >
+                <Sun size={15} aria-hidden="true" />
+                <span>Light</span>
+              </button>
+              <button
+                type="button"
+                className={`btn-secondary ${colorScheme === 'dark' ? 'active' : ''}`}
+                style={{
+                  fontSize: '0.8rem',
+                  padding: '0.5rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '0.25rem',
+                  background: colorScheme === 'dark' ? 'var(--od-tint)' : 'var(--surface-control)',
+                  color: colorScheme === 'dark' ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+                  borderColor: colorScheme === 'dark' ? 'var(--accent-cyan)' : 'var(--border)'
+                }}
+                onClick={() => setColorScheme('dark')}
+                aria-label="Dark theme"
+              >
+                <Moon size={15} aria-hidden="true" />
+                <span>Dark</span>
+              </button>
+            </div>
           </div>
 
           <div className="mobile-nav-footer">

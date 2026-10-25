@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base surfaces & backgrounds -->
+    <color name="background">#0F1318</color>
+    <color name="header_bg">#131820</color>
+    <color name="navigation_bar_color">#0F1318</color>
+    <color name="drawer_bg">#141921</color>
+    <color name="card">#171C24</color>
+    <color name="card_elevated">#1D242E</color>
+    <color name="surface">#171C24</color>
+    <color name="gauge_card_bg">#141920</color>
+    <color name="gauge_track">#252D38</color>
+    <color name="gauge_sub_bg">#1D242E</color>
+    <color name="border_subtle">#2A323D</color>
+    <color name="border_focus">#6495A6</color>
+    <color name="surface_stroke">#2A323D</color>
+
+    <!-- Typography -->
+    <color name="text_primary">#E6EDF3</color>
+    <color name="text_secondary">#9CA7B5</color>
+    <color name="text_muted">#8491A1</color>
+
+    <!-- Semantic & Instrument Accents -->
+    <color name="accent_cyan">#6495A6</color>
+    <color name="accent_blue">#788B9F</color>
+    <color name="accent_green">#469174</color>
+    <color name="accent_amber">#C48B3F</color>
+    <color name="accent_red">#C45454</color>
+    <color name="accent_red_text">#E88484</color>
+    <color name="accent_green_text">#61B28D</color>
+    <color name="danger_button_bg">#8F3B3B</color>
+    <color name="danger_button_text">#F0F6FA</color>
+
+    <!-- Interactive Elements -->
+    <color name="btn_primary_bg">#2B5F70</color>
+    <color name="btn_primary_text">#F0F6FA</color>
+    <color name="btn_secondary_text">#8FA6BC</color>
+    <color name="btn_secondary_bg">#232B35</color>
+    <color name="nav_pill_active_bg">#1E2C36</color>
+    <color name="nav_pill_inactive_bg">#1A2029</color>
+
+    <!-- Launcher -->
+    <color name="ic_launcher_background">#101014</color>
+</resources>

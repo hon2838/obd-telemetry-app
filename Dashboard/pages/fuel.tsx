@@ -352,7 +352,8 @@ export default function FuelEconomy() {
                             borderRadius: '4px',
                             fontSize: '0.725rem',
                             fontWeight: 600,
-                            background: isFull ? 'var(--accent-green-bg)' : isPartial ? 'var(--accent-amber-bg)' : 'rgba(255,255,255,0.06)',
+                            background: isFull ? 'var(--accent-green-bg)' : isPartial ? 'var(--accent-amber-bg)' : 'var(--surface-control)',
+                            border: '1px solid var(--border)',
                             color: isFull ? 'var(--accent-green)' : isPartial ? 'var(--accent-amber)' : 'var(--text-muted)'
                           }}>
                             {isFull ? 'Full tank' : isPartial ? 'Partial fill' : 'Unknown'}
@@ -501,15 +502,15 @@ export default function FuelEconomy() {
                   <AreaChart data={chartData}>
                     <defs>
                       <linearGradient id="colorEconomy" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#34d399" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#34d399" stopOpacity={0}/>
+                        <stop offset="5%" stopColor="var(--chart-3)" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="var(--chart-3)" stopOpacity={0}/>
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                     <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={11} />
                     <YAxis stroke="var(--text-muted)" fontSize={11} domain={['auto', 'auto']} unit=" km/L" />
-                    <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
-                    <Area type="monotone" dataKey="Economy (km/L)" stroke="#34d399" strokeWidth={2} fillOpacity={1} fill="url(#colorEconomy)" />
+                    <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
+                    <Area type="monotone" dataKey="Economy (km/L)" stroke="var(--chart-3)" strokeWidth={2} fillOpacity={1} fill="url(#colorEconomy)" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>

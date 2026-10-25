@@ -198,11 +198,11 @@ export default function DiagnosticsDashboard() {
   const getSeverityBadge = (sev: DtcDetails['severity']) => {
     switch (sev) {
       case 'info':
-        return <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'rgba(59, 130, 246, 0.15)', color: 'var(--accent-blue)', fontSize: '0.75rem', fontWeight: 600 }}>Info</span>;
+        return <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'var(--surface-control)', color: 'var(--accent-blue)', border: '1px solid var(--border)', fontSize: '0.75rem', fontWeight: 600 }}>Info</span>;
       case 'moderate':
-        return <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'rgba(225, 189, 122, 0.15)', color: 'var(--accent-amber)', fontSize: '0.75rem', fontWeight: 600 }}>Moderate</span>;
+        return <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'var(--accent-amber-bg)', color: 'var(--accent-amber)', border: '1px solid var(--accent-amber)', fontSize: '0.75rem', fontWeight: 600 }}>Moderate</span>;
       case 'severe':
-        return <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'rgba(248, 113, 113, 0.15)', color: 'var(--accent-red)', fontSize: '0.75rem', fontWeight: 600 }}>Severe</span>;
+        return <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'var(--accent-red-bg)', color: 'var(--accent-red)', border: '1px solid var(--accent-red)', fontSize: '0.75rem', fontWeight: 600 }}>Severe</span>;
     }
   };
 
@@ -287,7 +287,7 @@ export default function DiagnosticsDashboard() {
                   Recent command status:
                 </div>
                 {recentCommands.slice(0, 4).map(item => (
-                  <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.25rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.25rem 0', borderBottom: '1px solid var(--border)' }}>
                     <span style={{ color: 'var(--text-secondary)' }}>
                       {item.command === 'clear_dtc' ? 'Clear codes' : 'Read codes'} · {new Date(item.createdAt).toLocaleTimeString()}
                     </span>
@@ -401,7 +401,7 @@ export default function DiagnosticsDashboard() {
               fontSize: '0.85rem'
             }}>
               <strong>Check the adapter connection before retrying.</strong>
-              <p style={{ marginTop: '0.25rem', fontSize: '0.8rem', color: '#d1b479' }}>
+              <p style={{ marginTop: '0.25rem', fontSize: '0.8rem', color: 'var(--accent-amber)' }}>
                 The vehicle could not complete the diagnostic scan. Ensure adapter connection and ignition status.
               </p>
             </div>

@@ -173,7 +173,7 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
         markerRef.current = L.marker([latitude, longitude]).addTo(map);
 
         polylineRef.current = L.polyline(routeCoords, {
-          color: '#48c5b3',
+          color: '#5b8a9a',
           weight: 3.5,
           opacity: 0.85
         }).addTo(map);
@@ -211,7 +211,7 @@ const DynamicLeafletMap = ({ latitude, longitude, routeData }: MapProps) => {
   }, []);
 
   return (
-    <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '260px', borderRadius: 'var(--radius-sm)', background: '#12161c' }}>
+    <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '260px', borderRadius: 'var(--radius-sm)', background: 'var(--surface-inset)' }}>
       {!loaded && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
           Loading Map Layers...
@@ -705,11 +705,11 @@ export default function TelemetryDashboard() {
               <div style={{ height: '170px', width: '100%' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={data} syncId="telemetry-readings" margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                     <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} hide />
                     <YAxis stroke="var(--text-muted)" fontSize={11} domain={[0, 'auto']} />
-                    <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
-                    <Line type="monotone" dataKey="speed" name="Speed (km/h)" stroke="var(--accent-cyan)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                    <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
+                    <Line type="monotone" dataKey="speed" name="Speed (km/h)" stroke="var(--chart-1)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -718,7 +718,7 @@ export default function TelemetryDashboard() {
             {/* Engine Speed (RPM) Chart */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '4px' }}>
-                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-purple)' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--chart-2)' }}>
                   Engine Speed (RPM)
                 </span>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
@@ -728,11 +728,11 @@ export default function TelemetryDashboard() {
               <div style={{ height: '170px', width: '100%' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={data} syncId="telemetry-readings" margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                     <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} />
                     <YAxis stroke="var(--text-muted)" fontSize={11} domain={[0, 'auto']} />
-                    <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
-                    <Line type="monotone" dataKey="rpm" name="Engine RPM" stroke="var(--accent-purple)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                    <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
+                    <Line type="monotone" dataKey="rpm" name="Engine RPM" stroke="var(--chart-2)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -743,14 +743,14 @@ export default function TelemetryDashboard() {
           <div style={{ height: '320px', width: '100%' }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                 <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} />
                 <YAxis stroke="var(--text-muted)" fontSize={11} unit="°C" />
-                <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
                 <Legend wrapperStyle={{ fontSize: '12px' }} />
-                <Line type="monotone" dataKey="coolantTemp" name="Coolant (°C)" stroke="#38bdf8" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
-                <Line type="monotone" dataKey="ambientTemp" name="Ambient (°C)" stroke="#94a3b8" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
-                <Line type="monotone" dataKey="iat" name="Intake Air (°C)" stroke="#fbbf24" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="coolantTemp" name="Coolant (°C)" stroke="var(--chart-1)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="ambientTemp" name="Ambient (°C)" stroke="var(--chart-2)" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="iat" name="Intake Air (°C)" stroke="var(--chart-4)" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -759,15 +759,15 @@ export default function TelemetryDashboard() {
           <div style={{ height: '320px', width: '100%' }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
                 <XAxis dataKey="timeLabel" stroke="var(--text-muted)" fontSize={11} minTickGap={40} />
                 <YAxis yAxisId="left" stroke="var(--text-muted)" fontSize={11} unit="%" />
                 <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" fontSize={11} unit=" kPa" />
-                <Tooltip contentStyle={{ background: '#171f28', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '12px' }} />
+                <Tooltip contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg)', border: '1px solid var(--chart-tooltip-border)', color: 'var(--text-primary)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }} />
                 <Legend wrapperStyle={{ fontSize: '12px' }} />
-                <Line yAxisId="left" type="monotone" dataKey="engineLoad" name="Engine Load (%)" stroke="#f472b6" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
-                <Line yAxisId="left" type="monotone" dataKey="throttlePos" name="Throttle (%)" stroke="#a78bfa" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
-                <Line yAxisId="right" type="monotone" dataKey="map" name="Manifold Pressure (kPa)" stroke="#2dd4bf" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                <Line yAxisId="left" type="monotone" dataKey="engineLoad" name="Engine Load (%)" stroke="var(--chart-1)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                <Line yAxisId="left" type="monotone" dataKey="throttlePos" name="Throttle (%)" stroke="var(--chart-2)" dot={false} strokeWidth={1.5} connectNulls={false} isAnimationActive={false} />
+                <Line yAxisId="right" type="monotone" dataKey="map" name="Manifold Pressure (kPa)" stroke="var(--chart-3)" dot={false} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>

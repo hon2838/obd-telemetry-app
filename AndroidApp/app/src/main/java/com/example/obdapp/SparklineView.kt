@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.util.AttributeSet
 import android.view.View
+import androidx.core.content.ContextCompat
 
 /**
  * Lightweight real-time waveform sparkline for RPM, speed, or other telemetry history.
@@ -23,19 +24,19 @@ class SparklineView @JvmOverloads constructor(
     private val sparkPath = Path()
 
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2C2C2E")
+        color = ContextCompat.getColor(context, R.color.border_subtle)
         strokeWidth = 1f
         style = Paint.Style.STROKE
     }
     private val rpmPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#34C759")
+        color = ContextCompat.getColor(context, R.color.accent_green)
         strokeWidth = 3f
         style = Paint.Style.STROKE
         strokeJoin = Paint.Join.ROUND
         strokeCap = Paint.Cap.ROUND
     }
     private val speedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#5ED7D0")
+        color = ContextCompat.getColor(context, R.color.accent_cyan)
         strokeWidth = 3f
         style = Paint.Style.STROKE
         strokeJoin = Paint.Join.ROUND

@@ -33,7 +33,7 @@
             android:layout_weight="1"
             android:layout_marginStart="8dp"
             android:text="GATEWAY"
-            android:textColor="#CCFFFFFF"
+            android:textColor="@color/text_primary"
             android:textSize="13sp"
             android:textStyle="bold"
             android:letterSpacing="0.05" />
@@ -47,7 +47,7 @@
             android:gravity="center"
             android:background="@drawable/nav_pill_inactive"
             android:text="PAGES ▾"
-            android:textColor="#CCFFFFFF"
+            android:textColor="@color/text_primary"
             android:textSize="11sp"
             android:textStyle="bold"
             android:clickable="true"
@@ -82,7 +82,7 @@
                 android:textSize="11.5sp"
                 android:textStyle="bold"
                 android:letterSpacing="0.03"
-                android:textColor="#CCFFFFFF"
+                android:textColor="@color/text_primary"
                 android:background="@drawable/nav_pill_inactive"
                 android:clickable="true"
                 android:focusable="true" />
@@ -99,7 +99,7 @@
                 android:textSize="11.5sp"
                 android:textStyle="bold"
                 android:letterSpacing="0.03"
-                android:textColor="#CCFFFFFF"
+                android:textColor="@color/text_primary"
                 android:background="@drawable/nav_pill_inactive"
                 android:clickable="true"
                 android:focusable="true" />
@@ -116,7 +116,7 @@
                 android:textSize="11.5sp"
                 android:textStyle="bold"
                 android:letterSpacing="0.03"
-                android:textColor="#CCFFFFFF"
+                android:textColor="@color/text_primary"
                 android:background="@drawable/nav_pill_inactive"
                 android:clickable="true"
                 android:focusable="true" />
@@ -133,7 +133,7 @@
                 android:textSize="11.5sp"
                 android:textStyle="bold"
                 android:letterSpacing="0.03"
-                android:textColor="#CCFFFFFF"
+                android:textColor="@color/text_primary"
                 android:background="@drawable/nav_pill_inactive"
                 android:clickable="true"
                 android:focusable="true" />
@@ -150,7 +150,7 @@
                 android:textSize="11.5sp"
                 android:textStyle="bold"
                 android:letterSpacing="0.03"
-                android:textColor="#CCFFFFFF"
+                android:textColor="@color/text_primary"
                 android:background="@drawable/nav_pill_inactive"
                 android:clickable="true"
                 android:focusable="true" />
@@ -166,7 +166,7 @@
                 android:textSize="11.5sp"
                 android:textStyle="bold"
                 android:letterSpacing="0.03"
-                android:textColor="#CCFFFFFF"
+                android:textColor="@color/text_primary"
                 android:background="@drawable/nav_pill_inactive"
                 android:clickable="true"
                 android:focusable="true" />

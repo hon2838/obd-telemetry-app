@@ -1,15 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="background">#FF121214</color>
-    <color name="surface">#FF1C1C1E</color>
-    <color name="surface_stroke">#FF2C2C2E</color>
-    <color name="text_primary">#FFFFFFFF</color>
-    <color name="text_secondary">#FFAEAEB2</color>
-    <color name="text_muted">#FF8E8E93</color>
-    <color name="accent_green">#FF34C759</color>
-    <color name="accent_blue">#FF2563EB</color>
-    <color name="accent_red">#FFFF3B30</color>
-    <color name="accent_amber">#FFFF9500</color>
-    <color name="accent_cyan">#FF5ED7D0</color>
-    <color name="ic_launcher_background">#FF101014</color>
+    <!-- Base surfaces & backgrounds -->
+    <color name="background">#F3F5F8</color>
+    <color name="header_bg">#FFFFFF</color>
+    <!-- API 23-25 cannot draw dark navigation controls, so keep this surface dark. -->
+    <color name="navigation_bar_color">#0F1318</color>
+    <color name="drawer_bg">#F8FAFC</color>
+    <color name="card">#FFFFFF</color>
+    <color name="card_elevated">#EDF1F5</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="gauge_card_bg">#FFFFFF</color>
+    <color name="gauge_track">#DCE3EC</color>
+    <color name="gauge_sub_bg">#EDF1F5</color>
+    <color name="border_subtle">#D0D8E2</color>
+    <color name="border_focus">#2B5F70</color>
+    <color name="surface_stroke">#D0D8E2</color>
+
+    <!-- Typography -->
+    <color name="text_primary">#141920</color>
+    <color name="text_secondary">#45505E</color>
+    <color name="text_muted">#5A6675</color>
+
+    <!-- Semantic & Instrument Accents -->
+    <color name="accent_cyan">#2B5F70</color>
+    <color name="accent_blue">#475569</color>
+    <color name="accent_green">#236B50</color>
+    <color name="accent_amber">#966016</color>
+    <color name="accent_red">#A63232</color>
+    <color name="accent_red_text">#A63232</color>
+    <color name="accent_green_text">#236B50</color>
+    <color name="danger_button_bg">#A63232</color>
+    <color name="danger_button_text">#FFFFFF</color>
+
+    <!-- Interactive Elements -->
+    <color name="btn_primary_bg">#2B5F70</color>
+    <color name="btn_primary_text">#FFFFFF</color>
+    <color name="btn_secondary_text">#2B5F70</color>
+    <color name="btn_secondary_bg">#E2E8F0</color>
+    <color name="nav_pill_active_bg">#E1EBF0</color>
+    <color name="nav_pill_inactive_bg">#EDF1F5</color>
+
+    <!-- Launcher -->
+    <color name="ic_launcher_background">#101014</color>
 </resources>

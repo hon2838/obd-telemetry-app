@@ -25,6 +25,7 @@ class PerformanceActivity : AppCompatActivity() {
     private val dateFmt = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        DashboardConfigManager.applySavedTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_performance)
 
@@ -126,14 +127,14 @@ class PerformanceActivity : AppCompatActivity() {
             val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             header.addView(TextView(this).apply {
                 text = String.format(Locale.getDefault(), "%.2f s", run.optDouble("accelTime", 0.0))
-                setTextColor(Color.WHITE)
+                setTextColor(getColor(R.color.text_primary))
                 textSize = 18f
                 setTypeface(Typeface.DEFAULT_BOLD)
             })
             header.addView(TextView(this).apply {
                 text = if (run.optLong("timestamp", 0) > 0)
                     SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(run.optLong("timestamp"))) else ""
-                setTextColor(Color.parseColor("#8E8E93"))
+                setTextColor(getColor(R.color.text_muted))
                 textSize = 12f
             }, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -144,7 +145,7 @@ class PerformanceActivity : AppCompatActivity() {
                 text = String.format(Locale.getDefault(),
                     "0-100 km/h  •  top speed %.1f km/h  •  Drive #%s",
                     run.optDouble("maxSpeedReached", 0.0), run.optString("driveId"))
-                setTextColor(Color.parseColor("#AEAEB2"))
+                setTextColor(getColor(R.color.text_secondary))
                 textSize = 13f
                 setPadding(0, 10, 0, 0)
             })
@@ -155,7 +156,7 @@ class PerformanceActivity : AppCompatActivity() {
     private fun muted(text: String, sizeSp: Int): TextView {
         return TextView(this).apply {
             this.text = text
-            setTextColor(Color.parseColor("#8E8E93"))
+            setTextColor(getColor(R.color.text_muted))
             textSize = sizeSp.toFloat()
         }
     }
