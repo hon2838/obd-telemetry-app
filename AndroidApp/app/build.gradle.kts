@@ -12,13 +12,12 @@ android {
         minSdk = 23
         targetSdk = 29
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        // Bump versionCode when shipping a new APK; Android
-        // refuses to install a new build over the old one if
-        // versionCode is <= what's already on the device.
+        // Bump versionCode when shipping a new APK so the installer
+        // recognizes it as an update and Android rejects downgrades.
         // versionName is the human-readable label the user
         // sees in the app's About screen.
-        versionCode = 5
-        versionName = "1.3.1"
+        versionCode = 6
+        versionName = "1.3.2"
     }
 
     flavorDimensions += "variant"
