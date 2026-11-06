@@ -29,7 +29,6 @@ import com.github.eltonvs.obd.command.NoDataException
 import com.github.eltonvs.obd.command.UnSupportedCommandException
 import com.github.eltonvs.obd.command.engine.RPMCommand
 import com.github.eltonvs.obd.command.engine.SpeedCommand
-import com.github.eltonvs.obd.connection.ObdDeviceConnection
 import android.util.Log
 import java.util.Locale
 import kotlinx.coroutines.*
@@ -231,7 +230,7 @@ class OBDGatewayService : Service(), LocationListener {
     private val serviceJob = Job()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var bluetoothSocket: BluetoothSocket? = null
-    @Volatile private var obdConnection: ObdDeviceConnection? = null
+    @Volatile private var obdConnection: PromptObdConnection? = null
     private val obdMutex = Mutex()
     private val commandMutex = Mutex()
     private var commandRecoveryJob: Job? = null
@@ -246,39 +245,25 @@ class OBDGatewayService : Service(), LocationListener {
 
     @Volatile private var obdCapabilities: ObdCapabilities = ObdCapabilities.EMPTY
 
-    // Slow PID cache and timestamps
+    // Latest supported secondary readings; unsupported sensors retain retry backoff.
     @Volatile private var cachedCoolantTemp: Int? = null
-    @Volatile private var cachedCoolantTimestamp: Long = 0L
 
     @Volatile private var cachedFuelLevel: Int? = null
-    @Volatile private var cachedFuelLevelTimestamp: Long = 0L
 
     @Volatile private var cachedAmbientTemp: Int? = null
-    @Volatile private var cachedAmbientTimestamp: Long = 0L
 
     @Volatile private var cachedModuleVoltage: Float? = null
-    @Volatile private var cachedModuleVoltageTimestamp: Long = 0L
 
     @Volatile private var cachedIntakeAirTemp: Int? = null
-    @Volatile private var cachedIntakeAirTimestamp: Long = 0L
 
     @Volatile private var cachedManifoldPressure: Int? = null
-    @Volatile private var cachedManifoldPressureTimestamp: Long = 0L
 
-    private var slowPidIndex = 0
     private val slowPidRetryAfter = LongArray(6)
     @Volatile private var cachedEngineLoad: Int? = null
     @Volatile private var cachedThrottlePos: Int? = null
-    private var lastSecondaryPidReadElapsed: Long = 0L
+    private var engineLoadRetryAfterElapsed: Long = 0L
     private var throttleRetryAfterElapsed: Long = 0L
     private var fuelEstimateRetryAfterElapsed: Long = 0L
-
-    private val COOLANT_REFRESH_MS = 15_000L
-    private val VOLTAGE_REFRESH_MS = 20_000L
-    private val FUEL_REFRESH_MS = 60_000L
-    private val AMBIENT_REFRESH_MS = 60_000L
-    private val INTAKE_AIR_REFRESH_MS = 20_000L
-    private val MANIFOLD_PRESSURE_REFRESH_MS = 15_000L
 
     @Volatile private var cachedFallbackWifiSsid: String? = null
     @Volatile private var lastFallbackWifiSsidTimestamp: Long = 0L
@@ -363,7 +348,7 @@ class OBDGatewayService : Service(), LocationListener {
                 for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
                     if (!manager.allProviders.contains(provider)) continue
                     // Time-based updates also reach the app when stationary.
-                    manager.requestLocationUpdates(provider, 1000L, 0.0f, this, Looper.getMainLooper())
+                    manager.requestLocationUpdates(provider, 500L, 0.0f, this, Looper.getMainLooper())
                 }
                 listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
                     .filter { manager.allProviders.contains(it) }
@@ -618,14 +603,16 @@ class OBDGatewayService : Service(), LocationListener {
                     try {
                         obdMutex.withLock {
                             val connection = connectBluetooth()
-                            val capabilities = initializeObdAdapter(connection)
+                            val capabilities = initializeObdAdapter(connection) { protocol ->
+                                Log.i(TAG, "OBD protocol: $protocol")
+                            }
                             obdCapabilities = capabilities
                             slowPidRetryAfter.fill(0L)
                             cachedEngineLoad = null
                             cachedThrottlePos = null
                             cachedIntakeAirTemp = null
                             cachedManifoldPressure = null
-                            lastSecondaryPidReadElapsed = 0L
+                            engineLoadRetryAfterElapsed = 0L
                             throttleRetryAfterElapsed = 0L
                             fuelEstimateRetryAfterElapsed = 0L
                             // Publish only after initialization so the collector
@@ -657,105 +644,42 @@ class OBDGatewayService : Service(), LocationListener {
         }
     }
 
-    private suspend fun pollStaggeredSlowPid() {
-        val now = System.currentTimeMillis()
-        val slowPidCandidates = 6
-        for (step in 0 until slowPidCandidates) {
-            val candidate = (slowPidIndex + step) % slowPidCandidates
-            val isSupported = when (candidate) {
-                0 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x05)
-                1 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x42)
-                2 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x2F)
-                3 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x46)
-                4 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x0F)
-                5 -> !obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x0B)
-                else -> false
-            }
-            if (!isSupported) continue
-
-            val shouldPoll = when (candidate) {
-                0 -> (now - cachedCoolantTimestamp) >= COOLANT_REFRESH_MS
-                1 -> (now - cachedModuleVoltageTimestamp) >= VOLTAGE_REFRESH_MS
-                2 -> (now - cachedFuelLevelTimestamp) >= FUEL_REFRESH_MS
-                3 -> (now - cachedAmbientTimestamp) >= AMBIENT_REFRESH_MS
-                4 -> (now - cachedIntakeAirTimestamp) >= INTAKE_AIR_REFRESH_MS
-                5 -> (now - cachedManifoldPressureTimestamp) >= MANIFOLD_PRESSURE_REFRESH_MS
-                else -> false
-            }
-            if (shouldPoll && now >= slowPidRetryAfter[candidate]) {
-                slowPidIndex = (candidate + 1) % slowPidCandidates
+    private suspend fun pollSecondaryPids() {
+        val now = SystemClock.elapsedRealtime()
+        val commands = listOf(
+            CoolantTemperatureCommand(), ModuleVoltageCommand(), FuelLevelCommand(),
+            AmbientAirTempCommand(), IntakeAirTemperatureCommand(), ManifoldAbsolutePressureCommand()
+        )
+        val eligible = commands.withIndex().filter { (index, command) ->
+            now >= slowPidRetryAfter[index] &&
+                (!obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(command.pid.toInt(16)))
+        }
+        obdMutex.withLock {
+            val connection = obdConnection ?: return@withLock
+            val batch = connection.runBatch(eligible.map { it.value })
+            for ((candidate, command) in eligible) {
                 try {
-                    obdMutex.withLock {
-                        if (obdConnection == null) return@withLock
-                        when (candidate) {
-                            0 -> {
-                                val resp = obdConnection?.run(CoolantTemperatureCommand())
-                                delay(100)
-                                val v = resp?.value?.toIntOrNull()
-                                if (v != null) {
-                                    cachedCoolantTemp = v
-                                    cachedCoolantTimestamp = System.currentTimeMillis()
-                                }
-                            }
-                            1 -> {
-                                val resp = obdConnection?.run(ModuleVoltageCommand())
-                                delay(100)
-                                val v = resp?.value?.toFloatOrNull()
-                                if (v != null) {
-                                    cachedModuleVoltage = v
-                                    cachedModuleVoltageTimestamp = System.currentTimeMillis()
-                                }
-                            }
-                            2 -> {
-                                val resp = obdConnection?.run(FuelLevelCommand())
-                                delay(100)
-                                val v = resp?.value?.toIntOrNull()
-                                if (v != null) {
-                                    cachedFuelLevel = v
-                                    cachedFuelLevelTimestamp = System.currentTimeMillis()
-                                }
-                            }
-                            3 -> {
-                                val resp = obdConnection?.run(AmbientAirTempCommand())
-                                delay(100)
-                                val v = resp?.value?.toIntOrNull()
-                                if (v != null) {
-                                    cachedAmbientTemp = v
-                                    cachedAmbientTimestamp = System.currentTimeMillis()
-                                }
-                            }
-                            4 -> {
-                                val resp = obdConnection?.run(IntakeAirTemperatureCommand())
-                                delay(100)
-                                val v = resp?.value?.toIntOrNull()
-                                if (v != null) {
-                                    cachedIntakeAirTemp = v
-                                    cachedIntakeAirTimestamp = System.currentTimeMillis()
-                                }
-                            }
-                            5 -> {
-                                val resp = obdConnection?.run(ManifoldAbsolutePressureCommand())
-                                delay(100)
-                                val v = resp?.value?.toIntOrNull()
-                                if (v != null) {
-                                    cachedManifoldPressure = v
-                                    cachedManifoldPressureTimestamp = System.currentTimeMillis()
-                                }
-                            }
-                        }
+                    val response = batch?.get(command.pid)?.let { command.handleResponse(it) }
+                        ?: connection.run(command)
+                    when (candidate) {
+                        0 -> cachedCoolantTemp = response.value.toIntOrNull()
+                        1 -> cachedModuleVoltage = response.value.toFloatOrNull()
+                        2 -> cachedFuelLevel = response.value.toIntOrNull()
+                        3 -> cachedAmbientTemp = response.value.toIntOrNull()
+                        4 -> cachedIntakeAirTemp = response.value.toIntOrNull()
+                        5 -> cachedManifoldPressure = response.value.toIntOrNull()
                     }
-                } catch (noData: NoDataException) {
+                } catch (_: NoDataException) {
                     postponeUnavailableSlowPid(candidate)
-                } catch (unsupported: UnSupportedCommandException) {
+                } catch (_: UnSupportedCommandException) {
                     postponeUnavailableSlowPid(candidate)
                 }
-                break // Only poll at most ONE slow PID per cycle to preserve adapter fairness
             }
         }
     }
 
     private fun postponeUnavailableSlowPid(candidate: Int) {
-        slowPidRetryAfter[candidate] = System.currentTimeMillis() + 5 * 60 * 1000L
+        slowPidRetryAfter[candidate] = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
         when (candidate) {
             0 -> cachedCoolantTemp = null
             1 -> cachedModuleVoltage = null
@@ -774,7 +698,7 @@ class OBDGatewayService : Service(), LocationListener {
         cachedThrottlePos = null
         cachedIntakeAirTemp = null
         cachedManifoldPressure = null
-        lastSecondaryPidReadElapsed = 0L
+        engineLoadRetryAfterElapsed = 0L
         throttleRetryAfterElapsed = 0L
         fuelEstimateRetryAfterElapsed = 0L
         try {
@@ -813,9 +737,28 @@ class OBDGatewayService : Service(), LocationListener {
                         try {
                             obdMutex.withLock {
                                 if (obdConnection != null) {
-                                    val rpmResp = obdConnection?.run(RPMCommand())
+                                    val connection = obdConnection ?: return@withLock
+                                    val batchNow = SystemClock.elapsedRealtime()
+                                    val batchCommands = mutableListOf<ObdCommand>(RPMCommand(), SpeedCommand())
+                                    if (batchNow >= fuelEstimateRetryAfterElapsed) {
+                                        batchCommands.add(MassAirFlowCommand())
+                                        batchCommands.add(FuelSystemStatusCommand())
+                                    }
+                                    if (batchNow >= throttleRetryAfterElapsed) {
+                                        batchCommands.add(if (obdCapabilities.isSupported(0x45))
+                                            RelativeThrottlePositionCommand() else ThrottlePositionCommand())
+                                    }
+                                    if (batchNow >= engineLoadRetryAfterElapsed &&
+                                        (!obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x04))) {
+                                        batchCommands.add(LoadCommand())
+                                    }
+                                    val batch = connection.runBatch(batchCommands)
+                                    suspend fun read(command: ObdCommand) =
+                                        batch?.get(command.pid)?.let { command.handleResponse(it) }
+                                            ?: connection.run(command)
+                                    val rpmResp = read(RPMCommand())
                                     delay(ObdPollingCadence.COMMAND_GAP_MS)
-                                    val speedResp = obdConnection?.run(SpeedCommand())
+                                    val speedResp = read(SpeedCommand())
                                     delay(ObdPollingCadence.COMMAND_GAP_MS)
 
                                     rpm = rpmResp?.value?.toIntOrNull()
@@ -823,10 +766,10 @@ class OBDGatewayService : Service(), LocationListener {
                                     val nowElapsed = SystemClock.elapsedRealtime()
                                     if (nowElapsed >= fuelEstimateRetryAfterElapsed) {
                                         try {
-                                            mafGps = obdConnection?.run(MassAirFlowCommand())?.value?.toDoubleOrNull()
+                                            mafGps = read(MassAirFlowCommand())?.value?.toDoubleOrNull()
                                             delay(ObdPollingCadence.COMMAND_GAP_MS)
                                             val fuelStatusCommand = FuelSystemStatusCommand()
-                                            fuelSystemStatus = obdConnection?.run(fuelStatusCommand)?.value?.toIntOrNull()
+                                            fuelSystemStatus = read(fuelStatusCommand)?.value?.toIntOrNull()
                                             secondaryFuelSystemEligible = fuelStatusCommand.secondarySystemStatus in listOf(0, 2)
                                             delay(ObdPollingCadence.COMMAND_GAP_MS)
                                         } catch (e: Exception) {
@@ -847,7 +790,7 @@ class OBDGatewayService : Service(), LocationListener {
                                             } else {
                                                 ThrottlePositionCommand()
                                             }
-                                            cachedThrottlePos = obdConnection?.run(throttleCmd)?.value?.toIntOrNull()
+                                            cachedThrottlePos = read(throttleCmd)?.value?.toIntOrNull()
                                             delay(ObdPollingCadence.COMMAND_GAP_MS)
                                         } catch (e: Exception) {
                                             if (e is NoDataException || e is UnSupportedCommandException) {
@@ -857,11 +800,17 @@ class OBDGatewayService : Service(), LocationListener {
                                             } else throw e
                                         }
                                     }
-                                    if (nowElapsed - lastSecondaryPidReadElapsed >= ObdPollingCadence.SECONDARY_INTERVAL_MS) {
-                                        val loadResp = obdConnection?.run(LoadCommand())
-                                        delay(ObdPollingCadence.COMMAND_GAP_MS)
-                                        cachedEngineLoad = loadResp?.value?.toIntOrNull()
-                                        lastSecondaryPidReadElapsed = SystemClock.elapsedRealtime()
+                                    if (nowElapsed >= engineLoadRetryAfterElapsed &&
+                                        (!obdCapabilities.hasCapabilities() || obdCapabilities.isSupported(0x04))) {
+                                        try {
+                                            cachedEngineLoad = read(LoadCommand())?.value?.toIntOrNull()
+                                            delay(ObdPollingCadence.COMMAND_GAP_MS)
+                                        } catch (e: Exception) {
+                                            if (e is NoDataException || e is UnSupportedCommandException) {
+                                                cachedEngineLoad = null
+                                                engineLoadRetryAfterElapsed = SystemClock.elapsedRealtime() + 5 * 60 * 1000L
+                                            } else throw e
+                                        }
                                     }
                                     engineLoad = cachedEngineLoad
                                     throttlePos = cachedThrottlePos
@@ -878,10 +827,11 @@ class OBDGatewayService : Service(), LocationListener {
                         }
                     }
 
-                    // Staggered slow PID polling: separate locked section, polling at most 1 slow PID per cycle
+                    // Refresh every supported secondary sensor due for this cycle.
+                    // Prompt-based reads avoid a fixed half-second penalty per PID.
                     if (obdConnection != null) {
                         try {
-                            pollStaggeredSlowPid()
+                            pollSecondaryPids()
                         } catch (obdEx: Exception) {
                             if (obdEx is CancellationException) throw obdEx
                             Log.w(TAG, "Slow OBD poll error", obdEx)
@@ -910,7 +860,7 @@ class OBDGatewayService : Service(), LocationListener {
                         gpsFix = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
                     }
                     val curSpeed = speed
-                    // Only a fresh measured GPS speed takes precedence over OBD.
+                    // Acceleration tracking retains its GPS preference while a fix is fresh.
                     if (curSpeed != null && gpsFix?.speedKmh == null) {
                         processSpeedUpdate(curSpeed.toFloat(), System.currentTimeMillis())
                     }
@@ -979,8 +929,10 @@ class OBDGatewayService : Service(), LocationListener {
                         dao.insert(sample)
                     }
 
-                    val effectiveSpeed = gpsFix?.speedKmh ?: speed?.toFloat()
-                    val effectiveSpeedSource = if (gpsFix?.speedKmh != null) "GPS" else if (speed != null) "OBD" else ""
+                    // Prefer this cycle's vehicle speed so a 1 Hz GPS does not
+                    // hold the live gauge back. GPS remains the offline fallback.
+                    val effectiveSpeed = speed?.toFloat() ?: gpsFix?.speedKmh
+                    val effectiveSpeedSource = if (speed != null) "OBD" else if (gpsFix?.speedKmh != null) "GPS" else ""
                     val gaugeSnapshot = LiveGaugeSnapshot(
                         speedKmh = effectiveSpeed,
                         speedSource = effectiveSpeedSource,
@@ -1005,8 +957,8 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("lat", telemetry.latitude)
                         putExtra("lon", telemetry.longitude)
                         putExtra("alt", telemetry.altitude)
-                        putExtra("speed", gpsFix?.speedKmh ?: speed?.toFloat() ?: -1.0f)
-                        putExtra("speed_source", if (gpsFix?.speedKmh != null) "GPS" else if (speed != null) "OBD" else "")
+                        putExtra("speed", effectiveSpeed ?: -1.0f)
+                        putExtra("speed_source", effectiveSpeedSource)
                         putExtra("gps_fix", gpsFix != null)
                         putExtra("gps_altitude_valid", gpsFix?.altitudeMeters != null)
                         putExtra("rpm", telemetry.rpm ?: -1)
@@ -1048,7 +1000,7 @@ class OBDGatewayService : Service(), LocationListener {
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    private fun connectBluetooth(): ObdDeviceConnection {
+    private fun connectBluetooth(): PromptObdConnection {
         // Startup requires both nearby-device permissions. Re-check on reconnect;
         // revocation exceptions from the socket/discovery calls reach the outer retry handler.
         if (applicationInfo.targetSdkVersion >= 31 && !GatewayPermissions.granted(this)) {
@@ -1072,7 +1024,7 @@ class OBDGatewayService : Service(), LocationListener {
         val inputStream: InputStream = bluetoothSocket!!.inputStream
         val outputStream: OutputStream = bluetoothSocket!!.outputStream
         
-        return ObdDeviceConnection(inputStream, outputStream)
+        return PromptObdConnection(inputStream, outputStream)
     }
 
     private fun createNotificationChannel() {

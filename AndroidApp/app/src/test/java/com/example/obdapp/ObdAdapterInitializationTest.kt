@@ -1,6 +1,5 @@
 package com.example.obdapp
 
-import com.github.eltonvs.obd.connection.ObdDeviceConnection
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -17,10 +16,10 @@ class ObdAdapterInitializationTest {
     fun acceptsAdapterBannerAndDiscoversCapabilities() = runBlocking {
         val input = ByteArrayInputStream(
             ("AT Z\rELM327 v1.5\r\n>AT E0\rOK\r\n>OK\r\n>SEARCHING...\r\n" +
-            "41 00 BE 3F B8 13\r\n>41 20 80 04 20 01\r\n>41 40 4A DD 00 00\r\n>41 0C 1F 9D\r\n>").toByteArray()
+            "41 00 BE 3F B8 13\r\n>41 20 80 04 20 01\r\n>41 40 4A DD 00 00\r\n>A6>41 0C 1F 9D\r\n>").toByteArray()
         )
         val output = ByteArrayOutputStream()
-        val connection = ObdDeviceConnection(input, output)
+        val connection = PromptObdConnection(input, output)
 
         val capabilities = initializeObdAdapter(connection)
         assertEquals("2023", connection.run(RPMCommand()).value)
@@ -32,7 +31,7 @@ class ObdAdapterInitializationTest {
         assertFalse(capabilities.isSupported(0x46)) // Ambient Air Temp
 
         assertEquals(
-            listOf("AT Z", "AT E0", "AT SP 0", "01 00", "01 20", "01 40", "01 0C"),
+            listOf("AT Z", "AT E0", "AT SP 0", "01 00", "01 20", "01 40", "AT DPN", "01 0C"),
             output.toString().trimEnd('\r').split('\r')
         )
     }
@@ -41,7 +40,7 @@ class ObdAdapterInitializationTest {
     fun rejectsProtocolSearchWithoutVehicleData() {
         val input = ByteArrayInputStream("ELM327 v1.5>OK>OK>SEARCHING...>".toByteArray())
         assertThrows(IOException::class.java) {
-            runBlocking { initializeObdAdapter(ObdDeviceConnection(input, ByteArrayOutputStream())) }
+            runBlocking { initializeObdAdapter(PromptObdConnection(input, ByteArrayOutputStream(), timeoutMs = 50)) }
         }
     }
 }

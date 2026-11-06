@@ -6,7 +6,7 @@ import org.junit.Test
 class ObdPollingCadenceTest {
     @Test
     fun subtractsAdapterAndPersistenceWorkFromTargetInterval() {
-        assertEquals(600L, ObdPollingCadence.pauseAfterCycle(400L, true))
+        assertEquals(100L, ObdPollingCadence.pauseAfterCycle(400L, true))
     }
 
     @Test
@@ -15,7 +15,7 @@ class ObdPollingCadenceTest {
     }
 
     @Test
-    fun preservesGpsOnlyCollectionInterval() {
-        assertEquals(2_800L, ObdPollingCadence.pauseAfterCycle(200L, false))
+    fun gpsOnlyCollectionAlsoTargetsHalfASecond() {
+        assertEquals(300L, ObdPollingCadence.pauseAfterCycle(200L, false))
     }
 }

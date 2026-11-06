@@ -7,8 +7,10 @@ import com.github.eltonvs.obd.command.Switcher
 import com.github.eltonvs.obd.command.at.ResetAdapterCommand
 import com.github.eltonvs.obd.command.at.SelectProtocolCommand
 import com.github.eltonvs.obd.command.at.SetEchoCommand
-import com.github.eltonvs.obd.connection.ObdDeviceConnection
 import kotlinx.coroutines.delay
+import com.github.eltonvs.obd.command.NoDataException
+import com.github.eltonvs.obd.command.UnSupportedCommandException
+import kotlinx.coroutines.CancellationException
 import java.io.IOException
 
 private class ProtocolProbeCommand : ObdCommand() {
@@ -39,7 +41,18 @@ private class PidSupportMaskCommand(override val pid: String) : ObdCommand() {
     }
 }
 
-internal suspend fun initializeObdAdapter(connection: ObdDeviceConnection): ObdCapabilities {
+private class ProtocolNumberCommand : ObdCommand() {
+    override val tag = "PROTOCOL_NUMBER"
+    override val name = "Current vehicle protocol number"
+    override val mode = "AT"
+    override val pid = "DPN"
+    override val skipDigitCheck = true
+}
+
+internal suspend fun initializeObdAdapter(
+    connection: PromptObdConnection,
+    onProtocolDiscovered: (String) -> Unit = {}
+): ObdCapabilities {
     // AT commands accept adapter banners and OK replies rather than PID data.
     connection.run(ResetAdapterCommand())
     delay(500)
@@ -59,9 +72,19 @@ internal suspend fun initializeObdAdapter(connection: ObdDeviceConnection): ObdC
                 val resp40 = connection.run(PidSupportMaskCommand("40")).value
                 allSupportedPids.addAll(ObdCapabilities.parseMask(resp40))
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
             // Extended PID masks are non-critical: continue with available capabilities
         }
+    }
+
+    try {
+        val protocol = connection.run(ProtocolNumberCommand()).value.trim()
+        connection.configureResponseCount(protocol)
+        if (Regex("A?[0-9A-C]", RegexOption.IGNORE_CASE).matches(protocol)) onProtocolDiscovered(protocol)
+    } catch (_: NoDataException) {
+        // Protocol metadata is optional; ordinary full-response reads remain available.
+    } catch (_: UnSupportedCommandException) {
     }
 
     return ObdCapabilities(allSupportedPids)

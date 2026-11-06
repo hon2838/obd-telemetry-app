@@ -16,8 +16,8 @@ android {
         // recognizes it as an update and Android rejects downgrades.
         // versionName is the human-readable label the user
         // sees in the app's About screen.
-        versionCode = 7
-        versionName = "1.3.3"
+        versionCode = 8
+        versionName = "1.3.4"
     }
 
     flavorDimensions += "variant"

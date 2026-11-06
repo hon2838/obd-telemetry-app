@@ -2,10 +2,9 @@ package com.example.obdapp
 
 internal object ObdPollingCadence {
     // RPM, speed, throttle and available fuel-estimate inputs share one cycle.
-    const val FAST_INTERVAL_MS = 1_000L
-    const val SECONDARY_INTERVAL_MS = 5_000L
-    const val GPS_ONLY_INTERVAL_MS = 3_000L
-    const val COMMAND_GAP_MS = 50L
+    const val FAST_INTERVAL_MS = 500L
+    const val GPS_ONLY_INTERVAL_MS = 500L
+    const val COMMAND_GAP_MS = 5L
     private const val MIN_PAUSE_MS = 50L
 
     fun pauseAfterCycle(elapsedMs: Long, connected: Boolean): Long {
