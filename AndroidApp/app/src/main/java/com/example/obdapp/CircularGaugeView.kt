@@ -301,11 +301,13 @@ class CircularGaugeView @JvmOverloads constructor(
         val radius = ((diameter / 2f) - inset).coerceAtLeast(1f)
         arcBounds.set(cx - radius, cy - radius, cx + radius, cy + radius)
 
-        // Dynamic Typography Scaling
-        valueTextPaint.textSize = diameter * 0.26f
-        unitTextPaint.textSize = maxOf(diameter * 0.09f, 11f)
-        textPaint.textSize = diameter * 0.075f
-        titleTextPaint.textSize = diameter * 0.085f
+        // Keep the readout within the dial's lower opening rather than
+        // scaling it over the needle and tick labels on large head units.
+        val scaledDensity = resources.displayMetrics.scaledDensity
+        valueTextPaint.textSize = minOf(diameter * 0.14f, 48f * scaledDensity)
+        unitTextPaint.textSize = minOf(maxOf(diameter * 0.045f, 11f), 16f * scaledDensity)
+        textPaint.textSize = minOf(diameter * 0.04f, 14f * scaledDensity)
+        titleTextPaint.textSize = minOf(diameter * 0.045f, 16f * scaledDensity)
 
         baseDiameter = diameter
         showTickLabels = diameter >= 130f
@@ -429,11 +431,12 @@ class CircularGaugeView @JvmOverloads constructor(
         canvas.drawCircle(cx, cy, hubRadius, hubStrokePaint)
 
         // 8. Digital Readout and Labels (Zero allocations from cache)
-        val valueY = cy + (radius * 0.50f)
+        val valueY = cy + (radius * 0.76f)
         canvas.drawText(cachedFormattedValue, cx, valueY, valueTextPaint)
 
         // Unit label below value
-        canvas.drawText(unit, cx, valueY + (radius * 0.18f), unitTextPaint)
+        val unitY = valueY + valueTextPaint.descent() - unitTextPaint.ascent() + (radius * 0.025f)
+        canvas.drawText(unit, cx, unitY, unitTextPaint)
 
         // Title at upper center
         canvas.drawText(title, cx, cy - (radius * 0.42f), titleTextPaint)
