@@ -442,6 +442,14 @@ class MainActivity : AppCompatActivity() {
         if (::tvFuelEconomy.isInitialized) tvFuelEconomy.text = FuelEstimateDisplay.format(
             lastFuelEconomy, lastFuelRate, lastTelemetryAt, System.currentTimeMillis(), fuelConnectionOk
         )
+        val ageMs = System.currentTimeMillis() - lastTelemetryAt
+        val currentEconomy = lastFuelEconomy?.takeIf {
+            fuelConnectionOk && lastTelemetryAt > 0L &&
+                ageMs in 0..FuelConsumptionEstimate.MAX_READING_AGE_MS && it.isFinite() && it >= 0.0
+        }
+        for (slot in cockpitSlots) {
+            if (slot.currentMetric == TelemetryMetric.THROTTLE) slot.updateFuelEconomy(currentEconomy)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1000,6 +1008,7 @@ class MainActivity : AppCompatActivity() {
                 slot.bindMetric(cfg.metric, cfg.style)
             }
         }
+        updateFuelEstimate()
     }
 
     private fun showSlotSelectorDialog() {

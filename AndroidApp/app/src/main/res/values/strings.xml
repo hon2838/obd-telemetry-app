@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="current_fuel_economy">CURRENT FUEL ECONOMY</string>
+    <string name="fuel_economy_estimated">Estimated</string>
+    <string name="fuel_economy_readout_description">Current fuel economy: %1$s km/L, estimated</string>
     <string name="telemetry_waiting">Waiting for data…</string>
     <string name="telemetry_live">Live</string>
     <string name="telemetry_updated">Updated %1$ds ago</string>

@@ -1,10 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/telemetryWidgetRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:orientation="vertical"
     android:background="@drawable/gauge_card_bg"
     android:padding="6dp">
+
+    <FrameLayout
+        android:id="@+id/telemetryPrimaryContent"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
 
     <!-- 1. Dial Gauge Style -->
     <com.example.obdapp.CircularGaugeView
@@ -132,4 +139,69 @@
             android:layout_marginTop="4dp" />
     </LinearLayout>
 
-</FrameLayout>
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/throttleFuelEconomyRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:paddingHorizontal="10dp"
+        android:paddingBottom="10dp"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginBottom="10dp"
+            android:background="@color/border_subtle" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/current_fuel_economy"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:baselineAligned="true">
+
+            <TextView
+                android:id="@+id/tvThrottleFuelEconomy"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="N/A"
+                android:textColor="@color/text_primary"
+                android:textSize="32sp"
+                android:textStyle="bold"
+                android:fontFeatureSettings="tnum"
+                android:maxLines="1" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="km/L"
+                android:textColor="@color/text_secondary"
+                android:textSize="14sp"
+                android:maxLines="1" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/fuel_economy_estimated"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp" />
+    </LinearLayout>
+</LinearLayout>

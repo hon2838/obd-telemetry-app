@@ -51,7 +51,7 @@ class CockpitRegressionTest {
     // --- Finding 1 Regressions: Touch Stream Ownership & Accessibility ---
 
     @Test
-    fun testInnerFrameLayoutDoesNotConsumeGestures() {
+    fun testInnerContainersDoNotConsumeGestures() {
         val widget = TelemetryWidgetView(context)
         widget.measure(
             View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY),
@@ -59,10 +59,12 @@ class CockpitRegressionTest {
         )
         widget.layout(0, 0, 300, 300)
 
-        val innerRoot = widget.findViewById<FrameLayout>(R.id.telemetryWidgetRoot)
-        assertNotNull(innerRoot)
-        assertFalse("Inner card FrameLayout must not be clickable", innerRoot.isClickable)
-        assertFalse("Inner card FrameLayout must not be focusable", innerRoot.isFocusable)
+        for (id in listOf(R.id.telemetryWidgetRoot, R.id.telemetryPrimaryContent, R.id.throttleFuelEconomyRow)) {
+            val container = widget.findViewById<android.view.ViewGroup>(id)
+            assertNotNull(container)
+            assertFalse("Inner card containers must not be clickable", container.isClickable)
+            assertFalse("Inner card containers must not be focusable", container.isFocusable)
+        }
         assertTrue("Outer TelemetryWidgetView must be clickable", widget.isClickable)
     }
 

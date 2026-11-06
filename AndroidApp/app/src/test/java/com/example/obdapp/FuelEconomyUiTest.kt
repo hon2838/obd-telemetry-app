@@ -49,6 +49,8 @@ class FuelEconomyUiTest {
             val receiver = ReflectionHelpers.getField<BroadcastReceiver>(activity, "telemetryReceiver")
             val view = activity.findViewById<TextView>(R.id.tvFuelEconomy)
             val originalLocale = java.util.Locale.getDefault()
+            val inline = activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
+                .findViewById<TextView>(R.id.tvThrottleFuelEconomy)
             java.util.Locale.setDefault(java.util.Locale.US)
             fun send(value: Double?) {
                 val intent = Intent("com.example.obdapp.TELEMETRY_UPDATE")
@@ -61,10 +63,14 @@ class FuelEconomyUiTest {
             try {
                 send(0.0)
                 assertEquals("0.0 km/L\nEstimated fuel rate: 1.1 L/h", view.text.toString())
+                assertEquals("0.0", inline.text.toString())
+                send(12.5)
+                assertEquals("12.5", inline.text.toString())
                 for (value in listOf(null, -1.0, Double.NaN, Double.POSITIVE_INFINITY)) {
                     send(value)
                     assertEquals("N/A\nEstimated fuel rate: 1.1 L/h\nEstimate unavailable or incomplete",
                         view.text.toString())
+                    assertEquals("N/A", inline.text.toString())
                 }
             } finally { java.util.Locale.setDefault(originalLocale) }
         } finally { controller.pause().stop().destroy() }
@@ -76,6 +82,8 @@ class FuelEconomyUiTest {
             val activity = controller.get()
             val receiver = ReflectionHelpers.getField<BroadcastReceiver>(activity, "telemetryReceiver")
             val view = activity.findViewById<TextView>(R.id.tvFuelEconomy)
+            val inline = activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
+                .findViewById<TextView>(R.id.tvThrottleFuelEconomy)
             fun send(ageMs: Long) = receiver.onReceive(activity,
                 Intent("com.example.obdapp.TELEMETRY_UPDATE")
                     .putExtra("timestamp", System.currentTimeMillis() - ageMs)
@@ -88,6 +96,7 @@ class FuelEconomyUiTest {
             ReflectionHelpers.setField(activity, "lastTelemetryAt", System.currentTimeMillis() - 6000)
             ReflectionHelpers.callInstanceMethod<Any?>(activity, "updateTelemetryAge")
             assertEquals("N/A · Reading too old", view.text.toString())
+            assertEquals("N/A", inline.text.toString())
             send(6000)
             assertEquals("N/A · Reading too old", view.text.toString())
             send(-6000)
@@ -95,6 +104,7 @@ class FuelEconomyUiTest {
             send(0)
             receiver.onReceive(activity, Intent("com.example.obdapp.STATUS_UPDATE").putExtra("running", false))
             assertEquals("N/A · Disconnected", view.text.toString())
+            assertEquals("N/A", inline.text.toString())
             ReflectionHelpers.callInstanceMethod<Any?>(activity, "updateTelemetryAge")
             assertEquals("N/A · Disconnected", view.text.toString())
             send(0)
@@ -102,5 +112,33 @@ class FuelEconomyUiTest {
                 .putExtra("running", true).putExtra("status", "OBD: Connection Lost — GPS Only"))
             assertEquals("N/A · Disconnected", view.text.toString())
         } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test fun inlineFuelEconomyFitsBelowThrottleAndDoesNotChangeOtherGauges() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val widget = TelemetryWidgetView(context)
+        widget.bindMetric(TelemetryMetric.THROTTLE, DisplayStyle.BAR)
+        val density = context.resources.displayMetrics.density
+        val width = (382 * density).toInt()
+        val height = (368 * density).toInt()
+        fun layout() {
+            widget.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(height, android.view.View.MeasureSpec.EXACTLY))
+            widget.layout(0, 0, width, height)
+        }
+        layout()
+        val row = widget.findViewById<android.view.View>(R.id.throttleFuelEconomyRow)
+        val primary = widget.findViewById<android.view.View>(R.id.telemetryPrimaryContent)
+        assertEquals(android.view.View.VISIBLE, row.visibility)
+        assertTrue(row.height > 0)
+        assertTrue(primary.height > 100)
+        assertTrue(primary.bottom <= row.top)
+        assertTrue(row.bottom <= widget.height)
+
+        widget.bindMetric(TelemetryMetric.SPEED, DisplayStyle.DIAL)
+        layout()
+        assertEquals(android.view.View.GONE, row.visibility)
+        assertTrue(primary.height >= 350)
     }
 }

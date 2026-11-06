@@ -69,6 +69,8 @@ class TelemetryWidgetView @JvmOverloads constructor(
     private val tvGraphTitle: TextView
     private val tvGraphValue: TextView
     private val graphSparkline: SparklineView
+    private val throttleFuelEconomyRow: View
+    private val tvThrottleFuelEconomy: TextView
 
     var currentMetric: TelemetryMetric = TelemetryMetric.SPEED
         private set
@@ -114,6 +116,9 @@ class TelemetryWidgetView @JvmOverloads constructor(
         tvGraphTitle = findViewById(R.id.tvGraphTitle)
         tvGraphValue = findViewById(R.id.tvGraphValue)
         graphSparkline = findViewById(R.id.graphSparkline)
+        throttleFuelEconomyRow = findViewById(R.id.throttleFuelEconomyRow)
+        tvThrottleFuelEconomy = findViewById(R.id.tvThrottleFuelEconomy)
+        updateFuelEconomy(null)
 
         // Automotive gesture detector for whole-card touch ergonomics
         gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
@@ -155,6 +160,13 @@ class TelemetryWidgetView @JvmOverloads constructor(
         return handled || super.onTouchEvent(event)
     }
 
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        // Decide before measuring the weighted content, so the first layout
+        // reserves height for this row instead of measuring it while GONE.
+        updateFuelRowVisibility(MeasureSpec.getSize(heightMeasureSpec))
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w <= 0 || h <= 0) return
@@ -187,6 +199,7 @@ class TelemetryWidgetView @JvmOverloads constructor(
 
         tvGraphTitle.textSize = titleSp
         tvGraphValue.textSize = unitSp
+        updateFuelRowVisibility()
     }
 
     fun bindMetric(metric: TelemetryMetric, style: DisplayStyle? = null) {
@@ -290,11 +303,30 @@ class TelemetryWidgetView @JvmOverloads constructor(
         barView.visibility = if (effectiveStyle == DisplayStyle.BAR) View.VISIBLE else View.GONE
         digitalContainer.visibility = if (effectiveStyle == DisplayStyle.DIGITAL) View.VISIBLE else View.GONE
         graphContainer.visibility = if (effectiveStyle == DisplayStyle.GRAPH) View.VISIBLE else View.GONE
+        updateFuelRowVisibility()
         if (!isMetricAvailable) {
             setUnavailable()
         } else if (hasReceivedValue) {
             syncEffectiveStyleValue()
         }
+    }
+
+    private fun updateFuelRowVisibility(availableHeightPx: Int = height) {
+        val hDp = availableHeightPx / resources.displayMetrics.density
+        // Leave space for the primary bar and respect larger accessibility fonts.
+        val minHeightDp = 120f + 80f * resources.configuration.fontScale
+        throttleFuelEconomyRow.visibility = if (currentMetric == TelemetryMetric.THROTTLE &&
+            effectiveStyle == DisplayStyle.BAR && hDp >= minHeightDp) View.VISIBLE else View.GONE
+    }
+
+    fun updateFuelEconomy(economyKmL: Double?) {
+        val valid = economyKmL?.takeIf { it.isFinite() && it >= 0.0 }
+        val value = valid?.let { String.format(java.util.Locale.getDefault(), "%.1f", it) } ?: "N/A"
+        tvThrottleFuelEconomy.text = value
+        tvThrottleFuelEconomy.setTextColor(ContextCompat.getColor(
+            context, if (valid != null) R.color.text_primary else R.color.text_secondary
+        ))
+        throttleFuelEconomyRow.contentDescription = context.getString(R.string.fuel_economy_readout_description, value)
     }
 
     private fun syncEffectiveStyleValue() {
