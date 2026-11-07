@@ -1243,9 +1243,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var pairingJob: kotlinx.coroutines.Job? = null
+    private var pairingController: PairingFlowController? = null
 
     private fun showPairingDialog() {
+        pairingController?.cancel()
         pairingJob?.cancel()
+        val pairingStartedElapsedMs = android.os.SystemClock.elapsedRealtime()
+        val flow = PairingFlowController(pairingStartedElapsedMs, 600)
+        pairingController = flow
         val layout = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(48, 36, 48, 36)
@@ -1297,30 +1302,43 @@ class MainActivity : AppCompatActivity() {
 
         val builder = AlertDialog.Builder(this)
             .setView(layout)
-            .setNegativeButton("Cancel") { d, _ ->
-                pairingJob?.cancel()
-                d.dismiss()
-            }
+            .setNegativeButton("Cancel") { d, _ -> d.dismiss() }
         val dialog = builder.create()
+        var flowJob: kotlinx.coroutines.Job? = null
+        dialog.setOnDismissListener {
+            flow.cancel()
+            if (pairingController === flow) pairingController = null
+            flowJob?.cancel()
+        }
         dialog.show()
 
-        pairingJob = mainScope.launch(Dispatchers.IO) {
+        val launchedPairingJob = mainScope.launch(Dispatchers.IO) {
+            var initConnection: java.net.HttpURLConnection? = null
             try {
                 val initUrl = java.net.URL("${getApiBaseUrl(this@MainActivity)}/api/auth/device/initiate")
                 val conn = initUrl.openConnection() as java.net.HttpURLConnection
+                initConnection = conn
+                flow.track(conn)
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.doOutput = true
-                conn.connectTimeout = 8000
-                conn.readTimeout = 15000
+                conn.connectTimeout = flow.timeoutMillis(android.os.SystemClock.elapsedRealtime(), 8000)
+                conn.readTimeout = flow.timeoutMillis(android.os.SystemClock.elapsedRealtime(), 15000)
 
                 val payload = org.json.JSONObject().apply {
                     put("fingerprint", DeviceIdentity.getHardwareFingerprint(this@MainActivity))
                 }
 
                 conn.outputStream.use { it.write(payload.toString().toByteArray()) }
-                if (conn.responseCode in 200..299) {
-                    val resp = org.json.JSONObject(conn.inputStream.bufferedReader().readText())
+                val initCode = conn.responseCode
+                val initBody = (if (initCode in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                flow.release(conn)
+                initConnection = null
+                if (initCode in 200..299 && flow.canContinue(android.os.SystemClock.elapsedRealtime())) {
+                    val resp = org.json.JSONObject(initBody)
+                    val expiresInSeconds = resp.optLong("expiresInSeconds", 600L).takeIf { it > 0L } ?: 600L
+                    flow.setDeadline(pairingStartedElapsedMs, expiresInSeconds)
                     val code = resp.getString("pairingCode")
                     val pollToken = resp.getString("pollToken")
                     val fallbackQr = "$defaultPairUrl/pair?code=$code"
@@ -1338,21 +1356,37 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     var approved = false
-                    while (!approved && isActive) {
+                    var expired = false
+                    while (!approved && !expired && isActive && flow.canContinue(android.os.SystemClock.elapsedRealtime())) {
                         delay(2500)
+                        if (!flow.canContinue(android.os.SystemClock.elapsedRealtime())) break
+                        var pollConn: java.net.HttpURLConnection? = null
                         try {
                             val pollUrl = java.net.URL("${getApiBaseUrl(this@MainActivity)}/api/auth/device/poll?token=$pollToken")
-                            val pollConn = pollUrl.openConnection() as java.net.HttpURLConnection
-                            pollConn.connectTimeout = 5000
-                            pollConn.readTimeout = 15000
-                            if (pollConn.responseCode in 200..299) {
-                                val pollResp = org.json.JSONObject(pollConn.inputStream.bufferedReader().readText())
-                                if (pollResp.optString("status") == "approved") {
-                                    approved = true
-                                    val token = pollResp.getString("deviceToken")
-                                    val vId = pollResp.optString("vehicleId", "default")
-                                    val vName = pollResp.optString("vehicleName", "Default Vehicle")
+                            val currentPollConnection = pollUrl.openConnection() as java.net.HttpURLConnection
+                            pollConn = currentPollConnection
+                            flow.track(currentPollConnection)
+                            currentPollConnection.connectTimeout = flow.timeoutMillis(android.os.SystemClock.elapsedRealtime(), 5000)
+                            currentPollConnection.readTimeout = flow.timeoutMillis(android.os.SystemClock.elapsedRealtime(), 15000)
+                            val pollCode = currentPollConnection.responseCode
+                            val pollBody = (if (pollCode in 200..299) currentPollConnection.inputStream else currentPollConnection.errorStream)
+                                ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                            val pollResp = try { org.json.JSONObject(pollBody) } catch (_: Exception) { org.json.JSONObject() }
+                            if (flow.isTerminalPollResponse(pollCode, pollResp.optString("status").takeIf { it.isNotEmpty() })) {
+                                expired = true
+                            } else if (pollCode !in 200..299) {
+                                withContext(Dispatchers.Main) {
+                                    if (flow.canContinue(android.os.SystemClock.elapsedRealtime())) {
+                                        statusView.text = "Connection issue. Retrying approval check..."
+                                    }
+                                }
+                            } else if (pollCode in 200..299 && pollResp.optString("status") == "approved" &&
+                                flow.canSaveApproval(android.os.SystemClock.elapsedRealtime())) {
+                                val token = pollResp.getString("deviceToken")
+                                val vId = pollResp.optString("vehicleId", "default")
+                                val vName = pollResp.optString("vehicleName", "Default Vehicle")
 
+                                approved = flow.commitApproval(android.os.SystemClock.elapsedRealtime()) {
                                     saveDeviceToken(this@MainActivity, token)
                                     val existing = VehiclePrefs.getVehicles(this@MainActivity).find { it.id == vId }
                                     if (existing == null) {
@@ -1361,31 +1395,57 @@ class MainActivity : AppCompatActivity() {
                                         VehiclePrefs.updateVehicle(this@MainActivity, vId, name = vName)
                                     }
                                     VehiclePrefs.setActiveVehicle(this@MainActivity, vId)
-
+                                }
+                                if (approved) {
                                     withContext(Dispatchers.Main) {
+                                        if (flow.isCancelled()) return@withContext
                                         Toast.makeText(this@MainActivity, "Successfully paired to $vName!", Toast.LENGTH_LONG).show()
                                         updateDeviceStatusUi()
                                         setupVehicleGarage()
                                         dialog.dismiss()
-                                        if (!OBDGatewayService.isRunning) {
-                                            startOBDService()
-                                        }
+                                        if (!OBDGatewayService.isRunning) startOBDService()
                                     }
                                 }
                             }
-                        } catch (_: Exception) { }
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Transient network failures retry until the server-provided deadline.
+                            withContext(Dispatchers.Main) {
+                                if (flow.canContinue(android.os.SystemClock.elapsedRealtime())) {
+                                    statusView.text = "Connection issue. Retrying approval check..."
+                                }
+                            }
+                        } finally {
+                            pollConn?.let { flow.release(it) }
+                        }
                     }
-                } else {
+                    if (!approved && (expired || flow.isExpired(android.os.SystemClock.elapsedRealtime())) && isActive) {
+                        withContext(Dispatchers.Main) {
+                            if (!flow.isCancelled()) {
+                                statusView.text = "Pairing expired. Close this dialog and start again."
+                            }
+                        }
+                    }
+                } else if (flow.canContinue(android.os.SystemClock.elapsedRealtime())) {
                     withContext(Dispatchers.Main) {
                         statusView.text = "Failed to connect to pairing server."
                     }
                 }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    statusView.text = "Error: ${e.message}"
+                if (flow.canContinue(android.os.SystemClock.elapsedRealtime())) {
+                    withContext(Dispatchers.Main) {
+                        if (flow.canContinue(android.os.SystemClock.elapsedRealtime())) statusView.text = "Error: ${e.message}"
+                    }
                 }
+            } finally {
+                initConnection?.let { flow.release(it) }
             }
         }
+        flowJob = launchedPairingJob
+        pairingJob = launchedPairingJob
     }
 
     // Adds a vehicle in two steps: register with the server first (a
@@ -1780,6 +1840,9 @@ class MainActivity : AppCompatActivity() {
         activePresetPopup?.dismiss()
         activePresetPopup = null
         stopDemoMode()
+        pairingController?.cancel()
+        pairingController = null
+        pairingJob?.cancel()
         mainJob.cancel()
     }
 

@@ -309,12 +309,32 @@ async function authRoutes(fastify, options) {
 
     // Reject if passing a PIN or code — poll only accepts unguessable pollToken!
     const session = pendingPairingsByToken.get(token);
-    if (!session || session.expiresAt < Date.now()) {
+    const now = Date.now();
+    const approvalPollDeadline = session?.status === 'approved' && Number.isFinite(session.approvalPollDeadline)
+      ? Math.min(session.expiresAt, session.approvalPollDeadline)
+      : session?.expiresAt;
+    if (!session || !approvalPollDeadline || approvalPollDeadline <= now) {
+      if (session) {
+        pendingPairingsByToken.delete(token);
+        // An approved session has released its PIN; a new session may reuse it.
+        for (const code of [session.code, session.normalizedCode]) {
+          if (pendingPairingsByCode.get(code) === session) pendingPairingsByCode.delete(code);
+        }
+        session.status = 'expired';
+        delete session.deviceToken;
+        delete session.vehicleId;
+        delete session.vehicleName;
+        delete session.approvalPollDeadline;
+      }
       return reply.status(404).send({ error: 'Invalid or expired poll token', status: 'expired' });
     }
 
     if (session.status === 'approved') {
-      pendingPairingsByToken.delete(token);
+      // Retain the credential for a bounded retry window so a lost first
+      // response does not strand the device. Never extend this on retries.
+      if (!Number.isFinite(session.approvalPollDeadline)) {
+        session.approvalPollDeadline = Math.min(session.expiresAt, now + 60 * 1000);
+      }
       return reply.send({
         status: 'approved',
         deviceToken: session.deviceToken,

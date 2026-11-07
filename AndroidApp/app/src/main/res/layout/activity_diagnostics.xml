@@ -107,6 +107,15 @@
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:layout_marginTop="4dp" />
+            <TextView
+                android:id="@+id/tvUnreconciledCommands"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:textColor="@color/accent_amber"
+                android:textSize="14sp"
+                android:textIsSelectable="true"
+                android:visibility="gone" />
         </LinearLayout>
 
         <!-- Active Trouble Codes -->

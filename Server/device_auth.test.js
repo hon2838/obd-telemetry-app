@@ -6,7 +6,7 @@ const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'obd-test-auth-'));
 process.env.OBD_DATA_DIR = TEST_DATA_DIR;
 process.env.OBD_API_KEY = 'a'.repeat(64);
 
-const { fastify, usersStore, hashPassword } = require('./server');
+const { fastify, usersStore, hashPassword, pendingPairingsByToken, pendingPairingsByCode } = require('./server');
 
 describe('User Accounts & Device Pairing Authentication', () => {
   beforeAll(() => {
@@ -147,6 +147,7 @@ describe('User Accounts & Device Pairing Authentication', () => {
   });
 
   it('returns approved status and credentials to polling car head unit', async () => {
+    const pollStartedAt = Date.now();
     const res = await fastify.inject({
       method: 'GET',
       url: `/api/auth/device/poll?token=${pollToken}`,
@@ -156,6 +157,41 @@ describe('User Accounts & Device Pairing Authentication', () => {
     expect(body.status).toBe('approved');
     expect(body.deviceToken).toBe(pairedDeviceToken);
     expect(body.vehicleId).toBe('default');
+    const deliveryDeadline = pendingPairingsByToken.get(pollToken).approvalPollDeadline;
+    expect(deliveryDeadline).toBeLessThanOrEqual(pendingPairingsByToken.get(pollToken).expiresAt);
+    expect(deliveryDeadline).toBeGreaterThanOrEqual(pollStartedAt + 60000);
+    expect(deliveryDeadline).toBeLessThanOrEqual(Date.now() + 60000);
+
+    const retry = await fastify.inject({
+      method: 'GET',
+      url: `/api/auth/device/poll?token=${pollToken}`,
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(JSON.parse(retry.payload)).toEqual(body);
+    expect(pendingPairingsByToken.get(pollToken).approvalPollDeadline).toBe(deliveryDeadline);
+  });
+
+  it('expires approved credential redelivery after the fixed grace deadline', async () => {
+    const session = pendingPairingsByToken.get(pollToken);
+    expect(session?.status).toBe('approved');
+    expect(session?.approvalPollDeadline).toBeGreaterThan(Date.now());
+    session.approvalPollDeadline = Date.now() - 1;
+    const replacementSession = { status: 'pending', expiresAt: Date.now() + 600000 };
+    pendingPairingsByCode.set(session.code, replacementSession);
+    pendingPairingsByCode.set(session.normalizedCode, replacementSession);
+
+    const expired = await fastify.inject({
+      method: 'GET',
+      url: `/api/auth/device/poll?token=${pollToken}`,
+    });
+    expect(expired.statusCode).toBe(404);
+    expect(JSON.parse(expired.payload).status).toBe('expired');
+    expect(session.deviceToken).toBeUndefined();
+    expect(pendingPairingsByToken.has(pollToken)).toBe(false);
+    expect(pendingPairingsByCode.get(session.code)).toBe(replacementSession);
+    expect(pendingPairingsByCode.get(session.normalizedCode)).toBe(replacementSession);
+    pendingPairingsByCode.delete(session.code);
+    pendingPairingsByCode.delete(session.normalizedCode);
   });
 
   it('accepts telemetry ingestion using paired device token', async () => {

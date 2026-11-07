@@ -37,6 +37,9 @@ class OutboxUploaderTest {
     private val uploadedTelemetry = CopyOnWriteArrayList<JSONObject>()
     @Volatile private var failingVehicle = "b"
     @Volatile private var failureCode = 200
+    @Volatile private var ackCode = 200
+    @Volatile private var ackBody = """{"success":true}"""
+    private val ackRequests = CopyOnWriteArrayList<String>()
 
     @Before
     fun setUp() {
@@ -123,6 +126,10 @@ class OutboxUploaderTest {
 
     private fun responseFor(requestLine: String, body: String): Pair<Int, String> {
         if (requestLine.startsWith("GET ")) return 200 to """{"commands":[]}"""
+        if (requestLine.contains("/api/commands/ack")) {
+            ackRequests.add(JSONObject(body).getString("id"))
+            return ackCode to ackBody
+        }
         val batch = JSONArray(body)
         if (requestLine.contains("/api/telemetry/batch")) {
             for (index in 0 until batch.length()) uploadedTelemetry.add(batch.getJSONObject(index))
@@ -282,6 +289,45 @@ class OutboxUploaderTest {
         assertEquals(0.0, sent.getDouble("estimatedFuelEconomyKmL"), 0.0)
         assertTrue(uploadedTelemetry.first { it.getString("eventId") == "telemetry-a" }.isNull("estimatedFuelEconomyKmL"))
         assertEquals(0, db.telemetryDao().countUnsyncedForVehicle("a"))
+    }
+
+    @Test fun permanentMissingCommandRetainsItsResultAndDoesNotRetryOrExecuteAgain() = runBlocking(Dispatchers.IO) {
+        ackCode = 404
+        ackBody = """{"code":"COMMAND_NOT_FOUND","retryable":false}"""
+        insertPendingAck()
+        OutboxUploader.drainOutbox(context)
+        OutboxUploader.drainOutbox(context)
+        assertEquals(1, ackRequests.size)
+        assertEquals("""{"success":true}""", db.commandInboxDao().getUnreconciled("a").single().result)
+        assertTrue(db.commandInboxDao().getReady("a").isEmpty())
+        assertTrue(db.commandInboxDao().getPendingAcks("a").isEmpty())
+    }
+
+    @Test fun generic404AndTransientFailureRemainRetryableWithinTheWindow() = runBlocking(Dispatchers.IO) {
+        ackCode = 404; ackBody = "Not Found"
+        insertPendingAck()
+        OutboxUploader.drainOutbox(context)
+        assertEquals(1, db.commandInboxDao().getPendingAcks("a").size)
+        ackCode = 503; ackBody = "{}"
+        OutboxUploader.drainOutbox(context)
+        assertEquals(1, db.commandInboxDao().getPendingAcks("a").size)
+        ackCode = 200; ackBody = """{"success":true}"""
+        OutboxUploader.drainOutbox(context)
+        assertTrue(db.commandInboxDao().getPendingAcks("a").isEmpty())
+        assertTrue(db.commandInboxDao().getUnreconciled("a").isEmpty())
+        assertEquals(3, ackRequests.size)
+    }
+
+    @Test fun legacyServerCannotCauseUnboundedAckRetries() = runBlocking(Dispatchers.IO) {
+        insertPendingAck(System.currentTimeMillis() - CommandAckPolicy.MAX_RETRY_AGE_MS - 1000)
+        OutboxUploader.drainOutbox(context)
+        assertTrue(ackRequests.isEmpty())
+        assertEquals(1, db.commandInboxDao().getUnreconciled("a").size)
+    }
+
+    private suspend fun insertPendingAck(createdAt: Long = System.currentTimeMillis()) {
+        db.commandInboxDao().insertIfAbsent(CommandInboxEntity("retained-clear-result", "clear_dtc", "a",
+            state = CommandState.ACK_PENDING, result = """{"success":true}""", ackStatus = "completed", createdAt = createdAt, updatedAt = createdAt))
     }
 
     private suspend fun insertTelemetry(vehicle: String) {

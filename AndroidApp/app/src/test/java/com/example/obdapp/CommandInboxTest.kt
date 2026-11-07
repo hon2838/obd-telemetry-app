@@ -137,6 +137,20 @@ class CommandInboxTest {
         assertEquals(CommandState.ACK_PENDING, dao.getPendingAcks("car-a", 100).first { it.id == "ack-0" }.state)
     }
 
+    @Test fun unreconciledResultIsPreservedAndCannotBeClaimedOrAutomaticallyDeleted() = runBlocking {
+        val result = """{"success":true}"""
+        dao.insertIfAbsent(CommandInboxEntity("unreconciled-clear", "clear_dtc", "car-a",
+            state = CommandState.ACK_PENDING, result = result, ackStatus = "completed", createdAt = 1, updatedAt = 2))
+        assertEquals(1, dao.markAckUnreconciled("unreconciled-clear", 3))
+        assertTrue(dao.getPendingAcks("car-a").isEmpty())
+        assertTrue(dao.getReady("car-a").isEmpty())
+        assertEquals(0, dao.claim("unreconciled-clear", 4))
+        assertEquals(0, dao.deleteOldAcked(Long.MAX_VALUE))
+        assertEquals(result, dao.getUnreconciled("car-a").single().result)
+        assertTrue(dao.getUnreconciled("car-b").isEmpty())
+        assertEquals(-1L, dao.insertIfAbsent(CommandInboxEntity("unreconciled-clear", "clear_dtc", "car-a", createdAt = 5, updatedAt = 5)))
+    }
+
     @Test
     fun legacyCommandsAreDurableButDoNotUseV2AckProtocol() {
         val legacy = CommandEnvelopeParser.parseLegacy("read_dtc", "car-a", 1L)!!

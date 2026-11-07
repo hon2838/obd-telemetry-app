@@ -87,6 +87,7 @@ class DiagnosticsActivity : AppCompatActivity() {
     }
 
     private fun fetchDiagnostics() {
+        refreshRetainedResults()
         val base = getApiBaseUrl(this)
         mainScope.launch(Dispatchers.IO) {
             try {
@@ -114,6 +115,47 @@ class DiagnosticsActivity : AppCompatActivity() {
     override fun onDestroy() {
         mainScope.cancel()
         super.onDestroy()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshRetainedResults()
+    }
+
+    private fun refreshRetainedResults() {
+        val vehicle = VehiclePrefs.getActiveVehicleId(this)
+        mainScope.launch(Dispatchers.IO) {
+            val results = try {
+                AppDatabase.getDatabase(applicationContext).commandInboxDao().getUnreconciled(vehicle)
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                android.util.Log.w("DiagnosticsActivity", "Unable to load retained command results", error)
+                withContext(Dispatchers.Main) {
+                    if (vehicle == VehiclePrefs.getActiveVehicleId(this@DiagnosticsActivity)) {
+                        findViewById<TextView>(R.id.tvUnreconciledCommands).apply {
+                            visibility = android.view.View.VISIBLE
+                            text = "Saved command results are temporarily unavailable. Reopen Diagnostics to try again."
+                        }
+                    }
+                }
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                if (vehicle != VehiclePrefs.getActiveVehicleId(this@DiagnosticsActivity)) return@withContext
+                val view = findViewById<TextView>(R.id.tvUnreconciledCommands)
+                view.visibility = if (results.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+                view.text = if (results.isEmpty()) "" else buildString {
+                    append("Command results saved on this device\n")
+                    append("The server could not confirm these results. They were not repeated. Review them before requesting another clear.\n")
+                    results.forEach { command ->
+                        append("\n").append(command.command).append(" · ").append(command.ackStatus ?: "unknown")
+                        append("\nID: ").append(command.id)
+                        append("\n").append(command.result ?: "No result details")
+                    }
+                }
+            }
+        }
     }
 
     private fun readResult(json: org.json.JSONObject): DtcReadDisplay.Result {

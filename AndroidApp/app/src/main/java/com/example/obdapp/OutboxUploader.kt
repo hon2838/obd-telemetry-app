@@ -55,13 +55,18 @@ object OutboxUploader {
 
     @Volatile
     private var networkCallbackRegistered = false
+    private var networkWakeupOwner: Any? = null
+    private var networkWakeup: (() -> Unit)? = null
 
-    fun registerConnectivityCallback(context: Context, onNetworkAvailable: (() -> Unit)? = null) {
-        if (networkCallbackRegistered) return
+    /** OS callback is process-owned; only the current service owns its optional wakeup. */
+    fun registerConnectivityCallback(context: Context, onNetworkAvailable: () -> Unit): java.io.Closeable {
+        val owner = Any()
+        val appContext = context.applicationContext
         synchronized(this) {
-            if (networkCallbackRegistered) return
-            try {
-                val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            networkWakeupOwner = owner
+            networkWakeup = onNetworkAvailable
+            if (!networkCallbackRegistered) try {
+                val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
                 if (cm != null) {
                     val request = NetworkRequest.Builder()
                         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -69,14 +74,22 @@ object OutboxUploader {
                     cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
                         override fun onAvailable(network: Network) {
                             Log.i(TAG, "Network available, triggering outbox drain wakeup")
-                            onNetworkAvailable?.invoke()
-                            triggerImmediateDrain(context.applicationContext)
+                            synchronized(this@OutboxUploader) { networkWakeup?.invoke() }
+                            triggerImmediateDrain(appContext)
                         }
                     })
                     networkCallbackRegistered = true
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to register network callback: ${e.message}")
+            }
+        }
+        return java.io.Closeable {
+            synchronized(this) {
+                if (networkWakeupOwner === owner) {
+                    networkWakeup = null
+                    networkWakeupOwner = null
+                }
             }
         }
     }
@@ -658,6 +671,12 @@ object OutboxUploader {
                 continue
             }
             val ackStatus = command.ackStatus ?: continue
+            val now = System.currentTimeMillis()
+            if (CommandAckPolicy.retryWindowExpired(command.createdAt, now)) {
+                dao.markAckUnreconciled(command.id, now)
+                Log.w(TAG, "ACK retry window ended for ${command.id}; result retained for local review")
+                continue
+            }
             val payload = JSONObject().apply {
                 put("id", command.id)
                 put("status", ackStatus)
@@ -680,12 +699,9 @@ object OutboxUploader {
             }
             if (response.isSuccess) {
                 dao.markAcked(command.id, System.currentTimeMillis())
-            } else if (response.statusCode == 404) {
-                Log.e(TAG, "Server no longer has command ${command.id}; keeping its result locally and retrying later")
-                dao.deferAckRetry(command.id, System.currentTimeMillis())
-            } else if (response.statusCode == 410) {
-                Log.e(TAG, "Server reports command ${command.id} expired; keeping its result locally and retrying later")
-                dao.deferAckRetry(command.id, System.currentTimeMillis())
+            } else if (CommandAckPolicy.isUnreconcilable(response)) {
+                Log.w(TAG, "Server cannot reconcile ${command.id}; result retained for local review")
+                dao.markAckUnreconciled(command.id, System.currentTimeMillis())
             } else {
                 Log.w(TAG, "ACK for ${command.id} returned HTTP ${response.statusCode}; persisted result will retry")
                 dao.deferAckRetry(command.id, System.currentTimeMillis())

@@ -611,12 +611,14 @@ describe('Backend Security & Authorization Acceptance Tests', () => {
     expect(pollResult.deviceToken).toBeDefined();
     expect(pollResult.vehicleId).toBe('veh-alice');
 
-    // 9. Subsequent poll cleans up session
+    // 9. A lost approved response can be recovered with the same secret token.
+    // The single-use PIN remains consumed; only its unguessable poll token retries.
     const pollAfter = await fastify.inject({
       method: 'GET',
       url: `/api/auth/device/poll?token=${pollToken}`
     });
-    expect(pollAfter.statusCode).toBe(404);
+    expect(pollAfter.statusCode).toBe(200);
+    expect(pollAfter.json()).toEqual(pollResult);
   });
 
   // 9. Rate limit verification: rapid requests to /api/auth/login or /api/commands return 429 when budget exceeded

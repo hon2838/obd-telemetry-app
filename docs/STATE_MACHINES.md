@@ -1,6 +1,6 @@
 # State-machine inventory and independent review
 
-Audited runtime source: **911668b4bb2a6d785e95b3dcfc89354eaa6d7f25**, 7 November 2026. This document changes documentation only; none of the issues below were fixed as part of the audit.
+Audited runtime source: **911668b4bb2a6d785e95b3dcfc89354eaa6d7f25**, 7 November 2026. The inventory and findings below describe that source. The subsequent fixes are recorded in the resolution addendum at the end; the historical source line references remain unchanged.
 
 Three **GPT-6 Luna** subagents independently covered Android pipelines/probe, backend/infrastructure, and web/Android UI/Android Auto. The parent re-read the transition owners, checked cross-component contracts, corrected unsupported claims, ran existing suites, and built local reproducers.
 
@@ -226,4 +226,34 @@ Corrupt/unrecoverable journals fail startup. Poison is process-wide and short-ci
 3. **P3:** make the largest implicit owners explicit: connection/sync supervisors, pairing workflow, outbox result policy and dashboard request generations. Use small typed transition functions and owner-bound cancellation; a wholesale state-machine framework rewrite is not required.
 4. Add transition matrices/property tests for restart after physical action, expired/evicted ACKs, GPS/OBD loss, failed persistence, scope switch during body parsing, visibility hide/show during abort, and late backfill/duplicate capture times.
 
-Only this inventory is changed in the repository. Fixes, deployment and device testing are separate work.
+The original audit changed documentation only. The follow-up implementation is described below; deployment and car testing remain separate work.
+
+## Resolution addendum — 7 November 2026
+
+All five confirmed findings have follow-up fixes. Three GPT-6 Luna subagents implemented separate sensor, pairing and maintenance changes. The parent implemented callback ownership and ACK retirement, reviewed every resulting diff, corrected additional response-generation gaps, and added service-level regression coverage.
+
+| Finding | Implemented transition | Regression coverage |
+|---|---|---|
+| F1 | `ObdSensorState` owns every optional OBD cache and retry deadline under a connection generation. Disconnect, ACC-off and destruction invalidate the generation; successful initialization starts a clean one. Samples retain the fast-read generation so an intervening reconnect cannot mix old fast readings with a new session. System-property voltage remains the existing independent fallback. PID requests and the 500 ms target cadence are unchanged. | `ObdSensorStateTest`, `GatewaySessionCleanupTest`, existing prompt/cadence/fuel/GPS suites. |
+| F2 | `PairingFlowController` bounds polling by monotonic expiry, handles terminal 404/410/expired responses, and serializes credential persistence against cancellation. Dialog dismissal and Activity destruction disconnect the active HTTP request. Approved server responses can be redelivered with the secret poll token for at most 60 seconds from first delivery, capped by original expiry; retries do not extend this window and the PIN stays single-use. | `PairingFlowControllerTest`, `device_auth.test.js`, `authorization.test.js`. |
+| F3 | The OS network callback remains process-owned and keeps independent outbox draining. The current service holds a replaceable wakeup subscription and closes it on destruction. An old subscription cannot detach its replacement. | `OutboxConnectivityTest`, `GatewaySessionCleanupTest`. |
+| F4 | Structured permanent ACK responses move `ack_pending` to durable `ack_unreconciled`. Generic errors remain retryable; an absolute seven-day horizon also bounds retries against older servers. The original result and deduplication ID are retained, excluded from execution and automatic ACK cleanup, and shown in Android Diagnostics for review. No physical command is replayed or inferred successful. | `CommandAckPolicyTest`, `CommandInboxTest`, `OutboxUploaderTest`, `commands_retirement.test.js`. |
+| F5 | Maintenance resets scoped data/odometer to unknown and atomically applies parsed responses only for the current vehicle generation and request. Failed fallback reads show an accessible stale-data message and preserve polling backoff. Delayed mutation responses are scope-checked after parsing; manual refresh failures are handled. Blank odometer submission continues to send null. | Five focused `maintenance-state.spec.ts` browser tests using local mocks. |
+
+### Operational behavior
+
+- Android version **1.3.9 (13)** contains the client fixes. The server pairing/ACK additions are backward compatible; older Android clients do not gain the new terminal transitions until updated.
+- `ack_unreconciled` is a new value in the existing Room text state column, so no schema migration is required. Records remain local for operator review. Inspect the vehicle and saved result before issuing a fresh clear request.
+- An approved pairing response remains recoverable only within its bounded window. Restarting the server or missing that window requires starting a new pairing flow.
+- The seven-day ACK horizon uses local receipt wall-clock time. A clock rollback delays age expiry rather than prematurely retiring a result. Structured permanent server responses can still end retries immediately.
+- The new Maintenance browser cases require disposable local authentication as configured by the existing E2E harness; they deliberately skip without it. The validated run used a temporary local auth stub and mocked data, with external browser requests blocked.
+- No production server or car was accessed, restarted, or deployed as part of these fixes. Local mock tests do not establish physical adapter or head-unit behavior.
+
+### Follow-up validation
+
+- **421 app JVM tests passed:** 203 standard and 218 Android Auto, with zero failures or skips. **35 probe JVM tests passed.** The standard debug app and instrumentation APK both built successfully.
+- **215 server tests passed** across 25 suites on local Node.js 26.7.0. Exact Node24 production-runtime parity was not established by this run.
+- Dashboard TypeScript checks and production build passed. **Five focused browser tests passed** with local authentication and API mocks. The entire existing browser suite was not rerun.
+- **Seven existing offline instrumentation tests passed** on an API29 emulator at 1280×720 and density160. Installed package identity was 1.3.9/code13. The simulated GPS-versus-OBD screenshot was inspected; no car was involved.
+- Total: **683 passing local tests**, covering the scoped regression cases plus the existing Android/server suites. These do not prove every concurrent interleaving or physical device behavior.
+- Logs, XML reports, the local browser-auth fixture, a simulated screenshot, and the signed debug APK were saved outside the repository in `OBD Explorer Reports/state-machine-fixes-2026-11-07/`.

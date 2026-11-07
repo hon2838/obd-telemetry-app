@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Head from 'next/head';
 import Pagination from '../components/Pagination';
 import PageHeader from '../components/PageHeader';
@@ -62,31 +62,67 @@ export default function Maintenance() {
   const [lastServiceOdo, setLastServiceOdo] = useState('');
   const [lastServiceDate, setLastServiceDate] = useState('');
   const [notes, setNotes] = useState('');
-  const [currentOdoVal, setCurrentOdoVal] = useState(0);
+  const [currentOdoVal, setCurrentOdoVal] = useState<number | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [dataError, setDataError] = useState('');
+  const activeVehicleIdRef = useRef(activeVehicleId);
+  activeVehicleIdRef.current = activeVehicleId;
+  const dataRequestIdRef = useRef(0);
+  const vehicleGenerationRef = useRef(0);
 
   const fetchData = async (signal?: AbortSignal) => {
-    const [itemsRes, statusRes] = await Promise.all([
-      apiFetch(buildUrl('/api/maintenance'), { signal }),
-      apiFetch(buildUrl('/api/maintenance/status'), { signal }),
-    ]);
-    if (!itemsRes.ok) throw new Error(`Maintenance HTTP ${itemsRes.status}`);
-    if (!statusRes.ok) throw new Error(`Maintenance status HTTP ${statusRes.status}`);
-    const [itemsData, statusData] = await Promise.all([itemsRes.json(), statusRes.json()]);
-    const nextItems = Array.isArray(itemsData) ? itemsData : [];
-    setItems(nextItems);
-    setStatus(statusData || { okCount: 0, dueSoonCount: 0, overdueCount: 0, nextUpcoming: null });
-    if (nextItems.length > 0) {
-      setCurrentOdoVal(nextItems[0].currentOdometer);
-      return;
-    }
-    const logsRes = await apiFetch(buildUrl('/api/fuel-logs'), { signal });
-    if (logsRes.ok) {
-      const logsData = await logsRes.json();
-      if (Array.isArray(logsData) && logsData.length > 0) setCurrentOdoVal(logsData[0].odometer);
+    const requestVehicleId = activeVehicleId;
+    const requestId = ++dataRequestIdRef.current;
+    const requestVehicleGeneration = vehicleGenerationRef.current;
+    const isCurrentRequest = () => !signal?.aborted &&
+      requestVehicleId === activeVehicleIdRef.current &&
+      requestVehicleGeneration === vehicleGenerationRef.current &&
+      requestId === dataRequestIdRef.current;
+
+    try {
+      const [itemsRes, statusRes] = await Promise.all([
+        apiFetch(buildUrl('/api/maintenance'), { signal }),
+        apiFetch(buildUrl('/api/maintenance/status'), { signal }),
+      ]);
+      if (!itemsRes.ok) throw new Error(`Maintenance HTTP ${itemsRes.status}`);
+      if (!statusRes.ok) throw new Error(`Maintenance status HTTP ${statusRes.status}`);
+      const [itemsData, statusData] = await Promise.all([itemsRes.json(), statusRes.json()]);
+      const nextItems: MaintenanceItem[] = Array.isArray(itemsData) ? itemsData : [];
+      let nextOdometer: number | null = null;
+
+      if (nextItems.length > 0) {
+        const itemOdometer = nextItems[0].currentOdometer;
+        nextOdometer = typeof itemOdometer === 'number' && Number.isFinite(itemOdometer) ? itemOdometer : null;
+      } else {
+        const logsRes = await apiFetch(buildUrl('/api/fuel-logs'), { signal });
+        if (!logsRes.ok) throw new Error(`Fuel logs HTTP ${logsRes.status}`);
+        const logsData = await logsRes.json();
+        const latestLog = Array.isArray(logsData) ? logsData[0] : null;
+        const logOdometer = latestLog?.odometer;
+        nextOdometer = typeof logOdometer === 'number' && Number.isFinite(logOdometer) ? logOdometer : null;
+      }
+
+      // Do not publish any portion of a response until all scoped inputs have
+      // been read and the body parsing has completed for the same vehicle.
+      if (!isCurrentRequest()) return;
+      setItems(nextItems);
+      setStatus(statusData || { okCount: 0, dueSoonCount: 0, overdueCount: 0, nextUpcoming: null });
+      setCurrentOdoVal(nextOdometer);
+      setDataLoaded(true);
+      setDataError('');
+    } catch (err) {
+      if (isCurrentRequest()) {
+        const message = err instanceof Error ? err.message : 'Unable to refresh maintenance data.';
+        setDataError(`Maintenance data may be out of date: ${message}`);
+      }
+      throw err;
+    } finally {
+      if (isCurrentRequest()) setDataLoading(false);
     }
   };
 
@@ -94,6 +130,17 @@ export default function Maintenance() {
   const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
+    vehicleGenerationRef.current++;
+    dataRequestIdRef.current++;
+    setItems([]);
+    setStatus({ okCount: 0, dueSoonCount: 0, overdueCount: 0, nextUpcoming: null });
+    setCurrentOdoVal(null);
+    setDataLoading(true);
+    setDataLoaded(false);
+    setDataError('');
+    setLoading(false);
+    setError('');
+    setSuccessMsg('');
     setPage(1);
   }, [activeVehicleId]);
 
@@ -125,6 +172,7 @@ export default function Maintenance() {
     }
 
     setLoading(true);
+    const submitVehicleGeneration = vehicleGenerationRef.current;
     try {
       const res = await apiFetch('/api/maintenance', {
         method: 'POST',
@@ -141,54 +189,79 @@ export default function Maintenance() {
       });
 
       if (res.ok) {
-        setSuccessMsg('Maintenance item created successfully!');
-        setName('');
-        setIntervalKm('10000');
-        setIntervalDays('180');
-        setLastServiceOdo('');
-        setLastServiceDate('');
-        setNotes('');
-        fetchData();
+        if (activeVehicleIdRef.current === explicitVehicle.id &&
+            vehicleGenerationRef.current === submitVehicleGeneration) {
+          setSuccessMsg('Maintenance item created successfully!');
+          setName('');
+          setIntervalKm('10000');
+          setIntervalDays('180');
+          setLastServiceOdo('');
+          setLastServiceDate('');
+          setNotes('');
+          void fetchData().catch(() => undefined);
+        }
       } else {
+        if (activeVehicleIdRef.current !== explicitVehicle.id ||
+            vehicleGenerationRef.current !== submitVehicleGeneration) return;
         try {
           const errData = await res.json();
+          if (activeVehicleIdRef.current !== explicitVehicle.id ||
+              vehicleGenerationRef.current !== submitVehicleGeneration) return;
           setError(errData.error || 'Failed to submit maintenance item.');
         } catch (e) {
-          setError('Failed to submit maintenance item (Server Error).');
+          if (activeVehicleIdRef.current === explicitVehicle.id &&
+              vehicleGenerationRef.current === submitVehicleGeneration) {
+            setError('Failed to submit maintenance item (Server Error).');
+          }
         }
       }
     } catch (err) {
-      setError('Network error, could not reach API server.');
+      if (activeVehicleIdRef.current === explicitVehicle.id &&
+          vehicleGenerationRef.current === submitVehicleGeneration) {
+        setError('Network error, could not reach API server.');
+      }
     } finally {
-      setLoading(false);
+      if (vehicleGenerationRef.current === submitVehicleGeneration) setLoading(false);
     }
   };
 
   const handleMarkServiced = async (id: string) => {
     if (!confirm('Mark this item as completed and reset the counters to current mileage/date?')) return;
+    const requestVehicleId = activeVehicleId;
+    const requestVehicleGeneration = vehicleGenerationRef.current;
     try {
       const res = await apiFetch(`/api/maintenance/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ markServiced: true })
       });
-      if (res.ok) {
-        fetchData();
+      if (res.ok && activeVehicleIdRef.current === requestVehicleId &&
+          vehicleGenerationRef.current === requestVehicleGeneration) {
+        void fetchData().catch(() => undefined);
       }
     } catch (err) {
-      console.error('Error marking serviced:', err);
+      if (activeVehicleIdRef.current === requestVehicleId &&
+          vehicleGenerationRef.current === requestVehicleGeneration) {
+        console.error('Error marking serviced:', err);
+      }
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this maintenance schedule?')) return;
+    const requestVehicleId = activeVehicleId;
+    const requestVehicleGeneration = vehicleGenerationRef.current;
     try {
       const res = await apiFetch(`/api/maintenance/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        fetchData();
+      if (res.ok && activeVehicleIdRef.current === requestVehicleId &&
+          vehicleGenerationRef.current === requestVehicleGeneration) {
+        void fetchData().catch(() => undefined);
       }
     } catch (err) {
-      console.error('Error deleting maintenance item:', err);
+      if (activeVehicleIdRef.current === requestVehicleId &&
+          vehicleGenerationRef.current === requestVehicleGeneration) {
+        console.error('Error deleting maintenance item:', err);
+      }
     }
   };
 
@@ -229,6 +302,12 @@ export default function Maintenance() {
         subtitle="Track component service wear, manage service schedules, and receive inspection alerts."
       />
 
+      {(dataLoading || dataError) && (
+        <div role={dataError ? 'alert' : undefined} aria-live="polite" style={{ color: dataError ? 'var(--accent-amber)' : 'var(--text-muted)', fontSize: '0.85rem' }}>
+          {dataError || 'Loading vehicle maintenance data…'}
+        </div>
+      )}
+
       {/* Status Cards */}
       <div style={{
         display: 'grid',
@@ -240,7 +319,7 @@ export default function Maintenance() {
             <span className="metric-summary-label">Schedules OK</span>
             <CheckCircle size={16} color="var(--accent-green)" />
           </div>
-          <div className="metric-summary-value">{status.okCount}</div>
+          <div className="metric-summary-value">{dataLoaded ? status.okCount : '—'}</div>
           <div className="metric-summary-subtext">Maintenance intervals healthy</div>
         </div>
 
@@ -249,7 +328,7 @@ export default function Maintenance() {
             <span className="metric-summary-label">Due Soon</span>
             <AlertTriangle size={16} color="var(--accent-amber)" />
           </div>
-          <div className="metric-summary-value">{status.dueSoonCount}</div>
+          <div className="metric-summary-value">{dataLoaded ? status.dueSoonCount : '—'}</div>
           <div className="metric-summary-subtext">Within 10% of replacement schedule</div>
         </div>
 
@@ -259,7 +338,7 @@ export default function Maintenance() {
             <AlertOctagon size={16} color="var(--accent-red)" />
           </div>
           <div className="metric-summary-value" style={{ color: status.overdueCount > 0 ? 'var(--accent-red)' : 'var(--text-primary)' }}>
-            {status.overdueCount}
+            {dataLoaded ? status.overdueCount : '—'}
           </div>
           <div className="metric-summary-subtext">Requires immediate service attention</div>
         </div>
@@ -287,7 +366,11 @@ export default function Maintenance() {
             )}
           </div>
 
-          {items.length === 0 ? (
+          {!dataLoaded ? (
+            <div role="status" style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              {dataLoading ? 'Loading schedules…' : 'Schedule data is unavailable.'}
+            </div>
+          ) : items.length === 0 ? (
             <EmptyState
               icon={<Wrench size={32} />}
               title="No maintenance schedules created"
@@ -448,11 +531,14 @@ export default function Maintenance() {
                 <input
                   id="maint-last-odo-input"
                   type="number"
-                  placeholder={`Default: ${currentOdoVal}`}
+                  placeholder={currentOdoVal === null ? 'Default: unavailable' : `Default: ${currentOdoVal}`}
                   value={lastServiceOdo}
                   onChange={e => setLastServiceOdo(e.target.value)}
                   className="form-input"
                 />
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '0.25rem' }}>
+                  {currentOdoVal === null ? 'Enter the last service odometer manually.' : `Leave blank to use ${currentOdoVal} km.`}
+                </div>
               </div>
               <div>
                 <label htmlFor="maint-last-date-input" className="form-label">

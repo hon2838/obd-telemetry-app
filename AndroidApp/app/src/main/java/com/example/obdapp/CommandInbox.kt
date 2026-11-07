@@ -31,6 +31,7 @@ object CommandState {
     const val STARTED = "started"
     const val ACK_PENDING = "ack_pending"
     const val ACKED = "acked"
+    const val ACK_UNRECONCILED = "ack_unreconciled"
 }
 
 @Dao
@@ -58,6 +59,13 @@ interface CommandInboxDao {
 
     @Query("UPDATE command_inbox SET updatedAt = :now WHERE id = :id AND state = 'ack_pending'")
     suspend fun deferAckRetry(id: String, now: Long): Int
+
+    /** Preserve the original execution result and deduplication ID; never execute it again. */
+    @Query("UPDATE command_inbox SET state = 'ack_unreconciled', updatedAt = :now WHERE id = :id AND state = 'ack_pending'")
+    suspend fun markAckUnreconciled(id: String, now: Long): Int
+
+    @Query("SELECT * FROM command_inbox WHERE vehicleId = :vehicleId AND state = 'ack_unreconciled' ORDER BY updatedAt DESC, id LIMIT :limit")
+    suspend fun getUnreconciled(vehicleId: String, limit: Int = 50): List<CommandInboxEntity>
 
     /** On process restart, reads may be repeated; a reset may have happened, so never repeat it automatically. */
     @Query("UPDATE command_inbox SET state = 'received', updatedAt = :now WHERE state = 'started' AND command = 'read_dtc'")

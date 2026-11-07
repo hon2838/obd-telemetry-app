@@ -152,7 +152,7 @@ async function commandsRoutes(fastify, options) {
     return serializeMutation(async () => {
       const queue = getPendingCommands();
       const index = queue.findIndex(entry => entry.id === id);
-      if (index < 0) return reply.code(404).send({ error: 'Command not found or acknowledgment expired' });
+      if (index < 0) return reply.code(404).send({ error: 'Command not found or acknowledgment expired', code: 'COMMAND_NOT_FOUND', retryable: false });
       const current = queue[index];
       if (current.vehicleId !== request.auth.vehicleId) {
         return reply.code(403).send({ error: 'Command belongs to another vehicle' });
@@ -160,7 +160,7 @@ async function commandsRoutes(fastify, options) {
       const lateAfterExpiry = current.status === 'expired';
       if (current.status !== 'pending' && !lateAfterExpiry) {
         if (current.status === status) return reply.send({ success: true, alreadyAcknowledged: true, status: current.status });
-        return reply.code(409).send({ error: 'Command was already acknowledged with a different status', status: current.status });
+        return reply.code(409).send({ error: 'Command was already acknowledged with a different status', code: 'COMMAND_ACK_CONFLICT', retryable: false, status: current.status });
       }
       if (status === 'completed') {
         if (current.command === 'read_dtc' && typeof result?.dtc !== 'string') {
@@ -183,7 +183,7 @@ async function commandsRoutes(fastify, options) {
             return retryablePersistenceError(reply, request, err);
           }
         }
-        return reply.code(410).send({ error: 'Command expired before acknowledgment' });
+        return reply.code(410).send({ error: 'Command expired before acknowledgment', code: 'COMMAND_RETIRED', retryable: false });
       }
       const candidateExpired = candidate[liveIndex].status === 'expired';
       candidate[liveIndex] = {

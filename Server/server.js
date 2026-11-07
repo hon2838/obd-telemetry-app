@@ -1276,17 +1276,33 @@ function newSession(fields) {
 // Clean up expired pairings every minute
 function cleanExpiredPairings() {
   const now = Date.now()
+  const expireSession = session => {
+    if (pendingPairingsByToken.get(session.pollToken) === session) pendingPairingsByToken.delete(session.pollToken)
+    for (const code of [session.code, session.normalizedCode]) {
+      if (pendingPairingsByCode.get(code) === session) pendingPairingsByCode.delete(code)
+    }
+    session.status = 'expired'
+    delete session.deviceToken
+    delete session.vehicleId
+    delete session.vehicleName
+    delete session.approvalPollDeadline
+  }
   for (const [code, session] of pendingPairingsByCode.entries()) {
-    if (session.expiresAt && session.expiresAt < now) {
+    const expiresAt = session.status === 'approved' && Number.isFinite(session.approvalPollDeadline)
+      ? Math.min(session.expiresAt, session.approvalPollDeadline)
+      : session.expiresAt
+    if (expiresAt && expiresAt <= now) {
+      expireSession(session)
       pendingPairingsByCode.delete(code)
-      if (session.pollToken) pendingPairingsByToken.delete(session.pollToken)
     }
   }
   for (const [token, session] of pendingPairingsByToken.entries()) {
-    if (session.expiresAt && session.expiresAt < now) {
+    const expiresAt = session.status === 'approved' && Number.isFinite(session.approvalPollDeadline)
+      ? Math.min(session.expiresAt, session.approvalPollDeadline)
+      : session.expiresAt
+    if (expiresAt && expiresAt <= now) {
+      expireSession(session)
       pendingPairingsByToken.delete(token)
-      if (session.code) pendingPairingsByCode.delete(session.code)
-      if (session.normalizedCode) pendingPairingsByCode.delete(session.normalizedCode)
     }
   }
 }
