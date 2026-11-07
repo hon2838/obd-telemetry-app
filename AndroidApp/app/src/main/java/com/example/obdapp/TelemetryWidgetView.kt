@@ -71,6 +71,9 @@ class TelemetryWidgetView @JvmOverloads constructor(
     private val graphSparkline: SparklineView
     private val throttleFuelEconomyRow: View
     private val tvThrottleFuelEconomy: TextView
+    private val throttleGearRow: View
+    private val tvThrottleGear: TextView
+    private var gearEstimateEnabled = false
 
     var currentMetric: TelemetryMetric = TelemetryMetric.SPEED
         private set
@@ -118,6 +121,8 @@ class TelemetryWidgetView @JvmOverloads constructor(
         graphSparkline = findViewById(R.id.graphSparkline)
         throttleFuelEconomyRow = findViewById(R.id.throttleFuelEconomyRow)
         tvThrottleFuelEconomy = findViewById(R.id.tvThrottleFuelEconomy)
+        throttleGearRow = findViewById(R.id.throttleGearRow)
+        tvThrottleGear = findViewById(R.id.tvThrottleGear)
         updateFuelEconomy(null)
 
         // Automotive gesture detector for whole-card touch ergonomics
@@ -317,6 +322,17 @@ class TelemetryWidgetView @JvmOverloads constructor(
         val minHeightDp = 120f + 80f * resources.configuration.fontScale
         throttleFuelEconomyRow.visibility = if (currentMetric == TelemetryMetric.THROTTLE &&
             effectiveStyle == DisplayStyle.BAR && hDp >= minHeightDp) View.VISIBLE else View.GONE
+        throttleGearRow.visibility = if (gearEstimateEnabled && currentMetric == TelemetryMetric.THROTTLE &&
+            effectiveStyle == DisplayStyle.BAR && hDp >= 180f + 130f * resources.configuration.fontScale)
+            View.VISIBLE else View.GONE
+    }
+
+    fun updateGearEstimate(gear: Int?, enabled: Boolean) {
+        gearEstimateEnabled = enabled
+        val value = gear?.takeIf { it in 1..4 }?.toString() ?: "—"
+        tvThrottleGear.text = value
+        throttleGearRow.contentDescription = context.getString(R.string.gear_estimate_description, value)
+        updateFuelRowVisibility()
     }
 
     fun updateFuelEconomy(economyKmL: Double?) {

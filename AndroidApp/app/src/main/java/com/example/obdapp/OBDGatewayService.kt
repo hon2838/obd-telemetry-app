@@ -954,6 +954,7 @@ class OBDGatewayService : Service(), LocationListener {
 
                     val updateIntent = Intent("com.example.obdapp.TELEMETRY_UPDATE").apply {
                         setPackage(packageName)
+                        putExtra("vehicle_id", telemetry.vehicleId)
                         putExtra("lat", telemetry.latitude)
                         putExtra("lon", telemetry.longitude)
                         putExtra("alt", telemetry.altitude)

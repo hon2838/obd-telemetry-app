@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="gear_label">GEAR</string>
+    <string name="gear_estimate_setting">Estimated gears — Axia 4-speed automatic</string>
+    <string name="gear_estimate_hint">Experimental RPM/speed estimate for this vehicle. A dash means uncertain; P/R/N are not detected.</string>
+    <string name="gear_estimate_description">Estimated gear: %1$s</string>
     <string name="current_fuel_economy">CURRENT FUEL ECONOMY</string>
     <string name="fuel_economy_estimated">Estimated</string>
     <string name="fuel_economy_readout_description">Current fuel economy: %1$s km/L, estimated</string>
