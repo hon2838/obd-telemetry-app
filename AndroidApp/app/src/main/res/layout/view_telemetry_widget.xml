@@ -140,10 +140,63 @@
     </LinearLayout>
 
         <LinearLayout
-            android:id="@+id/throttleGearRow"
+            android:id="@+id/throttleSupplementalRows"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"
+            android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/throttleFuelRateRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:paddingVertical="4dp"
+            android:visibility="gone">
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fuel_use_label"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/tvThrottleFuelRate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="—"
+                    android:textColor="@color/text_primary"
+                    android:textSize="28sp"
+                    android:textStyle="bold"
+                    android:fontFeatureSettings="tnum"
+                    android:maxLines="1" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fuel_rate_unit"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="14sp" />
+            </LinearLayout>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/fuel_economy_estimated"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/throttleGearRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:paddingVertical="10dp"
             android:gravity="center"
             android:orientation="horizontal"
@@ -170,6 +223,7 @@
                 android:text="@string/fuel_economy_estimated"
                 android:textColor="@color/text_secondary"
                 android:textSize="11sp" />
+        </LinearLayout>
         </LinearLayout>
     </FrameLayout>
 

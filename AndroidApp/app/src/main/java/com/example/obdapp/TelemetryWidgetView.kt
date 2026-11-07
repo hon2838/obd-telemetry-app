@@ -71,6 +71,8 @@ class TelemetryWidgetView @JvmOverloads constructor(
     private val graphSparkline: SparklineView
     private val throttleFuelEconomyRow: View
     private val tvThrottleFuelEconomy: TextView
+    private val throttleFuelRateRow: View
+    private val tvThrottleFuelRate: TextView
     private val throttleGearRow: View
     private val tvThrottleGear: TextView
     private var gearEstimateEnabled = false
@@ -121,9 +123,12 @@ class TelemetryWidgetView @JvmOverloads constructor(
         graphSparkline = findViewById(R.id.graphSparkline)
         throttleFuelEconomyRow = findViewById(R.id.throttleFuelEconomyRow)
         tvThrottleFuelEconomy = findViewById(R.id.tvThrottleFuelEconomy)
+        throttleFuelRateRow = findViewById(R.id.throttleFuelRateRow)
+        tvThrottleFuelRate = findViewById(R.id.tvThrottleFuelRate)
         throttleGearRow = findViewById(R.id.throttleGearRow)
         tvThrottleGear = findViewById(R.id.tvThrottleGear)
         updateFuelEconomy(null)
+        updateFuelRate(null)
 
         // Automotive gesture detector for whole-card touch ergonomics
         gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
@@ -322,9 +327,24 @@ class TelemetryWidgetView @JvmOverloads constructor(
         val minHeightDp = 120f + 80f * resources.configuration.fontScale
         throttleFuelEconomyRow.visibility = if (currentMetric == TelemetryMetric.THROTTLE &&
             effectiveStyle == DisplayStyle.BAR && hDp >= minHeightDp) View.VISIBLE else View.GONE
-        throttleGearRow.visibility = if (gearEstimateEnabled && currentMetric == TelemetryMetric.THROTTLE &&
-            effectiveStyle == DisplayStyle.BAR && hDp >= 180f + 130f * resources.configuration.fontScale)
-            View.VISIBLE else View.GONE
+        val gearVisible = gearEstimateEnabled && currentMetric == TelemetryMetric.THROTTLE &&
+            effectiveStyle == DisplayStyle.BAR && hDp >= 180f + 130f * resources.configuration.fontScale
+        throttleGearRow.visibility = if (gearVisible) View.VISIBLE else View.GONE
+        // Preserve the gear's existing space first; the optional rate row uses the remaining room.
+        val rateMinHeightDp = if (gearVisible) 230f + 125f * resources.configuration.fontScale
+            else 180f + 130f * resources.configuration.fontScale
+        throttleFuelRateRow.visibility = if (currentMetric == TelemetryMetric.THROTTLE &&
+            effectiveStyle == DisplayStyle.BAR && hDp >= rateMinHeightDp) View.VISIBLE else View.GONE
+    }
+
+    fun updateFuelRate(rateLph: Double?) {
+        val valid = rateLph?.takeIf { it.isFinite() && it >= 0.0 }
+        val value = valid?.let { String.format(java.util.Locale.getDefault(), "%.1f", it) } ?: "—"
+        if (tvThrottleFuelRate.text.toString() != value) tvThrottleFuelRate.text = value
+        tvThrottleFuelRate.setTextColor(ContextCompat.getColor(
+            context, if (valid != null) R.color.text_primary else R.color.text_secondary
+        ))
+        throttleFuelRateRow.contentDescription = context.getString(R.string.fuel_rate_readout_description, value)
     }
 
     fun updateGearEstimate(gear: Int?, enabled: Boolean) {

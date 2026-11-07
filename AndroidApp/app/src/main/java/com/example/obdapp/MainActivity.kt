@@ -466,12 +466,17 @@ class MainActivity : AppCompatActivity() {
             lastFuelEconomy, lastFuelRate, lastTelemetryAt, System.currentTimeMillis(), fuelConnectionOk
         )
         val ageMs = System.currentTimeMillis() - lastTelemetryAt
+        val fresh = fuelConnectionOk && lastTelemetryAt > 0L &&
+            ageMs in 0..FuelConsumptionEstimate.MAX_READING_AGE_MS
         val currentEconomy = lastFuelEconomy?.takeIf {
-            fuelConnectionOk && lastTelemetryAt > 0L &&
-                ageMs in 0..FuelConsumptionEstimate.MAX_READING_AGE_MS && it.isFinite() && it >= 0.0
+            fresh && it.isFinite() && it >= 0.0
         }
+        val currentRate = lastFuelRate?.takeIf { fresh && it.isFinite() && it >= 0.0 }
         for (slot in cockpitSlots) {
-            if (slot.currentMetric == TelemetryMetric.THROTTLE) slot.updateFuelEconomy(currentEconomy)
+            if (slot.currentMetric == TelemetryMetric.THROTTLE) {
+                slot.updateFuelEconomy(currentEconomy)
+                slot.updateFuelRate(currentRate)
+            }
         }
     }
 

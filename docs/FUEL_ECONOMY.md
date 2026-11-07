@@ -27,6 +27,8 @@ An unsupported airflow/status PID pauses those optional requests for five minute
 
 ## Display and persistence
 
+The head-unit throttle card also shows **FUEL USE** in **L/h**, above the optional estimated gear, when enough space is available. It uses the existing same-sample fuel-rate estimate and adds no adapter queries. Missing, invalid, stale, or disconnected readings show a dash; valid zero remains `0.0`. The new row hides on constrained cards or larger fonts before taking space from the existing gear and km/L readouts.
+
 Android clears both fuel values after five seconds without a fresh telemetry update and when the collector stops. The dashboard shows **latest synced reading**, matching the existing approximately once-per-minute upload schedule. It clears both fuel figures when its connection fails or the sample exceeds the dashboard's 90-second reporting timeout. It is not a one-second cloud stream. Displays distinguish stale/disconnected data from unavailable or incomplete estimates; a null value alone does not establish that a sensor is unsupported or identify a particular fuel-control state.
 
 Nullable telemetry fields are `mafGps` (g/s), `fuelSystemStatus` (primary raw status byte), `estimatedFuelRateLph` and `estimatedFuelEconomyKmL`. The Android Room database upgrades from version 9 to 10 without deleting queued/history records. Uploads carry those fields, including legitimate zero values. Server ingestion validates ranges and integer status, and JSON/SQLite storage retain the values across restart. Existing clients and old records without these fields remain compatible and display `N/A`.

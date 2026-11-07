@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="fuel_use_label">FUEL USE</string>
+    <string name="fuel_rate_unit">L/h</string>
+    <string name="fuel_rate_readout_description">Fuel use: %1$s litres per hour, estimated</string>
     <string name="gear_label">GEAR</string>
     <string name="gear_estimate_setting">Estimated gears — Axia 4-speed automatic</string>
     <string name="gear_estimate_hint">Experimental RPM/speed estimate for this vehicle. A dash means uncertain; P/R/N are not detected.</string>

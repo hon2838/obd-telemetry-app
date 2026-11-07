@@ -56,14 +56,17 @@ class GearEstimateOfflineTest {
 
     private fun send(rpm: Int = 2400, speed: Float = 80f, throttle: Int = 10,
                      source: String = "OBD", car: String = vehicle, age: Long = 0,
-                     action: String = "com.example.obdapp.TELEMETRY_UPDATE") {
+                     action: String = "com.example.obdapp.TELEMETRY_UPDATE", rate: Double? = 4.32,
+                     status: String = "Connected") {
         dispatch(Intent(action).setPackage(context.packageName)
             .putExtra("vehicle_id", car).putExtra("timestamp", System.currentTimeMillis() - age)
-            .putExtra("obd_status", "Connected").putExtra("speed_source", source)
+            .putExtra("obd_status", status).putExtra("speed_source", source)
             .putExtra("speed", speed).putExtra("rpm", rpm).putExtra("throttle", throttle)
             .putExtra("coolant", 86).putExtra("volt", 13.9f)
             .putExtra("load", 25).putExtra("iat", 36)
-            .putExtra("estimated_fuel_economy_kml", 18.5))
+            .putExtra("estimated_fuel_economy_kml", 18.5).apply {
+                if (rate != null) putExtra("estimated_fuel_rate_lph", rate)
+            })
     }
 
     private fun dispatch(intent: Intent) {
@@ -115,9 +118,15 @@ class GearEstimateOfflineTest {
             val row = slot.findViewById<View>(R.id.throttleGearRow)
             val fuel = slot.findViewById<View>(R.id.throttleFuelEconomyRow)
             val primary = slot.findViewById<View>(R.id.telemetryPrimaryContent)
+            val supplemental = slot.findViewById<View>(R.id.throttleSupplementalRows)
+            val rate = slot.findViewById<View>(R.id.throttleFuelRateRow)
             assertEquals(View.VISIBLE, row.visibility)
+            assertEquals(View.VISIBLE, rate.visibility)
+            assertEquals("4.3", slot.findViewById<TextView>(R.id.tvThrottleFuelRate).text.toString())
+            assertTrue(rate.bottom <= row.top)
+            assertTrue("Supplemental rows must clear the throttle bar", supplemental.top > 115 * activity.resources.displayMetrics.density)
             assertTrue(row.height > 0)
-            assertTrue(row.bottom <= primary.height)
+            assertTrue(supplemental.bottom <= primary.height)
             assertTrue(primary.bottom <= fuel.top)
         }
         screenshot("gear-four-simulated")
@@ -183,8 +192,31 @@ class GearEstimateOfflineTest {
                     View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
                 widget.layout(0, 0, w, h)
                 assertEquals(View.GONE, widget.findViewById<View>(R.id.throttleGearRow).visibility)
+                assertEquals(View.GONE, widget.findViewById<View>(R.id.throttleFuelRateRow).visibility)
                 assertTrue(widget.findViewById<View>(R.id.telemetryPrimaryContent).height > 0)
             }
         }
+    }
+
+    @Test fun fuelUseUpdatesAtIdleAndClearsWhenUnavailableStaleOrDisconnected() {
+        fun assertRate(value: String) = scenario!!.onActivity { activity ->
+            assertEquals(value, activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
+                .findViewById<TextView>(R.id.tvThrottleFuelRate).text.toString())
+        }
+        send(); assertRate("4.3")
+        send(rpm = 800, speed = 0f, rate = 1.06); assertRate("1.1")
+        send(rate = 0.0); assertRate("0.0")
+        send(rate = null); assertRate("—")
+        send(rate = Double.NaN); assertRate("—")
+        send(age = 6000); assertRate("—")
+        send(status = "GPS Only"); assertRate("—")
+        send(); assertRate("4.3")
+        SystemClock.sleep(6200)
+        assertRate("—")
+        screenshot("fuel-use-stale-simulated")
+        send(); assertRate("4.3")
+        dispatch(Intent("com.example.obdapp.STATUS_UPDATE").setPackage(context.packageName)
+            .putExtra("running", false))
+        assertRate("—")
     }
 }

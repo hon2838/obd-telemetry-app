@@ -71,10 +71,12 @@ class GearEstimateUiTest {
         widget.layout(0, 0, w, h)
         val row = widget.findViewById<View>(R.id.throttleGearRow)
         val primary = widget.findViewById<View>(R.id.telemetryPrimaryContent)
+        val supplemental = widget.findViewById<View>(R.id.throttleSupplementalRows)
         assertEquals(View.VISIBLE, row.visibility)
         assertTrue(row.height > 0)
-        assertTrue(row.bottom <= primary.height)
-        assertTrue(row.top > 100 * density)
+        assertTrue(supplemental.bottom <= primary.height)
+        // The gear is now nested in the supplemental stack; compare in primary-content coordinates.
+        assertTrue(supplemental.top + row.top > 100 * density)
         widget.updateGearEstimate(null, false)
         assertEquals(View.GONE, row.visibility)
     }

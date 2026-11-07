@@ -141,4 +141,44 @@ class FuelEconomyUiTest {
         assertEquals(android.view.View.GONE, row.visibility)
         assertTrue(primary.height >= 350)
     }
+
+    @Test fun inlineFuelRateUsesFreshSuppliedValuesAndClearsOnDisconnect() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val originalLocale = java.util.Locale.getDefault()
+        java.util.Locale.setDefault(java.util.Locale.US)
+        try {
+            val activity = controller.get()
+            val receiver = ReflectionHelpers.getField<BroadcastReceiver>(activity, "telemetryReceiver")
+            val rate = activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
+                .findViewById<TextView>(R.id.tvThrottleFuelRate)
+            fun send(value: Double?, age: Long = 0, status: String = "Connected") {
+                val intent = Intent("com.example.obdapp.TELEMETRY_UPDATE")
+                    .putExtra("timestamp", System.currentTimeMillis() - age)
+                    .putExtra("obd_status", status)
+                    .putExtra("estimated_fuel_economy_kml", 18.5)
+                if (value != null) intent.putExtra("estimated_fuel_rate_lph", value)
+                receiver.onReceive(activity, intent)
+            }
+            send(4.32)
+            assertEquals("4.3", rate.text.toString())
+            send(0.0)
+            assertEquals("0.0", rate.text.toString())
+            for (value in listOf(null, -1.0, Double.NaN, Double.POSITIVE_INFINITY)) {
+                send(value)
+                assertEquals("—", rate.text.toString())
+            }
+            send(4.32, age = 6000)
+            assertEquals("—", rate.text.toString())
+            send(4.32, age = -6000)
+            assertEquals("—", rate.text.toString())
+            send(4.32, status = "GPS Only")
+            assertEquals("—", rate.text.toString())
+            send(4.32)
+            receiver.onReceive(activity, Intent("com.example.obdapp.STATUS_UPDATE").putExtra("running", false))
+            assertEquals("—", rate.text.toString())
+        } finally {
+            java.util.Locale.setDefault(originalLocale)
+            controller.pause().stop().destroy()
+        }
+    }
 }
