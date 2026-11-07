@@ -227,4 +227,3 @@ Corrupt/unrecoverable journals fail startup. Poison is process-wide and short-ci
 4. Add transition matrices/property tests for restart after physical action, expired/evicted ACKs, GPS/OBD loss, failed persistence, scope switch during body parsing, visibility hide/show during abort, and late backfill/duplicate capture times.
 
 Only this inventory is changed in the repository. Fixes, deployment and device testing are separate work.
-
