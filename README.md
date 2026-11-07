@@ -60,6 +60,8 @@ For estimated instantaneous petrol fuel economy in **km/L**, see [fuel-economy b
 
 For the optional experimental **Axia 4-speed automatic gear estimate**, see [gear display and validation limits](docs/GEAR_ESTIMATE.md).
 
+For the speed card's **GPS versus vehicle speed** reading, see [comparison sources, freshness, and limitations](docs/SPEED_COMPARISON.md).
+
 For the experimental phone app projected through Android Auto, see [Android Auto setup, architecture, validation, and server capacity](docs/ANDROID_AUTO.md). Build it with `make apk-androidauto`; the standard head-unit APK remains a separate package.
 
 ## Tech Stack

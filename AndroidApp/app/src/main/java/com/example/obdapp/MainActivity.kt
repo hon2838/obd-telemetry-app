@@ -120,6 +120,8 @@ class MainActivity : AppCompatActivity() {
     private var lastTelemetryAt = 0L
     private var lastFuelEconomy: Double? = null
     private var lastFuelRate: Double? = null
+    private var speedComparison: SpeedComparisonReading? = null
+    private var primarySpeedSource = ""
     private val gearEstimator = AxiaGearEstimate()
     private var gearVehicleId: String? = null
     private var syncingGearToggle = false
@@ -215,6 +217,8 @@ class MainActivity : AppCompatActivity() {
                     if (status.contains("GPS Only", true) || status.contains("Lost", true) ||
                         status.contains("Suspended", true)) {
                         fuelConnectionOk = false
+                        speedComparison = speedComparison?.copy(obdKmh = null)
+                        updateSpeedComparison()
                         gearEstimator.reset()
                         updateGearReadouts()
                         updateFuelEstimate()
@@ -281,6 +285,15 @@ class MainActivity : AppCompatActivity() {
         val activeVehicle = VehiclePrefs.getActiveVehicleId(this)
         val sampleVehicle = it.getStringExtra("vehicle_id")
         val sampleAt = it.getLongExtra("timestamp", 0L)
+        primarySpeedSource = if (isTrustedLive && sampleVehicle == activeVehicle) speedSource else ""
+        speedComparison = if (isTrustedLive && sampleVehicle == activeVehicle && !isDemoMode) {
+            SpeedComparisonReading(activeVehicle,
+                if (obdStatus == "Connected") it.getFloatOrNumber("obd_speed_kmh", -1f) else null,
+                it.getLongExtra("obd_speed_at_elapsed_ms", -1L),
+                it.getFloatOrNumber("gps_speed_kmh", -1f),
+                it.getLongExtra("gps_speed_at_elapsed_ms", -1L))
+        } else null
+        updateSpeedComparison()
         val gearSampleAge = System.currentTimeMillis() - sampleAt
         if (gearVehicleId != activeVehicle) {
             gearEstimator.reset()
@@ -303,7 +316,6 @@ class MainActivity : AppCompatActivity() {
         lastTelemetryAt = ts.coerceAtLeast(0L)
 
         tvGpsPosition.text = if (hasGpsFix) String.format("%.6f, %.6f", lat, lon) else "Waiting for GPS fix"
-        tvGpsSpeed.text = if (speed >= 0f) String.format("%.1f km/h (%s)", speed, speedSource) else "N/A"
         tvAltitude.text = if (hasAltitude) String.format("%.0f m", alt) else "N/A"
         tvObdStatus.text = obdStatus
 
@@ -431,6 +443,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun setServiceRunningUi(running: Boolean) {
         if (!running) {
+            speedComparison = null
+            primarySpeedSource = ""
+            updateSpeedComparison()
             gearEstimator.reset()
             updateGearReadouts()
             fuelConnectionOk = false
@@ -445,6 +460,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTelemetryAge() {
+        updateSpeedComparison()
         updateGearReadouts()
         updateFuelEstimate()
         if (lastTelemetryAt == 0L) {
@@ -476,6 +492,21 @@ class MainActivity : AppCompatActivity() {
             if (slot.currentMetric == TelemetryMetric.THROTTLE) {
                 slot.updateFuelEconomy(currentEconomy)
                 slot.updateFuelRate(currentRate)
+            }
+        }
+    }
+
+    private fun updateSpeedComparison() {
+        val vehicle = VehiclePrefs.getActiveVehicleId(this)
+        val values = speedComparison?.current(vehicle, android.os.SystemClock.elapsedRealtime())
+            ?: SpeedComparisonReading.Values()
+        val source = primarySpeedSource.takeIf { speedComparison?.vehicleId == vehicle } ?: ""
+        if (::tvGpsSpeed.isInitialized) tvGpsSpeed.text = values.gpsKmh?.let {
+            String.format(Locale.getDefault(), "%.1f km/h (GPS)", it)
+        } ?: "N/A"
+        for (slot in cockpitSlots) {
+            if (slot.currentMetric == TelemetryMetric.SPEED) {
+                slot.updateSpeedComparison(values.gpsKmh, values.differenceKmh, source)
             }
         }
     }
@@ -786,6 +817,7 @@ class MainActivity : AppCompatActivity() {
                 if (suppress) { suppress = false; return }
                 VehiclePrefs.setActiveVehicle(this@MainActivity, vehicles[position].id)
                 refreshGearToggle()
+                updateSpeedComparison()
                 setupBluetoothSpinner() // re-select the adapter bound to this vehicle
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -1070,6 +1102,7 @@ class MainActivity : AppCompatActivity() {
         }
         updateFuelEstimate()
         updateGearReadouts()
+        updateSpeedComparison()
     }
 
     private fun showSlotSelectorDialog() {

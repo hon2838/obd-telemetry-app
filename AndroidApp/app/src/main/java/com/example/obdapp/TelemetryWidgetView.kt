@@ -73,6 +73,7 @@ class TelemetryWidgetView @JvmOverloads constructor(
     private val tvThrottleFuelEconomy: TextView
     private val throttleFuelRateRow: View
     private val tvThrottleFuelRate: TextView
+    private val speedComparisonRow: TextView
     private val throttleGearRow: View
     private val tvThrottleGear: TextView
     private var gearEstimateEnabled = false
@@ -125,10 +126,12 @@ class TelemetryWidgetView @JvmOverloads constructor(
         tvThrottleFuelEconomy = findViewById(R.id.tvThrottleFuelEconomy)
         throttleFuelRateRow = findViewById(R.id.throttleFuelRateRow)
         tvThrottleFuelRate = findViewById(R.id.tvThrottleFuelRate)
+        speedComparisonRow = findViewById(R.id.speedComparisonRow)
         throttleGearRow = findViewById(R.id.throttleGearRow)
         tvThrottleGear = findViewById(R.id.tvThrottleGear)
         updateFuelEconomy(null)
         updateFuelRate(null)
+        updateSpeedComparison(null, null, "")
 
         // Automotive gesture detector for whole-card touch ergonomics
         gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
@@ -174,6 +177,7 @@ class TelemetryWidgetView @JvmOverloads constructor(
         // Decide before measuring the weighted content, so the first layout
         // reserves height for this row instead of measuring it while GONE.
         updateFuelRowVisibility(MeasureSpec.getSize(heightMeasureSpec))
+        updateSpeedRowVisibility(MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.getSize(heightMeasureSpec))
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)
     }
 
@@ -210,6 +214,7 @@ class TelemetryWidgetView @JvmOverloads constructor(
         tvGraphTitle.textSize = titleSp
         tvGraphValue.textSize = unitSp
         updateFuelRowVisibility()
+        updateSpeedRowVisibility()
     }
 
     fun bindMetric(metric: TelemetryMetric, style: DisplayStyle? = null) {
@@ -314,6 +319,7 @@ class TelemetryWidgetView @JvmOverloads constructor(
         digitalContainer.visibility = if (effectiveStyle == DisplayStyle.DIGITAL) View.VISIBLE else View.GONE
         graphContainer.visibility = if (effectiveStyle == DisplayStyle.GRAPH) View.VISIBLE else View.GONE
         updateFuelRowVisibility()
+        updateSpeedRowVisibility()
         if (!isMetricAvailable) {
             setUnavailable()
         } else if (hasReceivedValue) {
@@ -335,6 +341,34 @@ class TelemetryWidgetView @JvmOverloads constructor(
             else 180f + 130f * resources.configuration.fontScale
         throttleFuelRateRow.visibility = if (currentMetric == TelemetryMetric.THROTTLE &&
             effectiveStyle == DisplayStyle.BAR && hDp >= rateMinHeightDp) View.VISIBLE else View.GONE
+    }
+
+    private fun updateSpeedRowVisibility(availableWidthPx: Int = width, availableHeightPx: Int = height) {
+        val density = resources.displayMetrics.density
+        val fontScale = resources.configuration.fontScale
+        speedComparisonRow.visibility = if (currentMetric == TelemetryMetric.SPEED &&
+            effectiveStyle == DisplayStyle.DIAL && availableHeightPx / density >= 320f &&
+            availableWidthPx / density >= 300f * fontScale && fontScale <= 1.3f) View.VISIBLE else View.GONE
+    }
+
+    fun updateSpeedComparison(gpsKmh: Float?, differenceKmh: Float?, primarySource: String) {
+        fun format(value: Float?, signed: Boolean): String = value?.takeIf { it.isFinite() }?.let {
+            val roundedZero = if (kotlin.math.abs(it) < 0.05f) 0f else it
+            String.format(java.util.Locale.getDefault(), if (signed) "%+.1f" else "%.1f", roundedZero)
+        } ?: "—"
+        val gps = format(gpsKmh?.takeIf { it >= 0f }, false)
+        val difference = format(differenceKmh, true)
+        val text = context.getString(R.string.speed_comparison, gps, difference)
+        if (speedComparisonRow.text.toString() != text) speedComparisonRow.text = text
+        speedComparisonRow.contentDescription = context.getString(R.string.speed_comparison_description, gps, difference)
+        if (currentMetric == TelemetryMetric.SPEED) {
+            val title = when (primarySource) {
+                "OBD" -> context.getString(R.string.vehicle_speed_title)
+                "GPS" -> context.getString(R.string.gps_speed_title)
+                else -> currentMetric.displayName
+            }
+            if (dialView.title != title) dialView.title = title
+        }
     }
 
     fun updateFuelRate(rateLph: Double?) {

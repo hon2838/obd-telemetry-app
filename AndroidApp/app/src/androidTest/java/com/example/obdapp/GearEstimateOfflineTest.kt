@@ -57,7 +57,7 @@ class GearEstimateOfflineTest {
     private fun send(rpm: Int = 2400, speed: Float = 80f, throttle: Int = 10,
                      source: String = "OBD", car: String = vehicle, age: Long = 0,
                      action: String = "com.example.obdapp.TELEMETRY_UPDATE", rate: Double? = 4.32,
-                     status: String = "Connected") {
+                     status: String = "Connected", gps: Float? = 78f, gpsAge: Long = 0) {
         dispatch(Intent(action).setPackage(context.packageName)
             .putExtra("vehicle_id", car).putExtra("timestamp", System.currentTimeMillis() - age)
             .putExtra("obd_status", status).putExtra("speed_source", source)
@@ -66,6 +66,14 @@ class GearEstimateOfflineTest {
             .putExtra("load", 25).putExtra("iat", 36)
             .putExtra("estimated_fuel_economy_kml", 18.5).apply {
                 if (rate != null) putExtra("estimated_fuel_rate_lph", rate)
+                if (status == "Connected" && source == "OBD") {
+                    putExtra("obd_speed_kmh", speed)
+                    putExtra("obd_speed_at_elapsed_ms", SystemClock.elapsedRealtime())
+                }
+                if (gps != null) {
+                    putExtra("gps_speed_kmh", gps)
+                    putExtra("gps_speed_at_elapsed_ms", SystemClock.elapsedRealtime() - gpsAge)
+                }
             })
     }
 
@@ -194,6 +202,11 @@ class GearEstimateOfflineTest {
                 assertEquals(View.GONE, widget.findViewById<View>(R.id.throttleGearRow).visibility)
                 assertEquals(View.GONE, widget.findViewById<View>(R.id.throttleFuelRateRow).visibility)
                 assertTrue(widget.findViewById<View>(R.id.telemetryPrimaryContent).height > 0)
+                widget.bindMetric(TelemetryMetric.SPEED, DisplayStyle.DIAL)
+                widget.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
+                widget.layout(0, 0, w, h)
+                assertEquals(View.GONE, widget.findViewById<View>(R.id.speedComparisonRow).visibility)
             }
         }
     }
@@ -218,5 +231,56 @@ class GearEstimateOfflineTest {
         dispatch(Intent("com.example.obdapp.STATUS_UPDATE").setPackage(context.packageName)
             .putExtra("running", false))
         assertRate("—")
+    }
+
+    @Test fun gpsComparisonFitsBelowTheUnchangedVehicleSpeedGauge() {
+        send()
+        scenario!!.onActivity { activity ->
+            val slot = activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot0)
+            val row = slot.findViewById<TextView>(R.id.speedComparisonRow)
+            val dial = slot.findViewById<CircularGaugeView>(R.id.dialGaugeView)
+            assertEquals(View.VISIBLE, row.visibility)
+            assertEquals("GPS 78.0 km/h · OBD−GPS +2.0 km/h", row.text.toString())
+            assertEquals("OBD SPEED", dial.title)
+            assertEquals(80f, dial.currentValue)
+            assertTrue(row.top > dial.height * 0.9f)
+            assertTrue(row.bottom <= dial.height)
+            assertEquals(1, row.layout.lineCount)
+            assertTrue(row.layout.getLineWidth(0) <= row.width)
+        }
+        screenshot("gps-vs-vehicle-simulated")
+        send(speed = 70f, gps = 72f)
+        scenario!!.onActivity { activity ->
+            assertTrue(activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot0)
+                .findViewById<TextView>(R.id.speedComparisonRow).text.contains("OBD−GPS -2.0"))
+        }
+        send(speed = 0f, gps = 0f)
+        scenario!!.onActivity { activity ->
+            assertTrue(activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot0)
+                .findViewById<TextView>(R.id.speedComparisonRow).text.contains("GPS 0.0"))
+        }
+    }
+
+    @Test fun gpsComparisonRejectsOldFixesAndDoesNotCompareGpsWithItsFallback() {
+        fun rowText(): String {
+            var text = ""
+            scenario!!.onActivity { activity -> text = activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot0)
+                .findViewById<TextView>(R.id.speedComparisonRow).text.toString() }
+            return text
+        }
+        send(gps = null)
+        assertEquals("GPS — km/h · OBD−GPS — km/h", rowText())
+        send(gpsAge = 2000)
+        assertEquals("GPS 78.0 km/h · OBD−GPS — km/h", rowText())
+        send(gpsAge = 4000)
+        assertEquals("GPS — km/h · OBD−GPS — km/h", rowText())
+        send(speed = 78f, source = "GPS", status = "GPS Only")
+        assertEquals("GPS 78.0 km/h · OBD−GPS — km/h", rowText())
+        screenshot("gps-only-simulated")
+        send(car = "different-vehicle")
+        assertEquals("GPS — km/h · OBD−GPS — km/h", rowText())
+        send()
+        SystemClock.sleep(4200)
+        assertEquals("GPS — km/h · OBD−GPS — km/h", rowText())
     }
 }

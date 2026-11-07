@@ -725,6 +725,7 @@ class OBDGatewayService : Service(), LocationListener {
                     }
                     var rpm: Int? = null
                     var speed: Int? = null
+                    var speedAtElapsedMs = -1L
                     var engineLoad: Int? = cachedEngineLoad
                     var throttlePos: Int? = cachedThrottlePos
                     // Fuel inputs belong to this cycle; never reuse old values.
@@ -759,6 +760,7 @@ class OBDGatewayService : Service(), LocationListener {
                                     val rpmResp = read(RPMCommand())
                                     delay(ObdPollingCadence.COMMAND_GAP_MS)
                                     val speedResp = read(SpeedCommand())
+                                    speedAtElapsedMs = SystemClock.elapsedRealtime()
                                     delay(ObdPollingCadence.COMMAND_GAP_MS)
 
                                     rpm = rpmResp?.value?.toIntOrNull()
@@ -931,8 +933,11 @@ class OBDGatewayService : Service(), LocationListener {
 
                     // Prefer this cycle's vehicle speed so a 1 Hz GPS does not
                     // hold the live gauge back. GPS remains the offline fallback.
-                    val effectiveSpeed = speed?.toFloat() ?: gpsFix?.speedKmh
-                    val effectiveSpeedSource = if (speed != null) "OBD" else if (gpsFix?.speedKmh != null) "GPS" else ""
+                    // Refresh policy age at publication, and use one GPS snapshot for both displays.
+                    // Storage's zero GPS fallback is not a sensor reading.
+                    val comparisonGps = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
+                    val effectiveSpeed = speed?.toFloat() ?: comparisonGps?.speedKmh
+                    val effectiveSpeedSource = if (speed != null) "OBD" else if (comparisonGps?.speedKmh != null) "GPS" else ""
                     val gaugeSnapshot = LiveGaugeSnapshot(
                         speedKmh = effectiveSpeed,
                         speedSource = effectiveSpeedSource,
@@ -960,6 +965,14 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("alt", telemetry.altitude)
                         putExtra("speed", effectiveSpeed ?: -1.0f)
                         putExtra("speed_source", effectiveSpeedSource)
+                        speed?.takeIf { obdConnection != null }?.let { obdSpeed ->
+                            putExtra("obd_speed_kmh", obdSpeed.toFloat())
+                            putExtra("obd_speed_at_elapsed_ms", speedAtElapsedMs)
+                        }
+                        comparisonGps?.speedKmh?.let { gpsSpeed ->
+                            putExtra("gps_speed_kmh", gpsSpeed)
+                            putExtra("gps_speed_at_elapsed_ms", comparisonGps.elapsedRealtimeNanos / 1_000_000L)
+                        }
                         putExtra("gps_fix", gpsFix != null)
                         putExtra("gps_altitude_valid", gpsFix?.altitudeMeters != null)
                         putExtra("rpm", telemetry.rpm ?: -1)
