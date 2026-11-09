@@ -13,8 +13,9 @@ node_modules/
 dist/
 out/
 .env
-.env.local
-.env.production
+.env.*
+.env*.local
+!.env.example
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -27,6 +28,10 @@ Server/agent/app-debug.apk
 Server/agent/version.json
 Server/install.sh
 *.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 *.json
 !package.json
 !Server/package-lock.json
@@ -37,20 +42,25 @@ Server/install.sh
 !project.json
 !Server/agent/.gitkeep
 
-# Misc
+# Misc & OS
 .DS_Store
 Thumbs.db
+*.swp
+*~
 
 # Playwright
 Dashboard/playwright-report/
 Dashboard/test-results/
 
-# AI Agent Settings & Permissions
+# AI Agent Settings, Local Permissions & Command Approvals
 .claude/
 .gemini/
 .cursor/
+.continue/
+.aider*
 settings.local.json
 *.local.json
+*.local.md
 
 # Keys and certificates
 *.pem
@@ -59,3 +69,4 @@ settings.local.json
 *.keystore
 id_rsa*
 id_ed25519*
+*.p12
