@@ -63,24 +63,30 @@ class LiveGaugesScreenTest {
         assertEquals(6, items.size)
 
         val speedItem = items[0] as GridItem
-        assertEquals("55 km/h", speedItem.title.toString())
+        assertEquals("Speed", speedItem.title.toString())
+        assertEquals("55 km/h · GPS", speedItem.text.toString())
         assertTrue(speedItem.text.toString().contains("GPS"))
 
         val rpmItem = items[1] as GridItem
-        assertEquals("1800 RPM", rpmItem.title.toString())
+        assertEquals("Engine RPM", rpmItem.title.toString())
+        assertEquals("1800 RPM", rpmItem.text.toString())
 
         val coolantItem = items[2] as GridItem
-        assertEquals("88 °C", coolantItem.title.toString())
+        assertEquals("Coolant Temp", coolantItem.title.toString())
+        assertEquals("88 °C", coolantItem.text.toString())
 
         val voltItem = items[3] as GridItem
-        assertEquals("14.1 V", voltItem.title.toString())
+        assertEquals("Battery Voltage", voltItem.title.toString())
+        assertEquals("14.1 V", voltItem.text.toString())
 
         val fuelItem = items[4] as GridItem
-        assertEquals("16.2", fuelItem.title.toString())
+        assertEquals("Fuel", fuelItem.title.toString())
+        assertEquals("16.2 km/L", fuelItem.text.toString())
         assertTrue(fuelItem.text.toString().contains("km/L"))
 
         val loadItem = items[5] as GridItem
-        assertEquals("35 %", loadItem.title.toString())
+        assertEquals("Engine Load", loadItem.title.toString())
+        assertEquals("35 %", loadItem.text.toString())
     }
 
     @Test fun liveGaugesScreenRefreshesAtOneSecondIntervalsWhenResumed() {
@@ -92,7 +98,7 @@ class LiveGaugesScreenTest {
         try {
             shadowOf(Looper.getMainLooper()).idle()
             val initial = controller.templatesReturned.last() as GridTemplate
-            val initialSpeed = (initial.singleList?.items?.get(0) as GridItem).title.toString()
+            val initialSpeed = (initial.singleList?.items?.get(0) as GridItem).text.toString()
             assertEquals("--", initialSpeed)
 
             val now = SystemClock.elapsedRealtime()
@@ -104,11 +110,37 @@ class LiveGaugesScreenTest {
             // Idle for 1.2s to trigger 1-second refresh ticker
             shadowOf(Looper.getMainLooper()).idleFor(1200, TimeUnit.MILLISECONDS)
             val updated = controller.templatesReturned.last() as GridTemplate
-            val updatedSpeed = (updated.singleList?.items?.get(0) as GridItem).title.toString()
-            assertEquals("72 km/h", updatedSpeed)
+            val updatedSpeed = (updated.singleList?.items?.get(0) as GridItem).text.toString()
+            assertEquals("72 km/h · OBD", updatedSpeed)
         } finally {
             controller.moveToState(Lifecycle.State.DESTROYED)
         }
+    }
+
+    @Test fun changingValuesUnitsAndAvailabilityRemainGridRefreshes() {
+        val carContext = TestCarContext.createCarContext(context)
+        val screen = LiveGaugesScreen(carContext)
+        val now = SystemClock.elapsedRealtime()
+        val snapshots = (50..61).map { speed -> LiveGaugeSnapshot(
+            speedKmh = speed.toFloat(), speedSource = if (speed % 2 == 0) "OBD" else "GPS",
+            rpm = 1800 + speed, fuelRateLph = 4.0, fuelEconomyKmL = 15.0,
+            sampledAtElapsedMs = now)
+        } + listOf(LiveGaugeSnapshot(speedKmh = 0f, fuelRateLph = 0.9, sampledAtElapsedMs = now),
+            LiveGaugeSnapshot(sampledAtElapsedMs = now),
+            LiveGaugeSnapshot(sampledAtElapsedMs = now - 16_000L))
+        val templates = snapshots.map { snapshot ->
+            GatewayStatusStore.recordSample("default", true, null, now, snapshot)
+            screen.onGetTemplate() as GridTemplate
+        }
+        val titles = templates.first().singleList!!.items.map { (it as GridItem).title.toString() }
+        for (template in templates) {
+            assertEquals(templates.first().title, template.title)
+            assertEquals(6, template.singleList!!.items.size)
+            assertEquals(titles, template.singleList!!.items.map { (it as GridItem).title.toString() })
+        }
+        assertTrue(templates.map { (it.singleList!!.items[0] as GridItem).text.toString() }.distinct().size >= 12)
+        assertEquals("0.9 L/h", (templates[12].singleList!!.items[4] as GridItem).text.toString())
+        assertEquals("--", (templates.last().singleList!!.items[0] as GridItem).text.toString())
     }
 
     @Test fun liveGaugesScreenStopsPollingWhenStopped() {

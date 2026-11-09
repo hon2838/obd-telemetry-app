@@ -1,0 +1,5 @@
+<resources>
+    <string name="personal_app_name">OBD Cockpit Personal</string>
+    <string name="personal_cockpit_close">Close cockpit</string>
+    <string name="personal_cockpit_unavailable">This host could not provide the cockpit drawing surface. Check the personal-build setup on your phone.</string>
+</resources>

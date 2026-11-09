@@ -64,6 +64,8 @@ For the speed card's **GPS versus vehicle speed** reading, see [comparison sourc
 
 For the experimental phone app projected through Android Auto, see [Android Auto setup, architecture, validation, and server capacity](docs/ANDROID_AUTO.md). Build it with `make apk-androidauto`; the standard head-unit APK remains a separate package.
 
+For the separate private full-cockpit experiment, use `make apk-androidauto-personal` and read [Personal Android Auto cockpit setup and host-testing limits](docs/ANDROID_AUTO_PERSONAL.md). Actual Android Auto host acceptance requires phone/DHU testing; ordinary sideloading alone does not establish it.
+
 ## Tech Stack
 
 - **Android:** Kotlin, Room, Coroutines, Foreground Services

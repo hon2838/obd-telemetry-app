@@ -60,21 +60,22 @@ internal class LiveGaugesScreen(carContext: CarContext) : Screen(carContext) {
         val view = currentView()
         lastView = view
 
-        val speedSubtitle = if (view.speedSource.isNotEmpty()) {
-            "${carContext.getString(R.string.car_gauge_speed)} (${view.speedSource})"
-        } else {
-            carContext.getString(R.string.car_gauge_speed)
-        }
+        val speedReading = if (view.speedValue != "--" && view.speedSource.isNotEmpty()) {
+            "${view.speedValue} · ${view.speedSource}"
+        } else view.speedValue
+        val fuelReading = if (view.fuelEconomyValue != "--") {
+            "${view.fuelEconomyValue} ${view.fuelEconomyUnit}"
+        } else view.fuelEconomyValue
 
-        val fuelSubtitle = "${carContext.getString(R.string.car_gauge_fuel)} (${view.fuelEconomyUnit})"
-
+        // Grid refreshes require stable item titles. Values, source and units belong
+        // in secondary text so normal sensor updates do not consume task templates.
         val itemList = ItemList.Builder()
-            .addItem(gridItem(view.speedValue, speedSubtitle))
-            .addItem(gridItem(view.rpmValue, carContext.getString(R.string.car_gauge_rpm)))
-            .addItem(gridItem(view.coolantValue, carContext.getString(R.string.car_gauge_coolant)))
-            .addItem(gridItem(view.voltageValue, carContext.getString(R.string.car_gauge_voltage)))
-            .addItem(gridItem(view.fuelEconomyValue, fuelSubtitle))
-            .addItem(gridItem(view.loadValue, carContext.getString(R.string.car_gauge_load)))
+            .addItem(gridItem(R.string.car_gauge_speed, speedReading))
+            .addItem(gridItem(R.string.car_gauge_rpm, view.rpmValue))
+            .addItem(gridItem(R.string.car_gauge_coolant, view.coolantValue))
+            .addItem(gridItem(R.string.car_gauge_voltage, view.voltageValue))
+            .addItem(gridItem(R.string.car_gauge_fuel, fuelReading))
+            .addItem(gridItem(R.string.car_gauge_load, view.loadValue))
             .build()
 
         return GridTemplate.Builder()
@@ -84,10 +85,10 @@ internal class LiveGaugesScreen(carContext: CarContext) : Screen(carContext) {
             .build()
     }
 
-    private fun gridItem(title: String, subtitle: String): GridItem =
+    private fun gridItem(title: Int, reading: String): GridItem =
         GridItem.Builder()
             .setImage(CarIcon.Builder(IconCompat.createWithResource(carContext, R.drawable.ic_gauge_tile)).build())
-            .setTitle(title)
-            .setText(subtitle)
+            .setTitle(carContext.getString(title))
+            .setText(reading)
             .build()
 }

@@ -18,7 +18,14 @@ data class LiveGaugeSnapshot(
     val throttlePos: Int? = null,
     val intakeAirTemp: Int? = null,
     val manifoldPressureKpa: Int? = null,
-    val sampledAtElapsedMs: Long = 0L
+    val sampledAtElapsedMs: Long = 0L,
+    val obdSpeedKmh: Float? = null,
+    val obdSpeedAtElapsedMs: Long? = null,
+    val gpsSpeedKmh: Float? = null,
+    val gpsSpeedAtElapsedMs: Long? = null,
+    val tripEconomyKmL: Double? = null,
+    val tripCoverageRatio: Double? = null,
+    val tripSampledAtElapsedMs: Long? = null
 )
 
 /** Operational state only: this never contains credentials, coordinates, or diagnostic commands. */
@@ -61,7 +68,7 @@ object GatewayStatusStore {
             sampledAtElapsedMs = elapsedMs,
             syncState = if (previous.syncVehicleId == vehicleId && previous.syncState == GatewaySyncState.SYNCED)
                 GatewaySyncState.QUEUED else previous.syncState,
-            liveGauges = liveGauges ?: previous.liveGauges
+            liveGauges = liveGauges ?: previous.liveGauges.takeIf { previous.vehicleId == vehicleId }
         )
     }
 

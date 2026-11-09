@@ -15,7 +15,7 @@ BUILD_TIME      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 SERVER_IMAGE    ?= obd-telemetry-server
 DASH_IMAGE      ?= obd-telemetry-dashboard
 
-.PHONY: help build build-server build-dashboard build-all apk apk-androidauto apk-probe test-probe test-android apk-bundle apk-and-server version test test-server lint lint-fix clean
+.PHONY: help build build-server build-dashboard build-all apk apk-androidauto apk-androidauto-personal apk-probe test-probe test-android apk-bundle apk-and-server version test test-server lint lint-fix clean
 
 help:
 	@echo "OBD Telemetry — make targets"
@@ -23,6 +23,7 @@ help:
 	@echo "  make version         print the build identity that will be baked in"
 	@echo "  make apk            build the Android APK from AndroidApp/"
 	@echo "  make apk-androidauto build the phone Android Auto debug APK"
+	@echo "  make apk-androidauto-personal build the private full-cockpit phone APK"
 	@echo "  make apk-probe      build the separate read-only OBD Explorer APK"
 	@echo "  make test-probe     test and lint the separate OBD Explorer app"
 	@echo "  make test-android   run head-unit and Android Auto JVM tests"
@@ -53,6 +54,10 @@ apk-androidauto:
 	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
 	  ./gradlew :app:assembleAndroidautoDebug --no-daemon
 
+apk-androidauto-personal:
+	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
+	  ./gradlew :app:assembleAndroidautopersonalDebug --no-daemon
+
 apk-probe:
 	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
 	  ./gradlew :probe:assembleDebug --no-daemon
@@ -63,7 +68,7 @@ test-probe:
 
 test-android:
 	cd AndroidApp && ANDROID_HOME=$${ANDROID_HOME:-$$HOME/Android/Sdk} \
-	  ./gradlew :app:testStandardDebugUnitTest :app:testAndroidautoDebugUnitTest --no-daemon
+	  ./gradlew :app:testStandardDebugUnitTest :app:testAndroidautoDebugUnitTest :app:testAndroidautopersonalDebugUnitTest --no-daemon
 
 # Copy the freshly-built APK into Server/agent/ and write a
 # version.json sidecar with the version code/name + SHA-256.

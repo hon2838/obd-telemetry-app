@@ -3,12 +3,13 @@ package com.example.obdapp.car
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import androidx.car.app.CarAppService
+import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.Session
 import androidx.car.app.validation.HostValidator
 
 /** The car host can view operational status; it cannot start collection or issue OBD commands. */
-class ObdCarAppService : CarAppService() {
+open class ObdCarAppService : CarAppService() {
     override fun createHostValidator(): HostValidator =
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
@@ -19,6 +20,8 @@ class ObdCarAppService : CarAppService() {
         }
 
     override fun onCreateSession(): Session = object : Session() {
-        override fun onCreateScreen(intent: Intent): Screen = DeviceStatusScreen(carContext)
+        override fun onCreateScreen(intent: Intent): Screen = createRootScreen(carContext)
     }
+
+    protected open fun createRootScreen(carContext: CarContext): Screen = DeviceStatusScreen(carContext)
 }

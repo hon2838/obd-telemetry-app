@@ -24,6 +24,6 @@
     <string name="car_gauge_rpm">Engine RPM</string>
     <string name="car_gauge_coolant">Coolant Temp</string>
     <string name="car_gauge_voltage">Battery Voltage</string>
-    <string name="car_gauge_fuel">Fuel Economy</string>
+    <string name="car_gauge_fuel">Fuel</string>
     <string name="car_gauge_load">Engine Load</string>
 </resources>

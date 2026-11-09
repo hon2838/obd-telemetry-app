@@ -132,5 +132,25 @@ class CarStatusPresenterTest {
         assertEquals("--", mismatchedGauges.speedValue)
     }
 
+    @Test fun instantFuelExpiresAtFiveSecondsWithoutHidingOtherFreshGauges() {
+        for (speed in listOf(0f, 60f)) {
+            val status = sample.copy(liveGauges = com.example.obdapp.LiveGaugeSnapshot(
+                speedKmh = speed, rpm = 2000, fuelRateLph = 4.0,
+                fuelEconomyKmL = 15.0, sampledAtElapsedMs = 1000L))
+            assertNotEquals("--", CarStatusPresenter.presentGauges(status, "car-a", 6000L).fuelEconomyValue)
+            val expiredFuel = CarStatusPresenter.presentGauges(status, "car-a", 6001L)
+            assertEquals("--", expiredFuel.fuelEconomyValue)
+            assertEquals("2000 RPM", expiredFuel.rpmValue)
+        }
+    }
+
+    @Test fun nonFiniteFuelCannotRenderAsInfinityOrNaN() {
+        for (invalid in listOf(Double.NaN, Double.POSITIVE_INFINITY)) {
+            val status = sample.copy(liveGauges = com.example.obdapp.LiveGaugeSnapshot(
+                speedKmh = 0f, fuelRateLph = invalid, fuelEconomyKmL = invalid, sampledAtElapsedMs = 1000L))
+            assertEquals("--", CarStatusPresenter.presentGauges(status, "car-a", 2000L).fuelEconomyValue)
+        }
+    }
+
     private fun present(status: GatewayStatus, now: Long) = CarStatusPresenter.present(status, "car-a", true, now)
 }

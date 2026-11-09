@@ -944,6 +944,10 @@ class OBDGatewayService : Service(), LocationListener {
                     val comparisonGps = gpsTelemetry.current(SystemClock.elapsedRealtimeNanos())
                     val effectiveSpeed = speed?.toFloat() ?: comparisonGps?.speedKmh
                     val effectiveSpeedSource = if (speed != null) "OBD" else if (comparisonGps?.speedKmh != null) "GPS" else ""
+                    val obdSpeed = speed?.takeIf { obdConnectedForSample }?.toFloat()
+                    val obdSpeedAtElapsed = if (obdSpeed != null && speedAtElapsedMs >= 0L) speedAtElapsedMs else null
+                    val gpsSpeed = comparisonGps?.speedKmh
+                    val gpsSpeedAtElapsed = if (gpsSpeed != null) comparisonGps.elapsedRealtimeNanos / 1_000_000L else null
                     val gaugeSnapshot = LiveGaugeSnapshot(
                         speedKmh = effectiveSpeed,
                         speedSource = effectiveSpeedSource,
@@ -956,7 +960,14 @@ class OBDGatewayService : Service(), LocationListener {
                         throttlePos = telemetry.throttlePos,
                         intakeAirTemp = obdSensorSnapshot?.intakeAirTemp.takeIf { obdConnectedForSample },
                         manifoldPressureKpa = obdSensorSnapshot?.manifoldPressure.takeIf { obdConnectedForSample },
-                        sampledAtElapsedMs = SystemClock.elapsedRealtime()
+                        sampledAtElapsedMs = SystemClock.elapsedRealtime(),
+                        obdSpeedKmh = obdSpeed,
+                        obdSpeedAtElapsedMs = obdSpeedAtElapsed,
+                        gpsSpeedKmh = gpsSpeed,
+                        gpsSpeedAtElapsedMs = gpsSpeedAtElapsed,
+                        tripEconomyKmL = tripReading?.economyKmL,
+                        tripCoverageRatio = tripReading?.coverageRatio,
+                        tripSampledAtElapsedMs = tripReading?.sampledAtElapsedMs
                     )
                     GatewayStatusStore.recordSample(
                         telemetry.vehicleId, obdConnectedForSample, gpsFix?.elapsedRealtimeNanos?.div(1_000_000L),

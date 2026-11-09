@@ -3,6 +3,7 @@ package com.example.obdapp.car
 import com.example.obdapp.GatewayStatus
 import com.example.obdapp.GatewaySyncState
 import com.example.obdapp.GpsTelemetryPolicy
+import com.example.obdapp.FuelConsumptionEstimate
 
 internal enum class AdapterStatus { STOPPED, WAITING, CONNECTED, DISCONNECTED }
 internal data class CarStatusView(
@@ -50,10 +51,10 @@ internal object CarStatusPresenter {
 
     fun presentGauges(status: GatewayStatus, vehicleId: String, elapsedMs: Long): LiveGaugesView {
         val gauges = status.liveGauges
-        val fresh = status.running && status.vehicleId == vehicleId &&
+        val freshSnapshot = status.running && status.vehicleId == vehicleId &&
             gauges != null && fresh(gauges.sampledAtElapsedMs, elapsedMs, SAMPLE_MAX_AGE_MS)
 
-        if (!fresh) {
+        if (!freshSnapshot) {
             return LiveGaugesView(
                 speedValue = "--",
                 speedSource = "",
@@ -83,10 +84,12 @@ internal object CarStatusPresenter {
         } else "--"
 
         val (fuelStr, fuelUnit) = when {
-            gauges.fuelRateLph != null && gauges.fuelRateLph >= 0.0 && (gauges.speedKmh == null || gauges.speedKmh < 1.0f) -> {
+            !fresh(gauges.sampledAtElapsedMs, elapsedMs, FuelConsumptionEstimate.MAX_READING_AGE_MS) -> "--" to "km/L"
+            gauges.fuelRateLph != null && gauges.fuelRateLph.isFinite() && gauges.fuelRateLph >= 0.0 &&
+                (gauges.speedKmh == null || gauges.speedKmh < 1.0f) -> {
                 String.format(java.util.Locale.US, "%.1f", gauges.fuelRateLph) to "L/h"
             }
-            gauges.fuelEconomyKmL != null && gauges.fuelEconomyKmL >= 0.0 -> {
+            gauges.fuelEconomyKmL != null && gauges.fuelEconomyKmL.isFinite() && gauges.fuelEconomyKmL >= 0.0 -> {
                 String.format(java.util.Locale.US, "%.1f", gauges.fuelEconomyKmL) to "km/L"
             }
             else -> "--" to "km/L"

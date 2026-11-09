@@ -16,8 +16,8 @@ android {
         // recognizes it as an update and Android rejects downgrades.
         // versionName is the human-readable label the user
         // sees in the app's About screen.
-        versionCode = 14
-        versionName = "1.3.10"
+        versionCode = 15
+        versionName = "1.3.11"
     }
 
     flavorDimensions += "variant"
@@ -35,6 +35,22 @@ android {
             applicationId = "com.example.obdapp.androidauto"
             targetSdk = 36
             minSdk = 26
+        }
+        create("androidautopersonal") {
+            dimension = "variant"
+            applicationId = "com.example.obdapp.androidauto.personal"
+            targetSdk = 36
+            minSdk = 26
+        }
+    }
+
+    sourceSets {
+        getByName("androidautopersonal") {
+            java.srcDir("src/androidauto/java")
+            res.srcDir("src/androidauto/res")
+        }
+        getByName("testAndroidautopersonal") {
+            java.srcDir("src/testAndroidauto/java")
         }
     }
 
@@ -77,6 +93,9 @@ dependencies {
   "androidautoImplementation"("androidx.car.app:app:1.7.0")
   "androidautoImplementation"("androidx.car.app:app-projected:1.7.0")
   "testAndroidautoImplementation"("androidx.car.app:app-testing:1.7.0")
+  "androidautopersonalImplementation"("androidx.car.app:app:1.7.0")
+  "androidautopersonalImplementation"("androidx.car.app:app-projected:1.7.0")
+  "testAndroidautopersonalImplementation"("androidx.car.app:app-testing:1.7.0")
   implementation("androidx.core:core-ktx:1.12.0")
   implementation("androidx.appcompat:appcompat:1.2.0")
   implementation("androidx.constraintlayout:constraintlayout:2.1.4")
