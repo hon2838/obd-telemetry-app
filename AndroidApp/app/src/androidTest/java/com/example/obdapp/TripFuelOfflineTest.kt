@@ -9,7 +9,6 @@ import android.net.ConnectivityManager
 import android.os.Build
 import android.os.SystemClock
 import android.view.View
-import android.widget.CheckBox
 import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -27,7 +26,7 @@ import java.util.concurrent.TimeUnit
 
 /** Emulator-only integration coverage: no adapter, collector, credentials, or remote API. */
 @RunWith(AndroidJUnit4::class)
-class GearEstimateOfflineTest {
+class TripFuelOfflineTest {
     private lateinit var context: Context
     private var scenario: ActivityScenario<MainActivity>? = null
     private lateinit var vehicle: String
@@ -44,9 +43,8 @@ class GearEstimateOfflineTest {
             .putString(KEY_DEVICE_TOKEN, "offline-instrumentation-only")
             .commit()
         context.getSharedPreferences("DASHBOARD_PREFS", Context.MODE_PRIVATE).edit().clear().commit()
-        context.getSharedPreferences("GEAR_ESTIMATE_PREFS", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences(TripFuelRepository.PREFS, Context.MODE_PRIVATE).edit().clear().commit()
         vehicle = VehiclePrefs.getActiveVehicleId(context)
-        GearEstimatePrefs.setEnabled(context, vehicle, true)
         scenario = ActivityScenario.launch(MainActivity::class.java)
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
         assertFalse("The real collector must stay stopped", OBDGatewayService.isRunning)
@@ -57,14 +55,18 @@ class GearEstimateOfflineTest {
     private fun send(rpm: Int = 2400, speed: Float = 80f, throttle: Int = 10,
                      source: String = "OBD", car: String = vehicle, age: Long = 0,
                      action: String = "com.example.obdapp.TELEMETRY_UPDATE", rate: Double? = 4.32,
-                     status: String = "Connected", gps: Float? = 78f, gpsAge: Long = 0) {
+                     status: String = "Connected", gps: Float? = 78f, gpsAge: Long = 0,
+                     trip: Double? = 18.2, coverage: Double = 0.85, tripAge: Long = 0) {
         dispatch(Intent(action).setPackage(context.packageName)
             .putExtra("vehicle_id", car).putExtra("timestamp", System.currentTimeMillis() - age)
             .putExtra("obd_status", status).putExtra("speed_source", source)
             .putExtra("speed", speed).putExtra("rpm", rpm).putExtra("throttle", throttle)
             .putExtra("coolant", 86).putExtra("volt", 13.9f)
             .putExtra("load", 25).putExtra("iat", 36)
-            .putExtra("estimated_fuel_economy_kml", 18.5).apply {
+            .putExtra("estimated_fuel_economy_kml", 18.5)
+            .putExtra("trip_fuel_economy_kml", trip ?: -1.0)
+            .putExtra("trip_fuel_coverage_ratio", coverage)
+            .putExtra("trip_fuel_at_elapsed_ms", SystemClock.elapsedRealtime() - tripAge).apply {
                 if (rate != null) putExtra("estimated_fuel_rate_lph", rate)
                 if (status == "Connected" && source == "OBD") {
                     putExtra("obd_speed_kmh", speed)
@@ -86,15 +88,11 @@ class GearEstimateOfflineTest {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
     }
 
-    private fun assertGear(expected: String) {
+    private fun assertTrip(expected: String) {
         scenario!!.onActivity { activity ->
             assertEquals(expected, activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
-                .findViewById<TextView>(R.id.tvThrottleGear).text.toString())
+                .findViewById<TextView>(R.id.tvThrottleTripFuel).text.toString())
         }
-    }
-
-    private fun settle(rpm: Int = 2400, speed: Float = 80f) {
-        repeat(3) { send(rpm, speed); if (it < 2) SystemClock.sleep(550) }
     }
 
     private fun screenshot(name: String) {
@@ -113,17 +111,12 @@ class GearEstimateOfflineTest {
         bitmap.recycle()
     }
 
-    @Test fun allFourGearsAndShiftUncertaintyRenderInTheRealActivity() {
-        for ((rpm, speed, expected) in listOf(Triple(1860, 15f, "1"), Triple(1750, 25f, "2"),
-            Triple(1840, 40f, "3"), Triple(2400, 80f, "4"))) {
-            send(rpm, speed)
-            assertGear("—")
-            settle(rpm, speed)
-            assertGear(expected)
-        }
+    @Test fun tripAverageAndCoverageReplaceTheGearWithoutChangingInstantEconomy() {
+        send()
+        assertTrip("18.2")
         scenario!!.onActivity { activity ->
             val slot = activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
-            val row = slot.findViewById<View>(R.id.throttleGearRow)
+            val row = slot.findViewById<View>(R.id.throttleTripFuelRow)
             val fuel = slot.findViewById<View>(R.id.throttleFuelEconomyRow)
             val primary = slot.findViewById<View>(R.id.telemetryPrimaryContent)
             val supplemental = slot.findViewById<View>(R.id.throttleSupplementalRows)
@@ -131,75 +124,66 @@ class GearEstimateOfflineTest {
             assertEquals(View.VISIBLE, row.visibility)
             assertEquals(View.VISIBLE, rate.visibility)
             assertEquals("4.3", slot.findViewById<TextView>(R.id.tvThrottleFuelRate).text.toString())
+            assertEquals("18.5", slot.findViewById<TextView>(R.id.tvThrottleFuelEconomy).text.toString())
+            assertEquals("Est. · 85% sampled", slot.findViewById<TextView>(R.id.tvTripFuelQuality).text.toString())
             assertTrue(rate.bottom <= row.top)
             assertTrue("Supplemental rows must clear the throttle bar", supplemental.top > 115 * activity.resources.displayMetrics.density)
             assertTrue(row.height > 0)
             assertTrue(supplemental.bottom <= primary.height)
             assertTrue(primary.bottom <= fuel.top)
         }
-        screenshot("gear-four-simulated")
-        send(3680, 80f)
-        assertGear("—")
-        screenshot("gear-shift-uncertain")
+        screenshot("trip-economy-simulated")
+        send(trip = 16.7, coverage = 0.64)
+        assertTrip("16.7")
+        screenshot("trip-partial-simulated")
     }
 
-    @Test fun staleGpsCrossVehicleAndStoppedDataClearTheEstimate() {
-        settle(); assertGear("4")
-        SystemClock.sleep(2800) // Includes the real one-second UI age ticker.
-        assertGear("—")
-        settle(); assertGear("4")
-        send(source = "GPS"); assertGear("—")
-        settle(); assertGear("4")
-        send(car = "different-vehicle"); assertGear("—")
-        settle(); assertGear("4")
-        send(age = 6000); assertGear("—")
-        settle(); assertGear("4")
-        send(rpm = 800, speed = 0f, throttle = 0); assertGear("—")
-        settle(); assertGear("4")
+    @Test fun tripRemainsPausedThroughObdLossButInvalidSamplesCannotPopulateIt() {
+        send(); assertTrip("18.2")
+        send(source = "GPS", status = "GPS Only"); assertTrip("18.2")
+        scenario!!.onActivity { activity ->
+            assertTrue(activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
+                .findViewById<TextView>(R.id.tvTripFuelQuality).text.startsWith("Paused"))
+        }
+        send(car = "different-vehicle"); assertTrip("—")
+        send(tripAge = TripFuelAccumulator.TRIP_GAP_MS + 1); assertTrip("—")
+        send(age = 6000); assertTrip("18.2")
+        send(trip = null); assertTrip("—")
+        send(); assertTrip("18.2")
         dispatch(Intent("com.example.obdapp.STATUS_UPDATE").setPackage(context.packageName)
             .putExtra("running", false))
-        assertGear("—")
+        assertTrip("18.2")
     }
 
-    @Test fun untrustedSimulationAndVehicleProfileChangesCannotLeaveAGearBehind() {
-        settle(); assertGear("4")
-        send(action = "com.example.obdapp.MOCK_TELEMETRY"); assertGear("—")
-        settle(); assertGear("4")
-        scenario!!.onActivity { activity ->
-            activity.findViewById<CheckBox>(R.id.cbAxiaGearEstimate).isChecked = false
-            assertEquals(View.GONE, activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
-                .findViewById<View>(R.id.throttleGearRow).visibility)
-        }
-        settle(); assertGear("—")
-        assertFalse(GearEstimatePrefs.enabled(context, vehicle))
+    @Test fun untrustedSimulationAndVehicleChangesCannotReuseAnotherTrip() {
+        send(); assertTrip("18.2")
+        send(action = "com.example.obdapp.MOCK_TELEMETRY"); assertTrip("—")
+        send(); assertTrip("18.2")
         val other = VehiclePrefs.addVehicle(context, "Offline second vehicle", null)
         VehiclePrefs.setActiveVehicle(context, other.id)
         scenario!!.recreate()
-        scenario!!.onActivity { activity ->
-            assertFalse(activity.findViewById<CheckBox>(R.id.cbAxiaGearEstimate).isChecked)
-            assertEquals(View.GONE, activity.findViewById<TelemetryWidgetView>(R.id.widgetSlot2)
-                .findViewById<View>(R.id.throttleGearRow).visibility)
-        }
+        send(); assertTrip("—")
+        send(car = other.id, trip = 12.3); assertTrip("12.3")
         assertFalse(OBDGatewayService.isRunning)
         VehiclePrefs.deleteVehicle(context, other.id)
         VehiclePrefs.setActiveVehicle(context, vehicle)
     }
 
-    @Test fun constrainedCardsAndLargeFontsHideTheSupplementalGearRow() {
+    @Test fun constrainedCardsAndLargeFontsHideTheSupplementalTripRow() {
         scenario!!.onActivity {
             for ((fontScale, heightDp) in listOf(1f to 180, 2f to 368)) {
                 val config = Configuration(context.resources.configuration).apply { this.fontScale = fontScale }
                 val scaled = context.createConfigurationContext(config)
                 val widget = TelemetryWidgetView(scaled)
                 widget.bindMetric(TelemetryMetric.THROTTLE, DisplayStyle.BAR)
-                widget.updateGearEstimate(4, true)
+                widget.updateTripFuelEconomy(18.2, 1.0)
                 val density = scaled.resources.displayMetrics.density
                 val w = (382 * density).toInt()
                 val h = (heightDp * density).toInt()
                 widget.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
                 widget.layout(0, 0, w, h)
-                assertEquals(View.GONE, widget.findViewById<View>(R.id.throttleGearRow).visibility)
+                assertEquals(View.GONE, widget.findViewById<View>(R.id.throttleTripFuelRow).visibility)
                 assertEquals(View.GONE, widget.findViewById<View>(R.id.throttleFuelRateRow).visibility)
                 assertTrue(widget.findViewById<View>(R.id.telemetryPrimaryContent).height > 0)
                 widget.bindMetric(TelemetryMetric.SPEED, DisplayStyle.DIAL)

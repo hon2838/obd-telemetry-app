@@ -1,5 +1,7 @@
 # Experimental Axia 4AT gear display
 
+**Retired in Android 1.3.10.** The estimated-gear row and setting have been replaced by [trip-average fuel economy](TRIP_FUEL_ECONOMY.md). The description below is historical; its classes and test commands apply to version 1.3.9 and earlier.
+
 In the head-unit app's settings, enable **Estimated gears — Axia 4-speed automatic** for the selected vehicle. It defaults off, and each vehicle has its own setting. The number appears below the throttle bar, above current fuel economy, when the card has enough space. Small cards and large accessibility fonts hide the supplemental gear row.
 
 This is an experimental **RPM / OBD speed estimate**, not an ECU-reported gear. The initial bands are observations from this vehicle's telemetry, without a labelled transmission reference. They have not been validated against actual selected gears. They should not be treated as factory ratios or enabled for a different transmission, including a D-CVT.

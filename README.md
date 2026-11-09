@@ -58,7 +58,7 @@ For production releases, follow [deployment_guide.md](deployment_guide.md). Buil
 
 For estimated instantaneous petrol fuel economy in **km/L**, see [fuel-economy behavior, assumptions and validation](docs/FUEL_ECONOMY.md).
 
-For the optional experimental **Axia 4-speed automatic gear estimate**, see [gear display and validation limits](docs/GEAR_ESTIMATE.md).
+The throttle card shows **trip-average fuel economy in km/L**, alongside current fuel economy and fuel use. See [calculation, coverage and trip boundaries](docs/TRIP_FUEL_ECONOMY.md).
 
 For the speed card's **GPS versus vehicle speed** reading, see [comparison sources, freshness, and limitations](docs/SPEED_COMPARISON.md).
 

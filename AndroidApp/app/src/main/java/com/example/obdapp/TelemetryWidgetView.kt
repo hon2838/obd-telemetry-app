@@ -74,9 +74,9 @@ class TelemetryWidgetView @JvmOverloads constructor(
     private val throttleFuelRateRow: View
     private val tvThrottleFuelRate: TextView
     private val speedComparisonRow: TextView
-    private val throttleGearRow: View
-    private val tvThrottleGear: TextView
-    private var gearEstimateEnabled = false
+    private val throttleTripFuelRow: View
+    private val tvThrottleTripFuel: TextView
+    private val tvTripFuelQuality: TextView
 
     var currentMetric: TelemetryMetric = TelemetryMetric.SPEED
         private set
@@ -127,8 +127,10 @@ class TelemetryWidgetView @JvmOverloads constructor(
         throttleFuelRateRow = findViewById(R.id.throttleFuelRateRow)
         tvThrottleFuelRate = findViewById(R.id.tvThrottleFuelRate)
         speedComparisonRow = findViewById(R.id.speedComparisonRow)
-        throttleGearRow = findViewById(R.id.throttleGearRow)
-        tvThrottleGear = findViewById(R.id.tvThrottleGear)
+        throttleTripFuelRow = findViewById(R.id.throttleTripFuelRow)
+        tvThrottleTripFuel = findViewById(R.id.tvThrottleTripFuel)
+        tvTripFuelQuality = findViewById(R.id.tvTripFuelQuality)
+        updateTripFuelEconomy(null, null)
         updateFuelEconomy(null)
         updateFuelRate(null)
         updateSpeedComparison(null, null, "")
@@ -333,11 +335,11 @@ class TelemetryWidgetView @JvmOverloads constructor(
         val minHeightDp = 120f + 80f * resources.configuration.fontScale
         throttleFuelEconomyRow.visibility = if (currentMetric == TelemetryMetric.THROTTLE &&
             effectiveStyle == DisplayStyle.BAR && hDp >= minHeightDp) View.VISIBLE else View.GONE
-        val gearVisible = gearEstimateEnabled && currentMetric == TelemetryMetric.THROTTLE &&
+        val tripVisible = currentMetric == TelemetryMetric.THROTTLE &&
             effectiveStyle == DisplayStyle.BAR && hDp >= 180f + 130f * resources.configuration.fontScale
-        throttleGearRow.visibility = if (gearVisible) View.VISIBLE else View.GONE
-        // Preserve the gear's existing space first; the optional rate row uses the remaining room.
-        val rateMinHeightDp = if (gearVisible) 230f + 125f * resources.configuration.fontScale
+        throttleTripFuelRow.visibility = if (tripVisible) View.VISIBLE else View.GONE
+        // Preserve trip economy first; the optional instantaneous rate uses remaining room.
+        val rateMinHeightDp = if (tripVisible) 230f + 125f * resources.configuration.fontScale
             else 180f + 130f * resources.configuration.fontScale
         throttleFuelRateRow.visibility = if (currentMetric == TelemetryMetric.THROTTLE &&
             effectiveStyle == DisplayStyle.BAR && hDp >= rateMinHeightDp) View.VISIBLE else View.GONE
@@ -381,11 +383,17 @@ class TelemetryWidgetView @JvmOverloads constructor(
         throttleFuelRateRow.contentDescription = context.getString(R.string.fuel_rate_readout_description, value)
     }
 
-    fun updateGearEstimate(gear: Int?, enabled: Boolean) {
-        gearEstimateEnabled = enabled
-        val value = gear?.takeIf { it in 1..4 }?.toString() ?: "—"
-        tvThrottleGear.text = value
-        throttleGearRow.contentDescription = context.getString(R.string.gear_estimate_description, value)
+    fun updateTripFuelEconomy(economyKmL: Double?, coverageRatio: Double?, paused: Boolean = false) {
+        val value = economyKmL?.takeIf { it.isFinite() && it in 0.0..1_000_000.0 }
+            ?.let { String.format(java.util.Locale.getDefault(), "%.1f", it) } ?: "—"
+        val coverage = coverageRatio?.takeIf { it.isFinite() && it in 0.0..1.0 }
+        val quality = if (value == "—" || coverage == null) context.getString(R.string.trip_fuel_waiting)
+            else context.getString(if (paused) R.string.trip_fuel_paused else R.string.trip_fuel_quality,
+                (coverage * 100).toInt())
+        if (tvThrottleTripFuel.text.toString() != value) tvThrottleTripFuel.text = value
+        if (tvTripFuelQuality.text.toString() != quality) tvTripFuelQuality.text = quality
+        val description = context.getString(R.string.trip_fuel_description, value, quality)
+        if (throttleTripFuelRow.contentDescription != description) throttleTripFuelRow.contentDescription = description
         updateFuelRowVisibility()
     }
 

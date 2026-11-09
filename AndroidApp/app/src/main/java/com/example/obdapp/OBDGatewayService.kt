@@ -243,6 +243,7 @@ class OBDGatewayService : Service(), LocationListener {
     private var networkWakeupSubscription: java.io.Closeable? = null
 
     private val persistencePolicy = TelemetryPersistencePolicy()
+    @Volatile private var tripFuelRepository: TripFuelRepository? = null
 
     @Volatile private var obdCapabilities: ObdCapabilities = ObdCapabilities.EMPTY
 
@@ -692,6 +693,9 @@ class OBDGatewayService : Service(), LocationListener {
         collectorJob = serviceScope.launch {
             val db = AppDatabase.getDatabase(applicationContext)
             val dao = db.telemetryDao()
+            val tripFuel = TripFuelRepository(applicationContext)
+            coroutineContext.ensureActive()
+            tripFuelRepository = tripFuel
 
             while (isActive) {
                 val cycleStartedElapsed = SystemClock.elapsedRealtime()
@@ -924,6 +928,10 @@ class OBDGatewayService : Service(), LocationListener {
                         btConnected = btConnected
                     )
 
+                    val tripReading = tripFuel.observe(telemetry.vehicleId, telemetry.timestamp,
+                        SystemClock.elapsedRealtime(), telemetry.speed?.toDouble(),
+                        telemetry.estimatedFuelRateLph, cycleSensorSession.takeIf { obdConnectedForSample })
+
                     // Local persistence is independent of networking or slow PID completion
                     persistencePolicy.persistIfEligible(telemetry, obdConnectedForSample, gpsFix != null) { sample ->
                         dao.insert(sample)
@@ -984,6 +992,11 @@ class OBDGatewayService : Service(), LocationListener {
                         putExtra("ambient", telemetry.ambientTemp ?: -1)
                         putExtra("estimated_fuel_economy_kml", telemetry.estimatedFuelEconomyKmL ?: -1.0)
                         putExtra("estimated_fuel_rate_lph", telemetry.estimatedFuelRateLph ?: -1.0)
+                        tripReading?.let { trip ->
+                            putExtra("trip_fuel_economy_kml", trip.economyKmL ?: -1.0)
+                            putExtra("trip_fuel_coverage_ratio", trip.coverageRatio)
+                            putExtra("trip_fuel_at_elapsed_ms", trip.sampledAtElapsedMs)
+                        }
                         putExtra("volt", telemetry.voltage ?: -1.0f)
                         putExtra("obd_status", if (obdConnectedForSample) "Connected" else "GPS Only")
                         putExtra("timestamp", telemetry.timestamp)
@@ -1111,6 +1124,8 @@ class OBDGatewayService : Service(), LocationListener {
         isRunning = false
         GatewayStatusStore.setRunning(false)
         persistencePolicy.reset()
+        tripFuelRepository?.close()
+        tripFuelRepository = null
         networkWakeupSubscription?.close()
         networkWakeupSubscription = null
         OutboxUploader.commandHandler = null

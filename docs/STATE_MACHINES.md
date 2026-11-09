@@ -2,6 +2,8 @@
 
 Audited runtime source: **911668b4bb2a6d785e95b3dcfc89354eaa6d7f25**, 7 November 2026. The inventory and findings below describe that source. The subsequent fixes are recorded in the resolution addendum at the end; the historical source line references remain unchanged.
 
+On 8 November, Android 1.3.10 retired the gear-estimation family A14 and replaced its cockpit row with [collector-owned trip fuel totals and checkpoints](TRIP_FUEL_ECONOMY.md). This historical inventory is not a recount of the updated source.
+
 Three **GPT-6 Luna** subagents independently covered Android pipelines/probe, backend/infrastructure, and web/Android UI/Android Auto. The parent re-read the transition owners, checked cross-component contracts, corrected unsupported claims, ran existing suites, and built local reproducers.
 
 ## What is counted

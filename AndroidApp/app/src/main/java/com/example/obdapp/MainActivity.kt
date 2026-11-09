@@ -122,9 +122,7 @@ class MainActivity : AppCompatActivity() {
     private var lastFuelRate: Double? = null
     private var speedComparison: SpeedComparisonReading? = null
     private var primarySpeedSource = ""
-    private val gearEstimator = AxiaGearEstimate()
-    private var gearVehicleId: String? = null
-    private var syncingGearToggle = false
+    private var tripFuelReading: TripFuelReading? = null
     private var fuelConnectionOk = false
     private var ageTicker: kotlinx.coroutines.Job? = null
     private var sparkline: SparklineView? = null
@@ -219,8 +217,7 @@ class MainActivity : AppCompatActivity() {
                         fuelConnectionOk = false
                         speedComparison = speedComparison?.copy(obdKmh = null)
                         updateSpeedComparison()
-                        gearEstimator.reset()
-                        updateGearReadouts()
+                        updateTripFuelReadout()
                         updateFuelEstimate()
                     }
                     updateStatusUi(status)
@@ -294,18 +291,20 @@ class MainActivity : AppCompatActivity() {
                 it.getLongExtra("gps_speed_at_elapsed_ms", -1L))
         } else null
         updateSpeedComparison()
-        val gearSampleAge = System.currentTimeMillis() - sampleAt
-        if (gearVehicleId != activeVehicle) {
-            gearEstimator.reset()
-            gearVehicleId = activeVehicle
+        val tripNow = android.os.SystemClock.elapsedRealtime()
+        tripFuelReading = if (!isTrustedLive || sampleVehicle != activeVehicle || isDemoMode) null else {
+            val previous = tripFuelReading?.current(activeVehicle, tripNow)
+            val incoming = if (it.hasExtra("trip_fuel_at_elapsed_ms")) {
+                TripFuelReading(activeVehicle,
+                    it.getDoubleOrNumber("trip_fuel_economy_kml", -1.0).takeIf { value -> value >= 0.0 },
+                    it.getDoubleOrNumber("trip_fuel_coverage_ratio", -1.0),
+                    it.getLongExtra("trip_fuel_at_elapsed_ms", -1L)).current(activeVehicle, tripNow)
+            } else null
+            // Cumulative history uses its monotonic capture time, not the instantaneous
+            // reading's wall clock. A delayed packet cannot roll back newer totals.
+            if (incoming != null && (previous == null || incoming.sampledAtElapsedMs >= previous.sampledAtElapsedMs))
+                incoming else previous
         }
-        if (isTrustedLive && sampleVehicle == activeVehicle && !isDemoMode &&
-            GearEstimatePrefs.enabled(this, activeVehicle) && obdStatus == "Connected" &&
-            speedSource == "OBD" && sampleAt > 0L && gearSampleAge in 0..1_500L) {
-            gearEstimator.update(rpm.takeIf { it >= 0 }, speed.toDouble(), throttle.takeIf { it >= 0 },
-                android.os.SystemClock.elapsedRealtime())
-        } else gearEstimator.reset()
-        updateGearReadouts()
         val volt = it.getFloatOrNumber("volt", -1.0f)
         val accOn = it.getBooleanExtra("accOn", false)
         val headlightOn = it.getBooleanExtra("headlightOn", false)
@@ -337,6 +336,7 @@ class MainActivity : AppCompatActivity() {
         lastFuelRate = if (it.hasExtra("estimated_fuel_rate_lph")) it.getDoubleOrNumber("estimated_fuel_rate_lph", -1.0) else null
         fuelConnectionOk = obdStatus == "Connected"
         updateFuelEstimate()
+        updateTripFuelReadout()
 
         sparkline?.push(if (rpm != -1) rpm else null, speed.takeIf { value -> value >= 0f })
 
@@ -446,12 +446,11 @@ class MainActivity : AppCompatActivity() {
             speedComparison = null
             primarySpeedSource = ""
             updateSpeedComparison()
-            gearEstimator.reset()
-            updateGearReadouts()
             fuelConnectionOk = false
             lastFuelEconomy = null
             lastFuelRate = null
             updateFuelEstimate()
+            updateTripFuelReadout()
         }
         btnStart.isEnabled = !running
         btnStop.isEnabled = running
@@ -461,7 +460,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTelemetryAge() {
         updateSpeedComparison()
-        updateGearReadouts()
+        updateTripFuelReadout()
         updateFuelEstimate()
         if (lastTelemetryAt == 0L) {
             tvTelemetryAge.text = getString(R.string.telemetry_waiting)
@@ -511,27 +510,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateGearReadouts() {
-        val vehicle = VehiclePrefs.getActiveVehicleId(this)
-        val enabled = GearEstimatePrefs.enabled(this, vehicle)
-        val toggle = findViewById<android.widget.CheckBox?>(R.id.cbAxiaGearEstimate)
-        if (toggle != null && toggle.isChecked != enabled) {
-            syncingGearToggle = true
-            toggle.isChecked = enabled
-            syncingGearToggle = false
-        }
-        if (!enabled || gearVehicleId != vehicle) gearEstimator.reset()
-        val gear = gearEstimator.current(android.os.SystemClock.elapsedRealtime())
-        for (slot in cockpitSlots) slot.updateGearEstimate(gear, enabled)
-    }
-
-    private fun refreshGearToggle() {
-        val toggle = findViewById<android.widget.CheckBox?>(R.id.cbAxiaGearEstimate) ?: return
-        syncingGearToggle = true
-        toggle.isChecked = GearEstimatePrefs.enabled(this, VehiclePrefs.getActiveVehicleId(this))
-        syncingGearToggle = false
-        gearEstimator.reset()
-        updateGearReadouts()
+    private fun updateTripFuelReadout() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val reading = tripFuelReading?.current(VehiclePrefs.getActiveVehicleId(this), now)
+            ?.takeUnless { isDemoMode }
+        val paused = !fuelConnectionOk || reading?.let {
+            now - it.sampledAtElapsedMs > FuelConsumptionEstimate.MAX_READING_AGE_MS
+        } == true
+        for (slot in cockpitSlots) slot.updateTripFuelEconomy(reading?.economyKmL, reading?.coverageRatio, paused)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -667,15 +653,6 @@ class MainActivity : AppCompatActivity() {
         cbAutoStart.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean("AUTO_START_BOOT", isChecked).apply()
         }
-        refreshGearToggle()
-        findViewById<android.widget.CheckBox>(R.id.cbAxiaGearEstimate).setOnCheckedChangeListener { _, checked ->
-            if (!syncingGearToggle) {
-                GearEstimatePrefs.setEnabled(this, VehiclePrefs.getActiveVehicleId(this), checked)
-                gearEstimator.reset()
-                updateGearReadouts()
-            }
-        }
-
         // API Server Config card — persists the backend origin and ingest key
         // used by the gateway service and fuel sync.
         etApiUrl.setText(getApiBaseUrl(this))
@@ -816,7 +793,8 @@ class MainActivity : AppCompatActivity() {
             override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
                 if (suppress) { suppress = false; return }
                 VehiclePrefs.setActiveVehicle(this@MainActivity, vehicles[position].id)
-                refreshGearToggle()
+                tripFuelReading = null
+                updateTripFuelReadout()
                 updateSpeedComparison()
                 setupBluetoothSpinner() // re-select the adapter bound to this vehicle
             }
@@ -1101,7 +1079,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateFuelEstimate()
-        updateGearReadouts()
+        updateTripFuelReadout()
         updateSpeedComparison()
     }
 
