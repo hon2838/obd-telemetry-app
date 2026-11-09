@@ -44,3 +44,18 @@ Thumbs.db
 # Playwright
 Dashboard/playwright-report/
 Dashboard/test-results/
+
+# AI Agent Settings & Permissions
+.claude/
+.gemini/
+.cursor/
+settings.local.json
+*.local.json
+
+# Keys and certificates
+*.pem
+*.key
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
